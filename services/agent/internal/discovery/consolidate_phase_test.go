@@ -34,7 +34,7 @@ func (e *angleEmbedder) Embed(_ context.Context, texts []string) ([][]float64, e
 			out[i] = append(unit(d), 0)
 			continue
 		}
-		out[i] = []float64{0, 0, 1}
+		out[i] = append(unit(0), 0)
 	}
 	return out, nil
 }
@@ -147,60 +147,60 @@ func TestConsolidateArea_CommunityRuleFoldsASimilarityPair(t *testing.T) {
 	}
 }
 
-// A containment-only pair is NOT folded by the community rule. That is what
-// keeps a deployment with no provider on exactly the outcome it has today:
-// containment is a proposal the adjudicator decides, not a new community rule.
-func TestConsolidateArea_CommunityRuleLeavesContainmentAlone(t *testing.T) {
+// A pair between the two floors is PROPOSED — that is what the adjudication
+// floor is for — but the community fallback must not fold it. Folding it with
+// no model in the loop would fold pairs the fold floor exists to exclude: a
+// finding losing its verdict and its place in Phase 5 on a rule the deployment
+// never opted into.
+func TestConsolidateArea_CommunityRuleLeavesASubFoldFloorPairAlone(t *testing.T) {
 	withProvider(t, nil)
 
-	table := "| north | 111,222 | 33.3 |\n| south | 444,555 | 66.6 |"
-	a := insight("a", "stock", "idle units across every segment", table, 100)
-	b := insight("b", "stock", "the north segment holds 111,222 idle units, 33.3 of it", "a slice of the same total", 90)
-	// Deliberately far apart in angle: similarity says nothing about this pair.
+	a := insight("a", "stock", "idle units across every segment", "the whole total", 100)
+	b := insight("b", "stock", "the north segment holds its share of the idle units", "a slice of the same total", 90)
+	// 32 degrees apart is about 0.848: above the adjudication floor, below the
+	// fold floor.
 	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 0, embText(b): 70,
+		embText(a): 0, embText(b): 32,
 	}}}
 
 	current := []models.Insight{a, b}
 	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
 
 	if st.Clusters != 1 {
-		t.Fatalf("clusters = %d, want 1: containment must still PROPOSE the pair", st.Clusters)
+		t.Fatalf("clusters = %d, want 1: the adjudication floor must still PROPOSE the pair", st.Clusters)
 	}
 	if st.Folded != 0 {
-		t.Fatalf("folded = %d, want 0: the community rule must not fold a containment-only pair", st.Folded)
+		t.Fatalf("folded = %d, want 0: the community rule must not fold below the fold floor", st.Folded)
 	}
 	if current[1].DuplicateOf != "" {
 		t.Errorf("b.duplicate_of = %q, want empty", current[1].DuplicateOf)
 	}
 }
 
-// The same pair, with a provider registered: the adjudicator can fold what the
-// threshold cannot see. This is the case the feature exists for — measured on
-// one real run, the similarity rule proposed 18 pairs and containment 16, with
-// only 3 in common.
-func TestConsolidateArea_ProviderFoldsAContainmentPair(t *testing.T) {
-	table := "| north | 111,222 | 33.3 |\n| south | 444,555 | 66.6 |"
-	a := insight("a", "stock", "idle units across every segment", table, 100)
-	b := insight("b", "stock", "the north segment holds 111,222 idle units, 33.3 of it", "a slice", 90)
+// The pair the adjudication floor exists to carry: close enough to be worth a
+// judgement, not close enough for a threshold to settle. The provider folds it
+// and the fold is recorded.
+func TestConsolidateArea_ProviderFoldsASubFoldFloorPair(t *testing.T) {
+	a := insight("a", "stock", "idle units across every segment", "the whole total", 100)
+	b := insight("b", "stock", "the north segment holds its share of the idle units", "a slice", 90)
 
 	stub := &stubProvider{fn: func(c []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
 		return []agentplugin.ConsolidationVerdict{{
 			CanonicalID: "a",
 			Duplicates:  map[string]float64{"b": 0.79},
-			Reason:      "b is one row of a's table",
+			Reason:      "b states one row of a's table",
 		}}, nil
 	}}
 	withProvider(t, stub)
 
 	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 0, embText(b): 70,
+		embText(a): 0, embText(b): 32,
 	}}}
 	current := []models.Insight{a, b}
 	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
 
-	if st.Folded != 1 || st.ByContainment != 1 {
-		t.Fatalf("stats = %+v, want one containment fold", st)
+	if st.Folded != 1 || st.ByCosine != 1 {
+		t.Fatalf("stats = %+v, want one similarity fold", st)
 	}
 	if current[1].DuplicateOf != "a" {
 		t.Errorf("b.duplicate_of = %q, want a", current[1].DuplicateOf)
@@ -208,27 +208,11 @@ func TestConsolidateArea_ProviderFoldsAContainmentPair(t *testing.T) {
 	if st.Decider != "stub-consolidator" {
 		t.Errorf("decider = %q, want the provider's name", st.Decider)
 	}
-	// What the provider is shown: the cluster, and the structural facts it
-	// cannot infer.
 	if len(stub.gotFirst) != 1 || len(stub.gotFirst[0].Candidates) != 2 {
-		t.Fatalf("provider saw %+v", stub.gotFirst)
+		t.Fatalf("the provider was shown %+v, want one cluster of two", stub.gotFirst)
 	}
-	if stub.gotFirst[0].Proposal != agentplugin.ProposalContainment {
-		t.Errorf("proposal = %q, want containment", stub.gotFirst[0].Proposal)
-	}
-	if stub.gotFirst[0].Candidates[0].AreaScope == "" {
-		t.Error("a candidate must carry its area's ownership statement")
-	}
-	// The figures have their own field, so the body must not repeat them:
-	// sending them twice is prompt budget spent saying one thing. The
-	// containment test still runs over both.
-	withFigures := insight("f", "stock", "headline", "prose only", 1)
-	withFigures.Indicators = []string{"111,222 units"}
-	if got := insightProse(&withFigures); strings.Contains(got, "111,222") {
-		t.Errorf("prose = %q, want the authored body alone", got)
-	}
-	if got := insightBody(&withFigures); !strings.Contains(got, "111,222") {
-		t.Errorf("body = %q, want the figures included for the containment test", got)
+	if stub.gotFirst[0].Proposal != agentplugin.ProposalCosine {
+		t.Errorf("proposal = %q, want cosine", stub.gotFirst[0].Proposal)
 	}
 }
 
@@ -481,69 +465,6 @@ func TestConsolidateArea_ProviderFailureFallsBack(t *testing.T) {
 	}
 }
 
-// The detail a folded member added survives on the survivor — a fold decides
-// which caveats live, so it is not quality-neutral.
-func TestConsolidateArea_MergedDescriptionLandsOnACurrentCanonical(t *testing.T) {
-	a := insight("a", "stock", "participants spend more", "they spend 2.4x more", 100)
-	b := insight("b", "stock", "participants spend much more", "they spend 2.4x more; causality cannot be separated", 90)
-
-	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		return []agentplugin.ConsolidationVerdict{{
-			CanonicalID:       "a",
-			Duplicates:        map[string]float64{"b": 0.99},
-			MergedDescription: "They spend 2.4x more. **Causality cannot be separated.**",
-		}}, nil
-	}})
-
-	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 0, embText(b): 1,
-	}}}
-	current := []models.Insight{a, b}
-	if st := o.consolidateArea(context.Background(), areaInput("stock", current, nil)); st.Folded != 1 {
-		t.Fatalf("stats = %+v", st)
-	}
-	if !strings.Contains(current[0].Description, "Causality cannot be separated") {
-		t.Errorf("canonical description = %q; the folded member's caveat was discarded", current[0].Description)
-	}
-	if current[0].DescriptionMd == "" {
-		t.Error("the markdown rendition must be set too, or the dashboard renders the pre-merge text")
-	}
-}
-
-// An earlier area's text is already recorded in that area's checkpoint and
-// cannot be rewritten here. A verdict that asks for one is saying the survivor
-// is missing something the folded members carry — so applying the fold without
-// the rewrite would be exactly how a fold loses a caveat. The folds are given
-// back and both findings stand.
-func TestConsolidateArea_RefusesAFoldWhoseSurvivorCannotBeRewritten(t *testing.T) {
-	earlier := insight("e1", "replenishment", "overdue orders are rising", "the rate climbed", 500)
-	cur := insight("c1", "stock", "overdue orders keep rising", "the rate climbed further; seasonality not separated", 480)
-
-	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		return []agentplugin.ConsolidationVerdict{{
-			CanonicalID:       "e1",
-			Duplicates:        map[string]float64{"c1": 0.99},
-			MergedDescription: "the rate climbed; seasonality not separated",
-		}}, nil
-	}})
-	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(earlier): 0, embText(cur): 1,
-	}}}
-	current := []models.Insight{cur}
-	runInsights := []models.Insight{earlier}
-	st := o.consolidateArea(context.Background(), areaInput("stock", current, runInsights))
-
-	if st.Folded != 0 || st.RefusedUnmergeable != 1 {
-		t.Fatalf("stats = %+v, want the cluster given back", st)
-	}
-	if current[0].DuplicateOf != "" {
-		t.Errorf("c1 was folded anyway, losing its caveat: duplicate_of=%q", current[0].DuplicateOf)
-	}
-	if runInsights[0].Description == "the rate climbed; seasonality not separated" {
-		t.Error("an earlier area's description was rewritten")
-	}
-}
-
 // A fold into an earlier area WITHOUT a rewrite is still applied: nothing is
 // being lost, and that is the common and useful case.
 func TestConsolidateArea_FoldsIntoAnEarlierAreaWhenNoRewriteIsNeeded(t *testing.T) {
@@ -564,38 +485,6 @@ func TestConsolidateArea_FoldsIntoAnEarlierAreaWhenNoRewriteIsNeeded(t *testing.
 	}
 	if current[0].DuplicateOf != "e1" {
 		t.Errorf("duplicate_of = %q, want e1", current[0].DuplicateOf)
-	}
-}
-
-// Two overlapping stars can legitimately fold different members into the same
-// survivor, and each merged description REPLACES its text — so applying the
-// second erases the detail the first preserved while both folds stand. The
-// first rewrite wins; the second is dropped, because it was written against
-// text this pass has already changed.
-func TestConsolidateArea_SecondRewriteOfOneSurvivorIsDropped(t *testing.T) {
-	a := insight("a", "stock", "claim a", "body a", 400)
-	b := insight("b", "stock", "claim b", "body b", 300)
-	c := insight("c", "stock", "claim c", "body c", 200)
-
-	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		out := make([]agentplugin.ConsolidationVerdict, len(cl))
-		for i := range cl {
-			out[i] = agentplugin.ConsolidationVerdict{
-				CanonicalID: "a", Duplicates: map[string]float64{"b": 0.99, "c": 0.99},
-				MergedDescription: fmt.Sprintf("rewrite number %d, carrying b's figure", i+1),
-			}
-		}
-		return out, nil
-	}})
-	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 0, embText(b): 1, embText(c): 2,
-	}}}
-	current := []models.Insight{a, b, c}
-	if st := o.consolidateArea(context.Background(), areaInput("stock", current, nil)); st.Folded != 2 {
-		t.Fatalf("stats = %+v, want both folds", st)
-	}
-	if !strings.Contains(current[0].Description, "rewrite number 1") {
-		t.Errorf("a.description = %q, want the first rewrite kept", current[0].Description)
 	}
 }
 
@@ -663,28 +552,31 @@ func TestConsolidateArea_TheCommunityRuleRecordsNoKeeps(t *testing.T) {
 	}
 }
 
-// With no embedding provider the pass still runs: containment needs no model
-// at all, and it is the test that finds the duplicate shape similarity cannot
-// see. The same holds when the provider errors.
-func TestConsolidateArea_RunsWithoutEmbeddings(t *testing.T) {
-	table := "| north | 111,222 | 33.3 |"
-	a := insight("a", "stock", "idle units across every segment", table, 100)
-	b := insight("b", "stock", "the north segment holds 111,222 idle units, 33.3 of it", "slice", 90)
+// Without vectors the pass proposes nothing, and that is a deliberate
+// consequence of handing the judgement to the model: similarity is how a pair
+// reaches it, and there is no longer a text scan that works without one.
+//
+// It degrades to a no-op rather than to a guess, which is the safe direction —
+// nothing is folded, so nothing is hidden. An embedding outage costs the run
+// its consolidation, not its findings.
+func TestConsolidateArea_WithoutEmbeddingsProposesNothing(t *testing.T) {
+	a := insight("a", "stock", "idle units across every segment", "the whole total", 100)
+	b := insight("b", "stock", "the north segment holds its share", "slice", 90)
 	verdict := func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		return []agentplugin.ConsolidationVerdict{{
-			CanonicalID: "a", Duplicates: map[string]float64{"b": 0},
-		}}, nil
+		t.Error("the provider must not be called when nothing was proposed")
+		return nil, nil
 	}
 
-	t.Run("no provider at all", func(t *testing.T) {
+	t.Run("no embedding provider at all", func(t *testing.T) {
 		withProvider(t, &stubProvider{fn: verdict})
 		o := &Orchestrator{projectID: "p"}
 		current := []models.Insight{a, b}
-		if st := o.consolidateArea(context.Background(), areaInput("stock", current, nil)); st.Folded != 1 {
-			t.Fatalf("stats = %+v, want the containment fold without any embeddings", st)
+		st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+		if st.Clusters != 0 || st.Folded != 0 {
+			t.Fatalf("stats = %+v, want nothing proposed and nothing folded", st)
 		}
-		if current[1].SimilarityScore != 0 {
-			t.Errorf("score = %v, want 0 when there is no vector to measure", current[1].SimilarityScore)
+		if current[1].DuplicateOf != "" {
+			t.Errorf("b.duplicate_of = %q, want empty", current[1].DuplicateOf)
 		}
 	})
 
@@ -693,8 +585,9 @@ func TestConsolidateArea_RunsWithoutEmbeddings(t *testing.T) {
 		emb := &failingEmbedder{}
 		o := &Orchestrator{projectID: "p", embeddingProvider: emb}
 		current := []models.Insight{a, b}
-		if st := o.consolidateArea(context.Background(), areaInput("stock", current, nil)); st.Folded != 1 {
-			t.Fatalf("stats = %+v, want the containment fold despite the embedding failure", st)
+		st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+		if st.Clusters != 0 || st.Folded != 0 {
+			t.Fatalf("stats = %+v, want nothing proposed and nothing folded", st)
 		}
 		if emb.calls == 0 {
 			t.Error("the pass never tried to embed")
@@ -906,10 +799,17 @@ func TestDenormalizeInsights_CarriesTheConsolidationMarks(t *testing.T) {
 		Insights: []models.Insight{
 			{ID: "a", Name: "canonical"},
 			{ID: "b", Name: "restatement", DuplicateOf: "a", SimilarityScore: 0.93},
+			{ID: "c", Name: "kept by an adjudicator", StandsOnAdjudication: true},
 		},
 	})
-	if len(out) != 2 {
+	if len(out) != 3 {
 		t.Fatalf("out = %d", len(out))
+	}
+	// The refusal the mid-run pass recorded on the finding has to reach the
+	// standalone copy too: the end-of-run check reads it from there, and
+	// without it that check folds a finding an adjudicator said must stand.
+	if !out[2].StandsOnAdjudication {
+		t.Error("the standalone copy lost the adjudicator's refusal")
 	}
 	if out[1].DuplicateOf != "a" || out[1].SimilarityScore != 0.93 {
 		t.Errorf("standalone copy = {%q, %v}, want {a, 0.93}", out[1].DuplicateOf, out[1].SimilarityScore)
@@ -1009,100 +909,6 @@ func TestAreaScopeText(t *testing.T) {
 
 	if got := areaScopeText(area, "no boundary block here"); got != "stock health across the chain" {
 		t.Errorf("scope with no block = %q", got)
-	}
-}
-
-// A merged description must not land on a canonical that nothing was folded
-// into. Gating it on the run-wide fold counter applied one cluster's rewrite
-// to the next cluster's canonical as soon as any earlier cluster had folded
-// something.
-func TestConsolidateArea_MergedDescriptionNeedsAFoldInItsOwnCluster(t *testing.T) {
-	a := insight("a", "stock", "claim a", "body a", 400)
-	b := insight("b", "stock", "claim b restated", "body a again", 300)
-	c := insight("c", "stock", "claim c", "body c", 200)
-	d := insight("d", "stock", "claim d", "body d", 100)
-
-	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		out := make([]agentplugin.ConsolidationVerdict, len(cl))
-		for i, cluster := range cl {
-			ids := make([]string, 0, 2)
-			for _, cand := range cluster.Candidates {
-				ids = append(ids, cand.ID)
-			}
-			switch {
-			case slices.Contains(ids, "a") && slices.Contains(ids, "b"):
-				out[i] = agentplugin.ConsolidationVerdict{
-					CanonicalID: "a", Duplicates: map[string]float64{"b": 0.99},
-					MergedDescription: "a, with b's detail",
-				}
-			case slices.Contains(ids, "c") && slices.Contains(ids, "d"):
-				// Nothing folded, but a rewrite offered anyway.
-				out[i] = agentplugin.ConsolidationVerdict{
-					CanonicalID: "c", MergedDescription: "c, rewritten for no reason",
-				}
-			}
-		}
-		return out, nil
-	}})
-
-	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 0, embText(b): 1, embText(c): 60, embText(d): 61,
-	}}}
-	current := []models.Insight{a, b, c, d}
-	if st := o.consolidateArea(context.Background(), areaInput("stock", current, nil)); st.Folded != 1 {
-		t.Fatalf("stats = %+v, want exactly one fold", st)
-	}
-	if !strings.Contains(current[0].Description, "b's detail") {
-		t.Errorf("a.description = %q; the cluster that DID fold must get its merge", current[0].Description)
-	}
-	if strings.Contains(current[2].Description, "rewritten") {
-		t.Errorf("c.description = %q; nothing was folded into c, so its text must be untouched", current[2].Description)
-	}
-}
-
-// Which test proposed a cluster is read from the relations INSIDE it.
-//
-// Two overlapping maximal stars are what tells the two readings apart. Here
-// a-b and b-c are containment and only c-d is a similarity pair, so the
-// {a,b,c} cluster was proposed by containment ALONE — but c also sits in
-// {b,c,d}, and reading every relation that touches a member reported {a,b,c}
-// as "both". That field is the one thing that says whether the similarity
-// threshold could have seen this duplicate at all, so a containment-only
-// cluster reported as "both" is the measurement reading as its own opposite.
-func TestBuildClusters_ProposalComesFromTheClustersOwnRelations(t *testing.T) {
-	// Angles: only c and d are inside the 0.88 floor of each other.
-	docs := []consolidationDoc{
-		doc(0, "a", 0, true, "111,222 and 333,444", ""),
-		doc(1, "b", 30, true, "555,666 and 777,888", "ref 111,222 and 333,444"),
-		doc(2, "c", 60, true, "claim c", "ref 555,666 and 777,888"),
-		doc(3, "d", 61, true, "claim d", ""),
-	}
-	rel := proposePairs(docs, 0.88)
-	if got := rel[newPairKey(0, 1)]; got != agentplugin.ProposalContainment {
-		t.Fatalf("a-b = %q, want containment (fixture broken)", got)
-	}
-	if got := rel[newPairKey(1, 2)]; got != agentplugin.ProposalContainment {
-		t.Fatalf("b-c = %q, want containment (fixture broken)", got)
-	}
-	if got := rel[newPairKey(2, 3)]; got != agentplugin.ProposalCosine {
-		t.Fatalf("c-d = %q, want cosine (fixture broken)", got)
-	}
-	if len(rel) != 3 {
-		t.Fatalf("relations = %v, want exactly the three (fixture broken)", rel)
-	}
-
-	byMembers := map[string]agentplugin.Proposal{}
-	for _, cl := range buildClusters(docs, rel) {
-		byMembers[fmt.Sprint(cl.members)] = cl.proposal
-	}
-	if len(byMembers) != 2 {
-		t.Fatalf("clusters = %v, want the two overlapping stars", byMembers)
-	}
-	if got := byMembers["[0 1 2]"]; got != agentplugin.ProposalContainment {
-		t.Errorf("{a,b,c} proposal = %q, want containment — c's similarity pair with d is not in this cluster", got)
-	}
-	if got := byMembers["[1 2 3]"]; got != agentplugin.ProposalBoth {
-		t.Errorf("{b,c,d} proposal = %q, want both", got)
 	}
 }
 
@@ -1467,183 +1273,6 @@ func TestMarkDuplicates_DoesNotFoldADocumentThatIsAlreadyACanonical(t *testing.T
 	}
 }
 
-// A cluster whose folds are given back because the survivor cannot be
-// rewritten must leave no trace in the chain map. Left in, a later cluster
-// resolving its canonical through that map points a real fold at the wrong
-// document, and the pair the branch just refused is read as folded — so no
-// keep is recorded and the end-of-run check folds it anyway.
-func TestConsolidateArea_AGivenBackFoldLeavesNoTrace(t *testing.T) {
-	earlier := insight("e1", "repl", "overdue orders are rising", "the rate climbed", 500)
-	c1 := insight("c1", "stock", "overdue orders keep rising", "the rate climbed; seasonality not separated", 480)
-	c2 := insight("c2", "stock", "overdue orders still rising", "the rate climbed again", 470)
-
-	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		out := make([]agentplugin.ConsolidationVerdict, len(cl))
-		for i, cluster := range cl {
-			ids := make([]string, 0, 3)
-			for _, cand := range cluster.Candidates {
-				ids = append(ids, cand.ID)
-			}
-			if slices.Contains(ids, "e1") {
-				// Needs a rewrite of an earlier area's text: refused.
-				out[i] = agentplugin.ConsolidationVerdict{
-					CanonicalID: "e1", Duplicates: map[string]float64{"c1": 0.99},
-					MergedDescription: "the rate climbed; seasonality not separated",
-				}
-			}
-		}
-		return out, nil
-	}})
-
-	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(earlier): 0, embText(c1): 1, embText(c2): 2,
-	}}}
-	current := []models.Insight{c1, c2}
-	st := o.consolidateArea(context.Background(), areaInput("stock", current, []models.Insight{earlier}))
-
-	if st.Folded != 0 || st.RefusedUnmergeable != 1 {
-		t.Fatalf("stats = %+v, want the cluster given back", st)
-	}
-	for i := range current {
-		if current[i].DuplicateOf != "" {
-			t.Errorf("%s = %q, want visible", current[i].ID, current[i].DuplicateOf)
-		}
-	}
-	// The refused pair is recorded, so the end-of-run check does not fold it
-	// without the rewrite this branch declined to make.
-	if !o.adjudicatedKeep("c1", "e1") {
-		t.Error("the refused pair was not recorded; Phase 9 will fold it on document order")
-	}
-}
-
-// A fold given back must give back the bucket it was counted in, or Folded
-// reads 0 beside a non-zero by_containment and the one number the log line
-// exists to make legible does not add up.
-func TestConsolidateArea_AGivenBackFoldGivesBackItsBucket(t *testing.T) {
-	earlier := insight("e1", "repl", "overdue orders are rising", "the rate climbed", 500)
-	cur := insight("c1", "stock", "overdue orders keep rising", "the rate climbed; seasonality not separated", 480)
-
-	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		return []agentplugin.ConsolidationVerdict{{
-			CanonicalID: "e1", Duplicates: map[string]float64{"c1": 0.99},
-			MergedDescription: "needs a rewrite of an earlier area's text",
-		}}, nil
-	}})
-	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(earlier): 0, embText(cur): 1,
-	}}}
-	st := o.consolidateArea(context.Background(), areaInput("stock", []models.Insight{cur}, []models.Insight{earlier}))
-
-	if st.Folded != 0 {
-		t.Fatalf("stats = %+v, want no folds", st)
-	}
-	if st.ByCosine+st.ByContainment+st.ByBoth != st.Folded {
-		t.Errorf("stats = %+v; the per-test buckets must sum to Folded", st)
-	}
-}
-
-// A second rewrite of the same survivor means the second cluster's folds go
-// back too, not just its rewrite. Keeping the folds would suppress the second
-// cluster's members without the detail the rewrite was asked for — the caveat
-// loss this pass exists to stop making, arriving through the back door.
-//
-// Two overlapping maximal stars sharing one survivor is the shape: a chain of
-// four documents 25° apart gives {a,b,c} and {b,c,d}, and c is a legitimate
-// canonical in both.
-func TestConsolidateArea_ASecondRewriteGivesBackItsClustersFolds(t *testing.T) {
-	a := insight("a", "stock", "claim a", "body a", 400)
-	b := insight("b", "stock", "claim b", "body b carries a figure", 300)
-	c := insight("c", "stock", "claim c", "body c", 200)
-	d := insight("d", "stock", "claim d", "body d carries the caveat", 100)
-
-	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		out := make([]agentplugin.ConsolidationVerdict, len(cl))
-		for i, cluster := range cl {
-			ids := make([]string, 0, 3)
-			for _, cand := range cluster.Candidates {
-				ids = append(ids, cand.ID)
-			}
-			switch {
-			case slices.Contains(ids, "a"):
-				out[i] = agentplugin.ConsolidationVerdict{
-					CanonicalID: "c", Duplicates: map[string]float64{"b": 0.906},
-					MergedDescription: "c, carrying b's figure",
-				}
-			case slices.Contains(ids, "d"):
-				out[i] = agentplugin.ConsolidationVerdict{
-					CanonicalID: "c", Duplicates: map[string]float64{"d": 0.906},
-					MergedDescription: "c, carrying d's caveat",
-				}
-			}
-		}
-		return out, nil
-	}})
-
-	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 0, embText(b): 25, embText(c): 50, embText(d): 75,
-	}}}
-	current := []models.Insight{a, b, c, d}
-	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
-
-	if st.Clusters != 2 {
-		t.Fatalf("clusters = %d (%+v), want the two overlapping stars", st.Clusters, st)
-	}
-	byID := map[string]models.Insight{}
-	for _, ins := range current {
-		byID[ins.ID] = ins
-	}
-	if byID["b"].DuplicateOf != "c" {
-		t.Errorf("b.duplicate_of = %q, want c — the first cluster's fold and rewrite stand", byID["b"].DuplicateOf)
-	}
-	if byID["d"].DuplicateOf != "" {
-		t.Errorf("d.duplicate_of = %q; its rewrite could not be applied, so its fold must have been given back", byID["d"].DuplicateOf)
-	}
-	if st.RefusedUnmergeable != 1 {
-		t.Errorf("stats = %+v, want one cluster given back", st)
-	}
-	if st.Folded != 1 || st.ByCosine != 1 {
-		t.Errorf("stats = %+v, want exactly the one fold that kept its rewrite", st)
-	}
-	// d's caveat is not hidden behind text that does not mention it.
-	if !strings.Contains(byID["c"].Description, "b's figure") {
-		t.Errorf("c.description = %q, want the first rewrite", byID["c"].Description)
-	}
-}
-
-// A merge carries the folded members' evidence with it. The verifier builds
-// its bundle from the survivor's SourceSteps, so a merged claim whose step the
-// survivor does not cite would be checked against evidence that does not
-// contain it — and attachSourceQuality would miss the caveat that step
-// carries.
-func TestConsolidateArea_AMergeCarriesTheEvidenceWithIt(t *testing.T) {
-	a := insight("a", "stock", "claim a", "body a", 300)
-	a.SourceSteps = []int{1, 3}
-	b := insight("b", "stock", "claim b", "body b", 200)
-	b.SourceSteps = []int{7, 3}
-
-	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		return []agentplugin.ConsolidationVerdict{{
-			CanonicalID: "a", Duplicates: map[string]float64{"b": 0.99},
-			MergedDescription: "a, carrying b's figure from step 7",
-		}}, nil
-	}})
-	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 0, embText(b): 1,
-	}}}
-	current := []models.Insight{a, b}
-	if st := o.consolidateArea(context.Background(), areaInput("stock", current, nil)); st.Folded != 1 {
-		t.Fatalf("stats = %+v", st)
-	}
-	if got := fmt.Sprint(current[0].SourceSteps); got != "[1 3 7]" {
-		t.Errorf("canonical source steps = %s, want [1 3 7]: deduplicated, ordered, and carrying step 7", got)
-	}
-	// A fold with NO rewrite states nothing new, so it must not widen the
-	// survivor's provenance.
-	if got := fmt.Sprint(mergeSourceSteps([]int{1}, current, nil)); got != "[1]" {
-		t.Errorf("mergeSourceSteps with nothing folded = %s, want [1]", got)
-	}
-}
-
 // A mark into a restored area is STORED by the id the run's checkpoints hold,
 // not the one this attempt minted — otherwise a third attempt, which can only
 // translate the original id, resolves it against nothing and clears a fold
@@ -1740,80 +1369,26 @@ func TestConsolidationMaxClusters_ZeroMeansUnbounded(t *testing.T) {
 	}
 }
 
-// Containment is a PROPOSAL the adjudicator rules on, never a community rule.
-// Letting the community fallback satisfy its re-check by containment folds
-// pairs the community rule would never have folded — a finding losing its
-// verdict and its place in Phase 5 on a rule the deployment never opted into.
-func TestReverifyFold_ContainmentIsOnlyForAnAdjudicatedCluster(t *testing.T) {
-	table := "| north | 111,222 | 33.3 |"
-	dup := doc(1, "b", 70, true, "the north segment holds 111,222 units, 33.3 of it", "")
-	canonical := doc(0, "a", 0, true, "the whole total", table)
+// A pair between the two floors is a pair the MODEL was asked about. Letting
+// the community fallback satisfy its re-check at that floor folds pairs the
+// community rule would never have proposed — a finding losing its verdict and
+// its place in Phase 5 on a rule the deployment never opted into.
+func TestReverifyFold_ASubFoldFloorPairHoldsOnlyWhenAdjudicated(t *testing.T) {
+	// 32 degrees apart is a cosine of about 0.848: above the adjudication
+	// floor, below the fold floor.
+	canonical := doc(0, "a", 0, true, "the whole total", "")
+	dup := doc(1, "b", 32, true, "the north segment", "")
 
-	if _, held := reverifyFold(dup, canonical, 0.88, true); !held {
-		t.Error("an adjudicated fold must be allowed to hold on containment")
+	if _, held := reverifyFold(dup, canonical, 0.88, 0.80, true); !held {
+		t.Error("an adjudicated fold must hold at the floor it was proposed at")
 	}
-	if _, held := reverifyFold(dup, canonical, 0.88, false); held {
-		t.Error("the community rule must not fold on containment; it is a proposal, not a rule")
+	if _, held := reverifyFold(dup, canonical, 0.88, 0.80, false); held {
+		t.Error("the community rule must not fold below the fold floor")
 	}
-	// A cosine pair holds either way.
+	// A pair above the fold floor holds either way.
 	near := doc(2, "c", 1, true, "claim c", "")
-	if _, held := reverifyFold(near, canonical, 0.88, false); !held {
+	if _, held := reverifyFold(near, canonical, 0.88, 0.80, false); !held {
 		t.Error("the community rule must still fold a similarity pair")
-	}
-}
-
-// A survivor whose prose carries rendered evidence figures cannot be
-// rewritten: the figure template holds the text as authored with the
-// references intact, and free-text replacement severs that link — so a
-// repaired insight's figures are all withheld from the recommender, and on an
-// unrepaired one a recommendation could restate a number the prose no longer
-// shows.
-func TestConsolidateArea_RefusesARewriteOfAFigureBearingSurvivor(t *testing.T) {
-	a := insight("a", "stock", "claim a", "the rate is {{f1}}", 300)
-	a.Figures = []models.Figure{{ID: "f1", Value: 142, Unit: "units"}}
-	b := insight("b", "stock", "claim b", "the rate again; and a caveat", 200)
-
-	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		return []agentplugin.ConsolidationVerdict{{
-			CanonicalID: "a", Duplicates: map[string]float64{"b": 0.99},
-			MergedDescription: "the rate is 142 units; and a caveat",
-		}}, nil
-	}})
-	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 0, embText(b): 1,
-	}}}
-	current := []models.Insight{a, b}
-	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
-
-	if st.Folded != 0 || st.RefusedUnmergeable != 1 {
-		t.Fatalf("stats = %+v, want the cluster given back", st)
-	}
-	if current[0].Description != "the rate is {{f1}}" {
-		t.Errorf("a.description = %q; the figure references were overwritten", current[0].Description)
-	}
-	if current[1].DuplicateOf != "" {
-		t.Errorf("b was folded anyway, losing the caveat: %q", current[1].DuplicateOf)
-	}
-
-	// A survivor with NO declared figures is still rewritten: nothing links
-	// its prose to a number another document may restate.
-	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		return []agentplugin.ConsolidationVerdict{{
-			CanonicalID: "x", Duplicates: map[string]float64{"y": 0.99},
-			MergedDescription: "x, with y's caveat",
-		}}, nil
-	}})
-	x := insight("x", "stock", "claim x", "body x", 300)
-	y := insight("y", "stock", "claim y", "body x again; and a caveat", 200)
-	o2 := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(x): 0, embText(y): 1,
-	}}}
-	plain := []models.Insight{x, y}
-	if st := o2.consolidateArea(context.Background(), areaInput("stock", plain, nil)); st.Folded != 1 {
-		t.Fatalf("stats = %+v, want the fold and the rewrite applied", st)
-	}
-	if !strings.Contains(plain[0].Description, "y's caveat") {
-		t.Errorf("x.description = %q, want the rewrite", plain[0].Description)
 	}
 }
 
@@ -1863,20 +1438,15 @@ func TestConsolidateArea_AFallbackDoesNotOverrideAProviderKeep(t *testing.T) {
 	}
 }
 
-// The keeps are registered BEFORE any mark is written, and that ordering is
-// the fix. The clusters are overlapping stars processed in order, so a cluster
-// the provider DECLINED can be processed first and its community fallback
-// folds a pair a provider verdict for a later, overlapping cluster explicitly
-// keeps — and discovering the keep afterwards is useless, because the mark is
-// already written and the end-of-run check will not revisit a marked document.
+// {a,b,c} then {b,c,d}, as two overlapping stars: each document is inside the
+// floor of its neighbours and outside its neighbours-but-one. The first cluster
+// gets no verdict, so the community fallback decides it — and the pair it would
+// fold, b and c, is exactly the pair the provider's verdict for the SECOND
+// cluster keeps apart. The first cluster is processed first, so the keep has to
+// be known before it.
 func TestConsolidateArea_AProviderKeepBeatsAnEarlierFallbackFold(t *testing.T) {
-	// {a,b,c} then {b,c,d}, with a attached to b by CONTAINMENT only — so the
-	// fallback for the first cluster would fold c into b, which is exactly the
-	// pair the provider's verdict for the second cluster keeps apart. The
-	// first cluster is processed first, so the keep has to be known before it.
-	table := "| north | 111,222 | 33.3 |"
-	a := insight("a", "stock", "the whole total", table, 400)
-	b := insight("b", "stock", "the north segment holds 111,222 units, 33.3 of it", "body b", 300)
+	a := insight("a", "stock", "the whole total", "body a", 400)
+	b := insight("b", "stock", "the north segment", "body b", 300)
 	c := insight("c", "stock", "claim c", "body c", 200)
 	d := insight("d", "stock", "claim d", "body d", 100)
 
@@ -1894,8 +1464,10 @@ func TestConsolidateArea_AProviderKeepBeatsAnEarlierFallbackFold(t *testing.T) {
 		return out, nil
 	}})
 
+	// 27 degrees between neighbours is about 0.891 — above the fold floor, so
+	// the fallback could act on it. 54 degrees is 0.588, outside both floors.
 	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 150, embText(b): 0, embText(c): 25, embText(d): 50,
+		embText(a): 0, embText(b): 27, embText(c): 54, embText(d): 81,
 	}}}
 	current := []models.Insight{a, b, c, d}
 	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
@@ -1916,7 +1488,6 @@ func TestConsolidateArea_AProviderKeepBeatsAnEarlierFallbackFold(t *testing.T) {
 	if byID["b"].DuplicateOf == "c" {
 		t.Errorf("b.duplicate_of = %q; the provider kept b and c apart", byID["b"].DuplicateOf)
 	}
-	_ = st
 }
 
 // Two overlapping verdicts can disagree about one pair — folded in one, simply
@@ -1962,42 +1533,6 @@ func TestConsolidateArea_AnExplicitFoldBeatsAnOmission(t *testing.T) {
 	}
 	if st.Folded != 1 {
 		t.Errorf("stats = %+v, want the one explicit fold", st)
-	}
-}
-
-// A rewrite may incorporate detail from a member this pass refused to fold, so
-// applying it would credit the survivor with a claim whose evidence it does
-// not cite — and the provenance union cannot carry what was never folded. The
-// whole cluster goes back rather than half of it.
-func TestConsolidateArea_ARefusedDonorGivesBackTheWholeCluster(t *testing.T) {
-	earlier := insight("e1", "repl", "the broad claim", "body e1", 500)
-	c1 := insight("c1", "stock", "the broad claim restated", "body e1 again", 400)
-	c2 := insight("c2", "stock", "a narrower slice", "body c2", 300)
-
-	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		// e1 cannot be suppressed (earlier area); c2 can. The rewrite claims
-		// to carry both donors' detail.
-		return []agentplugin.ConsolidationVerdict{{
-			CanonicalID:       "c1",
-			Duplicates:        map[string]float64{"e1": 0.95, "c2": 0.95},
-			MergedDescription: "c1, carrying e1's and c2's detail",
-		}}, nil
-	}})
-
-	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(earlier): 0, embText(c1): 1, embText(c2): 2,
-	}}}
-	current := []models.Insight{c1, c2}
-	st := o.consolidateArea(context.Background(), areaInput("stock", current, []models.Insight{earlier}))
-
-	if st.Folded != 0 || st.RefusedUnmergeable != 1 {
-		t.Fatalf("stats = %+v, want the whole cluster given back", st)
-	}
-	if current[1].DuplicateOf != "" {
-		t.Errorf("c2.duplicate_of = %q; it was suppressed behind a rewrite that credits a donor nobody folded", current[1].DuplicateOf)
-	}
-	if strings.Contains(current[0].Description, "carrying") {
-		t.Errorf("c1.description = %q, want the rewrite refused", current[0].Description)
 	}
 }
 
@@ -2167,38 +1702,6 @@ func TestValidateInsights_ASingleDocumentRequestIgnoresTheDuplicateSkip(t *testi
 	}
 }
 
-// A rewrite naming a donor this pass did not fold — because a previous area
-// had already folded it — credits the survivor with detail whose evidence the
-// provenance union cannot carry.
-func TestConsolidateArea_AnAlreadyFoldedDonorRefusesTheRewrite(t *testing.T) {
-	e0 := insight("e0", "repl", "the canonical statement", "body e0", 600)
-	e1 := insight("e1", "repl", "a restatement of it", "body e1", 500)
-	e1.DuplicateOf = "e0" // folded by its own area's pass
-	c1 := insight("c1", "stock", "another restatement", "body c1", 400)
-
-	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		// Folds e1 (already folded) and c1 into the current-area canonical,
-		// with a rewrite claiming both donors' detail.
-		return []agentplugin.ConsolidationVerdict{{
-			CanonicalID:       "c1",
-			Duplicates:        map[string]float64{"e1": 0.99},
-			MergedDescription: "c1, carrying e1's detail",
-		}}, nil
-	}})
-	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(e0): 0, embText(e1): 1, embText(c1): 2,
-	}}}
-	current := []models.Insight{c1}
-	st := o.consolidateArea(context.Background(), areaInput("stock", current, []models.Insight{e0, e1}))
-
-	if strings.Contains(current[0].Description, "carrying") {
-		t.Errorf("c1.description = %q; the rewrite credits a donor nobody folded", current[0].Description)
-	}
-	if st.Folded != 0 {
-		t.Errorf("stats = %+v, want no fold", st)
-	}
-}
-
 // The community chain is built only from folds this pass could actually WRITE.
 // Simulating a fold a keep forbids made a later document's chain re-check
 // resolve against a canonical the reader is NOT being sent to — so a document
@@ -2257,36 +1760,39 @@ func TestCommunityFolds_IgnoresDocumentsItCannotMark(t *testing.T) {
 	}
 }
 
-// When EVERY proposed fold is refused there is nothing to revert — and the
-// members the verdict named still carry detail the survivor lacks, so they
-// still have to be protected from being folded sideways into each other by
-// the community pass.
+// Both of a verdict's folds refused by the re-check, and the donors still
+// protected from each other afterwards.
+//
+// The shape that reaches it: one star seeded on b, which is inside the
+// adjudication floor of a, c and d while a is outside it of both c and d. The
+// verdict names a as the survivor and folds c and d into it, so each fold is
+// re-checked against a pair that was never proposed and both are refused. c and
+// d are a similarity pair above the FOLD floor, so without the keep the
+// fallback would then fold one into the other — which is the thing being
+// protected against, with nothing folded to revert.
 func TestConsolidateArea_RefusedMergeDonorsAreProtectedWithNothingToRevert(t *testing.T) {
-	// a is the survivor the verdict names. It joins the star because ITS
-	// headline figures appear in b's and c's bodies — containment the other
-	// way round — so neither b nor c is contained in a, and with a 90° gap
-	// neither fold survives the re-check either.
-	a := insight("a", "stock", "the totals are 111,222 and 444,555", "body a", 400)
-	b := insight("b", "stock", "claim b", "ref 111,222 and 444,555", 300)
-	c := insight("c", "stock", "claim c carries the caveat", "ref 111,222 and 444,555 again", 200)
+	a := insight("a", "stock", "the totals across every segment", "body a", 400)
+	b := insight("b", "stock", "the middling claim", "body b", 300)
+	c := insight("c", "stock", "claim c carries the caveat", "body c", 200)
+	d := insight("d", "stock", "claim d carries the caveat", "body d", 100)
 
 	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
 		return []agentplugin.ConsolidationVerdict{{
-			CanonicalID:       "a",
-			Duplicates:        map[string]float64{"b": 0.9, "c": 0.9},
-			MergedDescription: "a, carrying b's and c's detail",
+			CanonicalID: "a",
+			Duplicates:  map[string]float64{"c": 0.9, "d": 0.9},
 		}}, nil
 	}})
 
-	// b and c are a similarity pair; neither is near a.
+	// 33-34 degrees is 0.829-0.839: proposed, not foldable. 66-67 degrees is
+	// 0.39-0.41: outside both floors. c and d are 1 degree apart.
 	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 0, embText(b): 90, embText(c): 91,
+		embText(a): 0, embText(b): 33, embText(c): 66, embText(d): 67,
 	}}}
-	current := []models.Insight{a, b, c}
+	current := []models.Insight{a, b, c, d}
 	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
 
 	if st.Clusters != 1 {
-		t.Fatalf("clusters = %d (%+v), want one star of three (fixture broken)", st.Clusters, st)
+		t.Fatalf("clusters = %d (%+v), want one star of four (fixture broken)", st.Clusters, st)
 	}
 	if st.RefusedRecheck != 2 {
 		t.Fatalf("stats = %+v, want both proposed folds refused by the re-check (fixture broken)", st)
@@ -2294,14 +1800,11 @@ func TestConsolidateArea_RefusedMergeDonorsAreProtectedWithNothingToRevert(t *te
 	if st.Folded != 0 {
 		t.Fatalf("stats = %+v, want nothing folded", st)
 	}
-	if current[2].DuplicateOf != "" {
-		t.Errorf("c.duplicate_of = %q; it was folded sideways into b, losing the caveat the rewrite was for", current[2].DuplicateOf)
+	if current[3].DuplicateOf != "" {
+		t.Errorf("d.duplicate_of = %q; it was folded sideways into c, losing the caveat the rewrite was for", current[3].DuplicateOf)
 	}
-	if !o.adjudicatedKeep("b", "c") {
+	if !o.adjudicatedKeep("c", "d") {
 		t.Error("the refused donors were not protected against each other")
-	}
-	if strings.Contains(current[0].Description, "carrying") {
-		t.Errorf("a.description = %q; the rewrite was applied with nothing folded", current[0].Description)
 	}
 }
 
@@ -2360,166 +1863,6 @@ func TestConsolidateArea_TheCommunityPassSeesTheProvidersMarks(t *testing.T) {
 	}
 }
 
-// A rewrite is written against the text of the document the verdict NAMED. If
-// that document was itself folded, the mark resolves somewhere else — and
-// applying the rewrite to the resolved survivor overwrites ITS caveats with a
-// rewrite of someone else's prose. The named document need not even have been
-// in this cluster's payload.
-func TestConsolidateArea_RefusesARewriteRedirectedToAnotherCanonical(t *testing.T) {
-	a := insight("a", "stock", "claim a", "body a, with a caveat of its own", 400)
-	b := insight("b", "stock", "claim b", "body b", 300)
-	c := insight("c", "stock", "claim c", "body c", 200)
-
-	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		out := make([]agentplugin.ConsolidationVerdict, len(cl))
-		for i, cluster := range cl {
-			ids := make([]string, 0, 3)
-			for _, cand := range cluster.Candidates {
-				ids = append(ids, cand.ID)
-			}
-			switch {
-			case slices.Contains(ids, "a"):
-				// b folds into a, with NO rewrite — so mergedCanonicals does
-				// not know about a.
-				out[i] = agentplugin.ConsolidationVerdict{
-					CanonicalID: "a", Duplicates: map[string]float64{"b": 0.906},
-				}
-			case slices.Contains(ids, "d"):
-				// Names b, which is now folded into a, and offers a rewrite
-				// of b's text.
-				out[i] = agentplugin.ConsolidationVerdict{
-					CanonicalID: "b", Duplicates: map[string]float64{"d": 0.906},
-					MergedDescription: "b's text, rewritten",
-				}
-			}
-		}
-		return out, nil
-	}})
-
-	d := insight("d", "stock", "claim d", "body d", 100)
-	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 0, embText(b): 25, embText(c): 50, embText(d): 75,
-	}}}
-	current := []models.Insight{a, b, c, d}
-	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
-
-	if current[0].Description != "body a, with a caveat of its own" {
-		t.Errorf("a.description = %q; it was overwritten with a rewrite of b's prose", current[0].Description)
-	}
-	if st.RefusedUnmergeable == 0 {
-		t.Errorf("stats = %+v, want the redirected rewrite refused", st)
-	}
-}
-
-// A donor's figures were rendered into the DONOR's prose against {{fN}}
-// references the model never saw and cannot reproduce. Transferring the
-// declarations leaves figures with no placeholder in the survivor's text;
-// leaving them behind puts the number in the survivor's prose with nothing a
-// recommendation can reference it by, while the donor that owns it is
-// suppressed. The donor stays visible instead.
-func TestConsolidateArea_RefusesARewriteThatWouldOrphanADonorsFigures(t *testing.T) {
-	a := insight("a", "stock", "claim a", "body a", 300)
-	b := insight("b", "stock", "claim b", "the rate is {{f1}}", 200)
-	b.Figures = []models.Figure{{ID: "f1", Value: 142, Unit: "units"}}
-
-	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		return []agentplugin.ConsolidationVerdict{{
-			CanonicalID: "a", Duplicates: map[string]float64{"b": 0.99},
-			MergedDescription: "a, and the rate is 142 units",
-		}}, nil
-	}})
-	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 0, embText(b): 1,
-	}}}
-	current := []models.Insight{a, b}
-	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
-
-	if st.Folded != 0 || st.RefusedUnmergeable != 1 {
-		t.Fatalf("stats = %+v, want the cluster given back", st)
-	}
-	if current[1].DuplicateOf != "" {
-		t.Errorf("b was suppressed; its figure is now unreferenceable while its number is in a's prose")
-	}
-	if strings.Contains(current[0].Description, "142") {
-		t.Errorf("a.description = %q; the rewrite states a number no figure backs", current[0].Description)
-	}
-
-	// A fold with NO rewrite is unaffected: the survivor's text is untouched,
-	// so it states nothing needing a figure of its own.
-	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		return []agentplugin.ConsolidationVerdict{{
-			CanonicalID: "a", Duplicates: map[string]float64{"b": 0.99},
-		}}, nil
-	}})
-	plain := []models.Insight{a, b}
-	o2 := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 0, embText(b): 1,
-	}}}
-	if st := o2.consolidateArea(context.Background(), areaInput("stock", plain, nil)); st.Folded != 1 {
-		t.Errorf("stats = %+v; a fold with no rewrite must still apply", st)
-	}
-}
-
-// A rewritten survivor loses its cosine projection, and keeping it was not
-// conservative as an earlier comment claimed: a rewrite can REDUCE similarity
-// below the floor, and the community pass would go on folding against the
-// pre-merge vector — suppressing a finding that no longer restates this one.
-// Containment still works, over the new body; Phase 9 embeds the merged text
-// and decides on a real vector.
-func TestConsolidateArea_ARewrittenSurvivorLosesItsVector(t *testing.T) {
-	a := insight("a", "stock", "claim a", "body a", 400)
-	b := insight("b", "stock", "claim b", "body b", 300)
-	// c is similar to a as it stands, and is in an overlapping cluster.
-	c := insight("c", "stock", "claim c", "body c", 200)
-	d := insight("d", "stock", "claim d", "body d", 100)
-
-	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		out := make([]agentplugin.ConsolidationVerdict, len(cl))
-		for i, cluster := range cl {
-			ids := make([]string, 0, 3)
-			for _, cand := range cluster.Candidates {
-				ids = append(ids, cand.ID)
-			}
-			if slices.Contains(ids, "a") {
-				out[i] = agentplugin.ConsolidationVerdict{
-					CanonicalID: "b", Duplicates: map[string]float64{"a": 0.906},
-					MergedDescription: "b, carrying a's detail — and now about something else entirely",
-				}
-			}
-		}
-		return out, nil
-	}})
-
-	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 0, embText(b): 25, embText(c): 50, embText(d): 75,
-	}}}
-	current := []models.Insight{a, b, c, d}
-	if st := o.consolidateArea(context.Background(), areaInput("stock", current, nil)); st.Folded == 0 {
-		t.Fatalf("stats = %+v, want the provider's fold applied (fixture broken)", st)
-	}
-	if !strings.Contains(current[1].Description, "something else entirely") {
-		t.Fatalf("b.description = %q, want the rewrite applied (fixture broken)", current[1].Description)
-	}
-	// c must not have been folded into the rewritten b on the strength of a
-	// vector describing b's old text.
-	if current[2].DuplicateOf == "b" {
-		t.Error("c was folded into a rewritten survivor using the pre-merge vector")
-	}
-
-	// And the projection itself: a rewritten document offers no cosine answer.
-	docs := []consolidationDoc{
-		doc(0, "x", 0, true, "claim x", "body x"),
-		doc(1, "y", 1, true, "claim y", "body y"),
-	}
-	docs[0].vec = nil
-	if _, ok := cosineFold(docs[1].foldSubject, docs[0].foldSubject, 0.88); ok {
-		t.Error("a document with no vector must offer no cosine fold")
-	}
-	if _, held := reverifyFold(docs[1], docs[0], 0.88, true); held {
-		t.Error("the re-check must refuse a cosine fold into a document with no vector")
-	}
-}
-
 // Clearing a restored mark has to clear the validation-log entry that existed
 // only because of it. The step's ValidationResults are persisted by the
 // split-log writer and served by the validation-results endpoint, so leaving
@@ -2575,172 +1918,614 @@ func TestDropSkippedDuplicateResult_KeepsAnythingWithAgentDetail(t *testing.T) {
 	}
 }
 
-// The magnitude guard gates BOTH acceptance paths. That it did not was a hole
-// this feature opened rather than inherited: sameClaim refuses a fold where
-// the two texts are IDENTICAL and the figures differ — 100 affected entities
-// hidden behind 1,000 — and containment reached its acceptance without passing
-// it, so two otherwise identical findings were folded whenever the headline's
-// figures appeared in the other's body.
-func TestReverifyFold_TheMagnitudeGuardGatesContainmentToo(t *testing.T) {
-	table := "| north | 111,222 | 33.3 |"
-	canonical := doc(0, "a", 0, true, "the whole total", table)
-	dup := doc(1, "b", 70, true, "the north segment holds 111,222 units, 33.3 of it", "")
+// The magnitude guard gates BOTH acceptance paths. sameClaim refuses a fold
+// where the two texts are IDENTICAL and the figures differ — 100 affected
+// entities hidden behind 1,000 — and the adjudicated path must not reach its
+// acceptance without passing it.
+func TestReverifyFold_TheMagnitudeGuardGatesTheAdjudicatedPathToo(t *testing.T) {
+	canonical := doc(0, "a", 0, true, "the whole total", "")
+	dup := doc(1, "b", 32, true, "the north segment", "")
 
-	// Different texts: containment decides, and it holds.
-	if _, held := reverifyFold(dup, canonical, 0.88, true); !held {
-		t.Fatal("an ordinary containment fold must hold (fixture broken)")
+	// Different texts: the adjudicated path decides, and it holds.
+	if _, held := reverifyFold(dup, canonical, 0.88, 0.80, true); !held {
+		t.Fatal("an ordinary adjudicated fold must hold (fixture broken)")
 	}
 
-	// Identical text, different magnitudes: the guard's own case. The
-	// headline's figures are still in the body, so containment would accept
-	// it on its own.
+	// Identical text, different magnitudes: the guard's own case. The pair is
+	// still above the adjudication floor, so the path would accept it alone.
 	same := dup
 	same.text = canonical.text
 	same.magnitude = "affected=1000"
 	canonical.magnitude = "affected=100"
-	if _, held := reverifyFold(same, canonical, 0.88, true); held {
-		t.Error("identical text with a different magnitude must not fold, by containment or otherwise")
+	if _, held := reverifyFold(same, canonical, 0.88, 0.80, true); held {
+		t.Error("identical text with a different magnitude must not fold, adjudicated or not")
 	}
 	// And the same pair with EQUAL magnitudes still folds, so the guard has
-	// not simply switched containment off.
+	// not simply switched the path off.
 	same.magnitude = canonical.magnitude
-	if _, held := reverifyFold(same, canonical, 0.88, true); !held {
-		t.Error("identical text with the same magnitude must still fold")
+	if _, held := reverifyFold(same, canonical, 0.88, 0.80, true); !held {
+		t.Error("equal magnitudes must still fold")
 	}
 }
 
-// A containment fold is justified by figures found in the survivor's body, and
-// a rewrite is free text that can drop them. The closure check cannot catch it
-// — it verifies where marks POINT, not whether the claim still holds — and the
-// end-of-run check skips a document that already carries a mark, so the
-// finding would stay suppressed and unvalidated with its claim stated nowhere.
-func TestConsolidateArea_RefusesARewriteThatDropsAFoldsJustification(t *testing.T) {
-	table := "| north | 111,222 | 33.3 |\n| south | 444,555 | 66.6 |"
-	a := insight("a", "stock", "the whole total", table, 300)
-	b := insight("b", "stock", "the north segment holds 111,222 units, 33.3 of it", "a slice", 200)
+// The community rule reads the FOLD floor, and the two floors are independent.
+// An operator who raises the adjudication floor above it leaves pairs that are
+// foldable and never proposed — and the pass used to return before the
+// community rule ran, so those pairs went on spending the validation budget it
+// exists to protect.
+func TestConsolidateArea_CommunityFoldsRunWhenNothingReachedAdjudication(t *testing.T) {
+	t.Setenv("DISCOVERY_CONSOLIDATION_ADJUDICATION_MINSCORE", "0.99")
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		t.Error("the provider must not be called when nothing was proposed")
+		return nil, nil
+	}})
+
+	a := insight("a", "stock", "the whole total", "body a", 200)
+	b := insight("b", "stock", "the whole total restated", "body b", 100)
+	// 20 degrees is about 0.940: above the fold floor, below this adjudication
+	// floor.
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 20,
+	}}}
+
+	current := []models.Insight{a, b}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Clusters != 0 {
+		t.Fatalf("clusters = %d, want 0: the pair is below the adjudication floor (fixture broken)", st.Clusters)
+	}
+	if st.Folded != 1 {
+		t.Fatalf("stats = %+v, want the community rule to have folded the pair anyway", st)
+	}
+	if current[1].DuplicateOf != "a" {
+		t.Errorf("b.duplicate_of = %q, want a", current[1].DuplicateOf)
+	}
+	if st.Decider != "community" {
+		t.Errorf("decider = %q, want community: it is what decided the fold", st.Decider)
+	}
+}
+
+// When the adjudication cap bites, the slots go where a verdict changes the
+// outcome. A cluster holding a pair above the FOLD floor is folded by the
+// community rule if the provider never sees it — possibly against what the
+// provider would have said — while a cluster entirely below that floor only
+// stands to gain a fold.
+func TestConsolidateArea_TheCapSpendsItsSlotsOnClustersTheCommunityRuleCouldFold(t *testing.T) {
+	t.Setenv("DISCOVERY_CONSOLIDATION_MAX_CLUSTERS", "1")
+
+	a := insight("a", "stock", "claim a", "body a", 400)
+	b := insight("b", "stock", "claim b", "body b", 300)
+	c := insight("c", "stock", "claim c", "body c", 200)
+	d := insight("d", "stock", "claim d", "body d", 100)
+
+	var shown [][]string
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		for _, cluster := range cl {
+			ids := make([]string, 0, len(cluster.Candidates))
+			for _, cand := range cluster.Candidates {
+				ids = append(ids, cand.ID)
+			}
+			slices.Sort(ids)
+			shown = append(shown, ids)
+		}
+		return nil, nil
+	}})
+
+	// a/b are 33 degrees apart (0.839: proposed, below the fold floor) and
+	// come first in document order. c/d are 5 degrees apart (0.996: the
+	// community rule would fold them unasked).
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 33, embText(c): 120, embText(d): 125,
+	}}}
+	current := []models.Insight{a, b, c, d}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Clusters != 2 || st.OverBound != 1 {
+		t.Fatalf("stats = %+v, want two clusters with one over the bound (fixture broken)", st)
+	}
+	if len(shown) != 1 {
+		t.Fatalf("the provider was shown %v, want exactly one cluster", shown)
+	}
+	if !slices.Equal(shown[0], []string{"c", "d"}) {
+		t.Errorf("the provider was shown %v, want the pair the community rule could fold", shown[0])
+	}
+}
+
+// And "could fold" means could WRITE. A pair of two earlier-area findings can
+// sit well above the fold floor and still not be foldable — only the area being
+// consolidated has insights this pass can mark — so it must not take the slot
+// from a current pair that really would fold unasked.
+func TestConsolidateArea_TheCapIgnoresAStrongPairOfTwoEarlierFindings(t *testing.T) {
+	t.Setenv("DISCOVERY_CONSOLIDATION_MAX_CLUSTERS", "1")
+
+	// Cluster one holds a current finding, so it survives clustering, but its
+	// only pair above the FOLD floor is between the two earlier findings —
+	// which this pass cannot mark. Cluster two is a current pair above that
+	// floor, and is the one a verdict would change.
+	anchor := insight("anchor", "stock", "claim anchor", "body", 400)
+	pairA := insight("pairA", "stock", "claim pairA", "body", 300)
+	pairB := insight("pairB", "stock", "claim pairB", "body", 200)
+	old1 := insight("old1", "prior", "claim old1", "body", 150)
+	old2 := insight("old2", "prior", "claim old2", "body", 100)
+
+	var shown [][]string
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		for _, cluster := range cl {
+			ids := make([]string, 0, len(cluster.Candidates))
+			for _, cand := range cluster.Candidates {
+				ids = append(ids, cand.ID)
+			}
+			slices.Sort(ids)
+			shown = append(shown, ids)
+		}
+		return nil, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(anchor): 0, embText(old1): 33, embText(old2): 38,
+		embText(pairA): 120, embText(pairB): 125,
+	}}}
+	current := []models.Insight{anchor, pairA, pairB}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, []models.Insight{old1, old2}))
+
+	if st.Clusters != 2 || st.OverBound != 1 {
+		t.Fatalf("stats = %+v, want two clusters with one over the bound (fixture broken)", st)
+	}
+	if len(shown) != 1 {
+		t.Fatalf("the provider was shown %v, want exactly one cluster", shown)
+	}
+	if !slices.Equal(shown[0], []string{"pairA", "pairB"}) {
+		t.Errorf("the provider was shown %v, want the pair this area can actually fold", shown[0])
+	}
+}
+
+// A verdict that asks for the survivor's description to be rewritten does not
+// get its folds. The rewrite is requested precisely when a folded member
+// carries a figure or a caveat the survivor does not, and nothing rewrites a
+// survivor — so folding without it would suppress exactly those findings
+// behind text that does not state them.
+func TestConsolidateArea_AVerdictAskingForARewriteKeepsItsFindingsStanding(t *testing.T) {
+	a := insight("a", "stock", "the whole total", "every segment", 200)
+	b := insight("b", "stock", "the north segment", "one slice, with a caveat", 100)
 
 	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
 		return []agentplugin.ConsolidationVerdict{{
-			CanonicalID: "a", Duplicates: map[string]float64{"b": 0},
-			// A rewrite that keeps the south row and drops the north one —
-			// the row that justified b's fold.
-			MergedDescription: "the whole total\n\n| south | 444,555 | 66.6 |",
+			CanonicalID:       "a",
+			Duplicates:        map[string]float64{"b": 0.9},
+			MergedDescription: "the whole total, carrying b's caveat",
+			Reason:            "b restates a row of a, and carries a caveat a omits",
 		}}, nil
 	}})
+
 	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 0, embText(b): 70,
+		embText(a): 0, embText(b): 1,
 	}}}
 	current := []models.Insight{a, b}
 	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
 
-	if st.RefusedUnmergeable != 1 {
-		t.Fatalf("stats = %+v, want the rewrite refused", st)
+	if st.RefusedUnmergeable != 1 || st.Folded != 0 {
+		t.Fatalf("stats = %+v, want the folds left standing", st)
 	}
 	if current[1].DuplicateOf != "" {
-		t.Errorf("b.duplicate_of = %q; it is suppressed behind a survivor that no longer states its claim", current[1].DuplicateOf)
+		t.Errorf("b.duplicate_of = %q; it carries a caveat the survivor does not state", current[1].DuplicateOf)
 	}
-	if strings.Contains(current[0].Description, "south") && !strings.Contains(current[0].Description, "north") {
+	if strings.Contains(current[0].Description, "carrying") {
 		t.Errorf("a.description = %q; the rewrite was applied", current[0].Description)
 	}
-
-	// A rewrite that KEEPS the row is applied, so the guard is not refusing
-	// every merge on a containment fold.
-	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
-		return []agentplugin.ConsolidationVerdict{{
-			CanonicalID: "a", Duplicates: map[string]float64{"b": 0},
-			MergedDescription: table + "\n\nand a caveat b carried",
-		}}, nil
-	}})
-	keeps := []models.Insight{a, b}
-	o2 := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(a): 0, embText(b): 70,
-	}}}
-	if st := o2.consolidateArea(context.Background(), areaInput("stock", keeps, nil)); st.Folded != 1 {
-		t.Fatalf("stats = %+v; a rewrite that keeps the justification must be applied", st)
-	}
-	if !strings.Contains(keeps[0].Description, "caveat b carried") {
-		t.Errorf("a.description = %q, want the rewrite", keeps[0].Description)
+	// And the pair is remembered, so the fallback does not fold it on
+	// document order instead — a is first, and the two are 1 degree apart.
+	if !o.adjudicatedKeep("a", "b") {
+		t.Error("the pair was not recorded as adjudicated; the community rule will fold it anyway")
 	}
 }
 
-// The rewrite is checked against EVERY fold into the survivor, not just the
-// ones this verdict folded. The survivor can already carry a fold from an
-// overlapping cluster of the same pass — and a rewrite that keeps this
-// cluster's figures while dropping that earlier dependant's leaves it hidden
-// behind a survivor which no longer states its claim.
-func TestConsolidateArea_ARewriteIsCheckedAgainstEveryExistingFold(t *testing.T) {
-	// `broad` contains both slices by figure; n and s are the slices; mid
-	// joins the two stars so they overlap.
-	table := "| north | 111,222 | 33.3 |\n| south | 444,555 | 66.6 |"
-	broad := insight("broad", "stock", "the whole total", table, 500)
-	n := insight("n", "stock", "the north segment holds 111,222 units, 33.3 of it", "slice n", 400)
-	s := insight("s", "stock", "the south segment holds 444,555 units, 66.6 of it", "slice s", 300)
+// A rewrite verdict's donors are protected from each other, not only from the
+// canonical. The adjudicator said each of them carries detail the survivor does
+// not; folding one into another suppresses that detail just as surely.
+func TestConsolidateArea_ARewriteVerdictsDonorsAreKeptFromEachOther(t *testing.T) {
+	a := insight("a", "stock", "the whole total", "every segment", 300)
+	b := insight("b", "stock", "the north segment", "a slice, with a caveat", 200)
+	c := insight("c", "stock", "the north segment again", "a slice, with another caveat", 100)
+
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID:       "a",
+			Duplicates:        map[string]float64{"b": 0.9, "c": 0.9},
+			MergedDescription: "the whole total, carrying both caveats",
+		}}, nil
+	}})
+
+	// b and c are 1 degree apart, so the community rule would fold one into
+	// the other unasked.
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 20, embText(c): 21,
+	}}}
+	current := []models.Insight{a, b, c}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Folded != 0 {
+		t.Fatalf("stats = %+v, want nothing folded", st)
+	}
+	if !o.adjudicatedKeep("b", "c") {
+		t.Error("the two donors were not kept from each other")
+	}
+	if current[1].DuplicateOf != "" || current[2].DuplicateOf != "" {
+		t.Errorf("b/c = (%q, %q); a donor was folded into the other, losing its caveat",
+			current[1].DuplicateOf, current[2].DuplicateOf)
+	}
+}
+
+// Two overlapping clusters can propose the same fold with only one of them
+// asking for a rewrite, and the outcome used to depend on which was read
+// first: the rewrite verdict first blocked the fold, the rewrite verdict
+// second left the mark standing. The request is settled before any mark is
+// written now, so either order gives the same answer.
+func TestConsolidateArea_ARewriteRequestBeatsAnotherClustersFoldInEitherOrder(t *testing.T) {
+	for _, rewriteOn := range []string{"x", "y"} {
+		t.Run("rewrite on the cluster holding "+rewriteOn, func(t *testing.T) {
+			a := insight("a", "stock", "claim a", "body a", 400)
+			b := insight("b", "stock", "claim b", "body b", 300)
+			x := insight("x", "stock", "claim x", "body x", 200)
+			y := insight("y", "stock", "claim y", "body y", 100)
+
+			withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+				out := make([]agentplugin.ConsolidationVerdict, len(cl))
+				for i, cluster := range cl {
+					ids := make([]string, 0, len(cluster.Candidates))
+					for _, cand := range cluster.Candidates {
+						ids = append(ids, cand.ID)
+					}
+					out[i] = agentplugin.ConsolidationVerdict{
+						CanonicalID: "a", Duplicates: map[string]float64{"b": 0.95},
+					}
+					if slices.Contains(ids, rewriteOn) {
+						out[i].MergedDescription = "a, carrying b's caveat"
+					}
+				}
+				return out, nil
+			}})
+
+			// a and b are a strong pair; x hangs off a only and y off b only,
+			// so star(a) and star(b) are two clusters and BOTH hold (a, b).
+			o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+				embText(a): 0, embText(b): 10, embText(x): -30, embText(y): 42,
+			}}}
+			current := []models.Insight{a, b, x, y}
+			st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+			if st.Clusters != 2 {
+				t.Fatalf("clusters = %d (%+v), want the two overlapping stars (fixture broken)", st.Clusters, st)
+			}
+			if current[1].DuplicateOf != "" {
+				t.Errorf("b.duplicate_of = %q (%+v); a rewrite was asked for, so the fold must not stand",
+					current[1].DuplicateOf, st)
+			}
+			if !o.adjudicatedKeep("a", "b") {
+				t.Error("the pair a rewrite was asked for was not recorded as kept")
+			}
+		})
+	}
+}
+
+// A finding an adjudicator said must stand is not folded by anything else —
+// not another verdict naming it, not a redirected canonical, not the community
+// fallback. The decision rides on the finding, so it holds wherever a mark is
+// written.
+func TestConsolidateArea_AFindingThatMustStandIsNotFoldedByTheFallback(t *testing.T) {
+	a := insight("a", "stock", "the whole total", "every segment", 300)
+	b := insight("b", "stock", "the north segment", "a slice, with a caveat", 200)
+	c := insight("c", "stock", "the north segment restated", "a slice", 100)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i := range cl {
+			// One verdict, asking for b's caveat to be carried onto a.
+			out[i] = agentplugin.ConsolidationVerdict{
+				CanonicalID:       "a",
+				Duplicates:        map[string]float64{"b": 0.95},
+				MergedDescription: "a, carrying b's caveat",
+			}
+		}
+		return out, nil
+	}})
+
+	// b and c are 1 degree apart, so the fallback would fold b into c — a
+	// different canonical from the one the verdict named.
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 20, embText(c): 21,
+	}}}
+	current := []models.Insight{a, b, c}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if !current[1].StandsOnAdjudication {
+		t.Fatalf("b was not marked as standing (%+v)", st)
+	}
+	if current[1].DuplicateOf != "" {
+		t.Errorf("b.duplicate_of = %q; the fallback folded a finding the adjudicator kept", current[1].DuplicateOf)
+	}
+	// And the flag is what does it, not the pair: dropping the pair record
+	// leaves the decision standing.
+	o.consolidationKept = nil
+	again := []models.Insight{a, b, c}
+	again[1].StandsOnAdjudication = true
+	withProvider(t, nil)
+	o2 := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 20, embText(c): 21,
+	}}}
+	st2 := o2.consolidateArea(context.Background(), areaInput("stock", again, nil))
+	if again[1].DuplicateOf != "" {
+		t.Errorf("b.duplicate_of = %q on a resumed attempt with no pair records (%+v)", again[1].DuplicateOf, st2)
+	}
+}
+
+// A rewrite verdict's donor is protected BEFORE any fold is written. The
+// clusters are overlapping stars read in order, so another cluster's verdict
+// can fold the donor into its own canonical first — and a protection recorded
+// only when the writer reaches the rewrite then lands on a finding that is
+// already suppressed, already out of validation and already out of the
+// recommendations.
+func TestConsolidateArea_ARewriteDonorIsProtectedBeforeAnyFoldIsWritten(t *testing.T) {
+	for _, rewriteOn := range []string{"x", "y"} {
+		t.Run("rewrite on the cluster holding "+rewriteOn, func(t *testing.T) {
+			a := insight("a", "stock", "claim a", "body a", 400)
+			b := insight("b", "stock", "claim b", "body b", 300)
+			x := insight("x", "stock", "claim x", "body x", 200)
+			y := insight("y", "stock", "claim y", "body y", 100)
+
+			withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+				out := make([]agentplugin.ConsolidationVerdict, len(cl))
+				for i, cluster := range cl {
+					ids := make([]string, 0, len(cluster.Candidates))
+					for _, cand := range cluster.Candidates {
+						ids = append(ids, cand.ID)
+					}
+					if slices.Contains(ids, rewriteOn) {
+						// This verdict says b carries detail its own
+						// canonical does not state: b must stand.
+						out[i] = agentplugin.ConsolidationVerdict{
+							CanonicalID:       rewriteOn,
+							Duplicates:        map[string]float64{"b": 0.95},
+							MergedDescription: rewriteOn + ", carrying b's caveat",
+						}
+						continue
+					}
+					// And this one folds b into a, plainly, with no rewrite.
+					out[i] = agentplugin.ConsolidationVerdict{
+						CanonicalID: "a", Duplicates: map[string]float64{"b": 0.95},
+					}
+				}
+				return out, nil
+			}})
+
+			// star(a) = {a, b, x} and star(b) = {a, b, y}: two overlapping
+			// clusters, both holding b, with a different canonical in each.
+			// Whichever is read first, b has to come out visible.
+			o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+				embText(a): 0, embText(b): 10, embText(x): -30, embText(y): 42,
+			}}}
+			current := []models.Insight{a, b, x, y}
+			st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+			if st.Clusters != 2 {
+				t.Fatalf("clusters = %d (%+v), want the two overlapping stars (fixture broken)", st.Clusters, st)
+			}
+			if !current[1].StandsOnAdjudication {
+				t.Fatalf("b was not recorded as standing (%+v)", st)
+			}
+			if current[1].DuplicateOf != "" {
+				t.Errorf("b.duplicate_of = %q (%+v); an adjudicator said b must stand and another cluster's verdict folded it anyway",
+					current[1].DuplicateOf, st)
+			}
+		})
+	}
+}
+
+// The community simulation must not model a fold it cannot write. A protected
+// finding stays visible, which makes it a perfectly good survivor for a later
+// document — but recording a fold OF it pointed the chain at a canonical
+// nobody is being sent to, and the next document was then measured against
+// THAT, left visible, and spent a validation check on a duplicate.
+func TestConsolidateArea_TheSimulationDoesNotFoldAProtectedFinding(t *testing.T) {
+	withProvider(t, nil)
+
+	a := insight("a", "stock", "the whole total", "every segment", 300)
+	b := insight("b", "stock", "the north segment", "a slice, with a caveat", 200)
+	c := insight("c", "stock", "the north segment restated", "a slice", 100)
+
+	// a-b and b-c both clear the fold floor at 20 degrees; a-c, 40 apart,
+	// does not. So c's only available survivor is b.
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 20, embText(c): 40,
+	}}}
+	current := []models.Insight{a, b, c}
+	// b arrives protected: an adjudicator said so in an earlier area's pass,
+	// and the finding itself is where that decision lives.
+	current[1].StandsOnAdjudication = true
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if current[1].DuplicateOf != "" {
+		t.Fatalf("b.duplicate_of = %q; a protected finding was folded (%+v)", current[1].DuplicateOf, st)
+	}
+	if current[2].DuplicateOf != "b" {
+		t.Errorf("c.duplicate_of = %q, want b — the visible finding it restates (%+v)", current[2].DuplicateOf, st)
+	}
+}
+
+// A verdict the writer discards on its shape must leave nothing behind it.
+// One naming A as its canonical and then listing A among its own duplicates
+// registered a keep for the A-B pair the writer then refused, and that keep
+// went on to block the community rule from folding B into A at a score this
+// product folds at with no model in the loop at all.
+func TestConsolidateArea_AMalformedRewriteLeavesNoKeepBehind(t *testing.T) {
+	a := insight("a", "stock", "claim a", "body a", 300)
+	b := insight("b", "stock", "claim b", "body b", 200)
+
+	withProvider(t, &stubProvider{fn: func([]agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		return []agentplugin.ConsolidationVerdict{{
+			CanonicalID:       "a",
+			Duplicates:        map[string]float64{"a": 1, "b": 0.95},
+			MergedDescription: "a, carrying b's caveat",
+		}}, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(a): 0, embText(b): 10,
+	}}}
+	current := []models.Insight{a, b}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.RefusedShape == 0 {
+		t.Fatalf("stats = %+v, want the malformed verdict discarded", st)
+	}
+	if o.adjudicatedKeep("a", "b") {
+		t.Error("a verdict the writer discarded still registered a keep for its pair")
+	}
+	if current[1].StandsOnAdjudication {
+		t.Error("a verdict the writer discarded still protected its donor")
+	}
+	if current[1].DuplicateOf != "a" {
+		t.Errorf("b.duplicate_of = %q, want a — the community rule's own decision on a pair no verdict survived (%+v)",
+			current[1].DuplicateOf, st)
+	}
+}
+
+// A fold refused because its donor must stand leaves the PAIR kept, not only
+// the donor protected. The flag says nothing about the other member: with the
+// fold refused and the donor earlier in document order, the community rule
+// folded the canonical into the donor instead — the survivor the provider
+// chose, hidden on the one direction the provider rejected.
+func TestConsolidateArea_ARefusedFoldKeepsThePairApartInBothDirections(t *testing.T) {
+	b := insight("b", "stock", "claim b", "body b", 400)
+	c := insight("c", "stock", "claim c", "body c", 300)
+	x := insight("x", "stock", "claim x", "body x", 200)
+	y := insight("y", "stock", "claim y", "body y", 100)
 
 	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
 		out := make([]agentplugin.ConsolidationVerdict, len(cl))
 		for i, cluster := range cl {
-			ids := make([]string, 0, 3)
+			ids := make([]string, 0, len(cluster.Candidates))
 			for _, cand := range cluster.Candidates {
 				ids = append(ids, cand.ID)
 			}
-			// One cluster holds both slices. Fold n with no rewrite, then s
-			// with a rewrite that keeps only the south row.
-			if slices.Contains(ids, "n") && slices.Contains(ids, "s") {
+			if slices.Contains(ids, "y") {
+				// One cluster says b carries detail no survivor states.
 				out[i] = agentplugin.ConsolidationVerdict{
-					CanonicalID: "broad", Duplicates: map[string]float64{"n": 0, "s": 0},
-					MergedDescription: "the whole total\n\n| south | 444,555 | 66.6 |",
+					CanonicalID:       "y",
+					Duplicates:        map[string]float64{"b": 0.95},
+					MergedDescription: "y, carrying b's caveat",
 				}
+				continue
+			}
+			// The other folds b into c outright, which the protection
+			// refuses — so c must not be folded into b in its place.
+			out[i] = agentplugin.ConsolidationVerdict{
+				CanonicalID: "c", Duplicates: map[string]float64{"b": 0.95},
+			}
+		}
+		return out, nil
+	}})
+
+	// b first in document order and 10 degrees from c, so the community rule
+	// would fold c into b given the chance.
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(b): 0, embText(c): 10, embText(x): -30, embText(y): 42,
+	}}}
+	current := []models.Insight{b, c, x, y}
+	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+
+	if st.Clusters != 2 {
+		t.Fatalf("clusters = %d (%+v), want the two overlapping stars (fixture broken)", st.Clusters, st)
+	}
+	if current[0].DuplicateOf != "" {
+		t.Errorf("b.duplicate_of = %q; the protected finding was folded (%+v)", current[0].DuplicateOf, st)
+	}
+	if current[1].DuplicateOf != "" {
+		t.Errorf("c.duplicate_of = %q (%+v); the canonical the provider chose was folded into the finding it was meant to absorb",
+			current[1].DuplicateOf, st)
+	}
+}
+
+// A rewrite verdict can name a donor from an area the run has already
+// finished, and that donor's protection has to reach Phase 9. This pass may
+// not MARK such a finding — its checkpoint is written and its id is reminted
+// on restore — but a protection suppresses nothing, and without it the
+// end-of-run check folds the donor into a previous discovery's copy of the
+// survivor: the caveat the adjudicator spoke up about, hidden behind an older
+// row, with no pause or resume involved.
+func TestConsolidateArea_AnEarlierAreasRewriteDonorIsProtectedForPhase9(t *testing.T) {
+	b := insight("b", "margin", "the north segment", "a slice, with a caveat", 200)
+	y := insight("y", "stock", "the whole total", "every segment", 300)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i := range cl {
+			out[i] = agentplugin.ConsolidationVerdict{
+				CanonicalID:       "y",
+				Duplicates:        map[string]float64{"b": 0.95},
+				MergedDescription: "y, carrying b's caveat",
 			}
 		}
 		return out, nil
 	}})
 
 	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
-		embText(broad): 0, embText(n): 90, embText(s): 170,
+		embText(b): 0, embText(y): 10,
 	}}}
-	current := []models.Insight{broad, n, s}
-	st := o.consolidateArea(context.Background(), areaInput("stock", current, nil))
+	earlier := []models.Insight{b}
+	current := []models.Insight{y}
+	in := areaInput("stock", current, earlier)
+	in.areaByID["margin"] = AnalysisArea{ID: "margin", Name: "margin", Description: "margin scope"}
+	st := o.consolidateArea(context.Background(), in)
 
 	if st.RefusedUnmergeable != 1 {
-		t.Fatalf("stats = %+v, want the rewrite refused: it drops the row n's fold rests on", st)
+		t.Fatalf("stats = %+v, want the rewrite request refused once (fixture broken)", st)
 	}
-	if strings.Contains(current[0].Description, "south") && !strings.Contains(current[0].Description, "north") {
-		t.Errorf("broad.description = %q; the rewrite was applied", current[0].Description)
+	if earlier[0].DuplicateOf != "" {
+		t.Errorf("an earlier area's finding was marked: %q", earlier[0].DuplicateOf)
 	}
-	if current[1].DuplicateOf != "" {
-		t.Errorf("n.duplicate_of = %q; its claim is stated nowhere in the rewritten survivor", current[1].DuplicateOf)
+	if !earlier[0].StandsOnAdjudication {
+		t.Error("the donor's protection never reached the run's own insight, so Phase 9 cannot honour it")
 	}
+}
 
-	// A dependant THIS verdict did not fold — a previous area's, say — is
-	// refused outright, whichever way its own fold was justified: the rewrite
-	// was written from this cluster's payload and does not contain that
-	// finding's text at all.
-	docs := []consolidationDoc{
-		doc(0, "broad", 0, true, "the whole total", table),
-		doc(1, "earlier", 90, false, "the north segment holds 111,222 units, 33.3 of it", ""),
+// A rewrite verdict can name a donor that arrived already folded, and the
+// protection is not written onto it. The mark was a decision this pass does
+// not re-open, and flagging it would leave the two records contradicting each
+// other — the mark hiding the finding from the recommender and the end-of-run
+// check while the flag says it must stay visible.
+func TestConsolidateArea_ADonorThatIsAlreadyFoldedIsNotFlaggedAsStanding(t *testing.T) {
+	b := insight("b", "margin", "the north segment", "a slice, with a caveat", 200)
+	b.DuplicateOf = "an-earlier-areas-canonical"
+	y := insight("y", "stock", "the whole total", "every segment", 300)
+
+	withProvider(t, &stubProvider{fn: func(cl []agentplugin.DuplicateCluster) ([]agentplugin.ConsolidationVerdict, error) {
+		out := make([]agentplugin.ConsolidationVerdict, len(cl))
+		for i := range cl {
+			out[i] = agentplugin.ConsolidationVerdict{
+				CanonicalID:       "y",
+				Duplicates:        map[string]float64{"b": 0.95},
+				MergedDescription: "y, carrying b's caveat",
+			}
+		}
+		return out, nil
+	}})
+
+	o := &Orchestrator{projectID: "p", embeddingProvider: &angleEmbedder{deg: map[string]float64{
+		embText(b): 0, embText(y): 10,
+	}}}
+	earlier := []models.Insight{b}
+	current := []models.Insight{y}
+	in := areaInput("stock", current, earlier)
+	in.areaByID["margin"] = AnalysisArea{ID: "margin", Name: "margin", Description: "margin scope"}
+	st := o.consolidateArea(context.Background(), in)
+
+	if st.RefusedUnmergeable != 1 {
+		t.Fatalf("stats = %+v, want the rewrite request refused once (fixture broken)", st)
 	}
-	marks := map[string]string{"earlier": "broad"}
-	kept := insightBodyOf("the whole total\n\n"+table, "", nil)
-	if !rewriteBreaksAFold(kept, docs[0], docs, marks, nil, 0.88) {
-		t.Error("a dependant this verdict did not fold must refuse the rewrite")
+	if earlier[0].DuplicateOf != "an-earlier-areas-canonical" {
+		t.Errorf("the existing mark was rewritten to %q", earlier[0].DuplicateOf)
 	}
-	// Folded by THIS verdict, and the rewrite keeps the row its containment
-	// rests on: applied.
-	mine := map[string]float64{"earlier": 0}
-	if rewriteBreaksAFold(kept, docs[0], docs, marks, mine, 0.88) {
-		t.Error("a rewrite that keeps the justification of its own fold must not be refused")
-	}
-	dropped := insightBodyOf("the whole total\n\n| south | 444,555 | 66.6 |", "", nil)
-	if !rewriteBreaksAFold(dropped, docs[0], docs, marks, mine, 0.88) {
-		t.Error("a rewrite that drops the row its own fold rests on must be refused")
-	}
-	// A cosine-justified dependant of THIS verdict needs no further check:
-	// the adjudicator saw its text and the rewrite is what carries it.
-	near := []consolidationDoc{
-		doc(0, "a", 0, true, "claim a", "body a"),
-		doc(1, "b", 1, true, "claim b", "body b"),
-	}
-	if rewriteBreaksAFold("anything at all", near[0], near, map[string]string{"b": "a"}, map[string]float64{"b": 0.99}, 0.88) {
-		t.Error("a similarity-justified fold of this verdict's own must not be re-checked against the prose")
+	if earlier[0].StandsOnAdjudication {
+		t.Error("a folded finding was flagged as standing: the mark hides it and the flag says it is visible")
 	}
 }

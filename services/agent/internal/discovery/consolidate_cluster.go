@@ -3,9 +3,7 @@ package discovery
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
-	"strings"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -124,102 +122,6 @@ func cosineFoldTarget(
 	return target, targetScore, true
 }
 
-// figureToken matches a run of digits with the separators a figure may carry.
-// Deliberately permissive about which separator means what: a thousands
-// separator is a locale setting and the two conventions are each other's
-// decimal mark, so the token is compared as written rather than parsed.
-var figureToken = regexp.MustCompile(`\d[\d.,]*`)
-
-// claimFigures returns the distinctive numeric tokens of a text: those whose
-// digits number three or more.
-//
-// Used for both sides of the containment test — the headline's figures and the
-// body's — so the comparison is token against token. One derivation, for the
-// reason magnitudeOf is one derivation: a headline parsed one way and a body
-// scanned another is how "is this figure in that text" comes to mean two
-// different questions.
-//
-// Three is the floor that makes the containment test mean something. "5%",
-// "3x" and "12" appear in almost every finding a project produces, so a test
-// built on them matches everything; a figure of three significant digits is
-// specific enough that two findings carrying the same one are usually carrying
-// the same measurement.
-//
-// Tokens are returned as written, not normalised to a number. A figure is
-// being looked for inside another finding's prose, and that prose contains it
-// in whatever form the model wrote it — so the comparison that matters is the
-// textual one, and parsing would introduce a locale question (is 12.345 twelve
-// thousand or twelve point three) that the comparison does not need to answer.
-func claimFigures(s string) []string {
-	if s == "" {
-		return nil
-	}
-	seen := make(map[string]struct{})
-	out := make([]string, 0, 4)
-	for _, m := range figureToken.FindAllString(s, -1) {
-		t := strings.Trim(m, ".,")
-		digits := 0
-		for _, r := range t {
-			if r >= '0' && r <= '9' {
-				digits++
-			}
-		}
-		if digits < 3 {
-			continue
-		}
-		if _, dup := seen[t]; dup {
-			continue
-		}
-		seen[t] = struct{}{}
-		out = append(out, t)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// minContainmentFigures is how many distinctive figures a headline must carry,
-// and have found in the other document's body, for containment to be claimed.
-//
-// Two rather than one. A single shared three-digit number between two findings
-// about the same warehouse is coincidence often enough to matter — a row count,
-// a year, a store code — and the cost of a wrong fold here is a finding that
-// loses its verdict, not just a row that renders collapsed.
-const minContainmentFigures = 2
-
-// containedIn reports whether `claim`'s distinctive figures all appear in
-// `body`: the test for "this finding's entire claim is already stated inside
-// that one".
-//
-// It exists because similarity is the wrong test for the commonest duplicate
-// shape these findings take. A finding whose headline is one ROW of another's
-// markdown table is strictly redundant, and because the surrounding prose
-// differs it scores 0.71–0.87 — never folded by a 0.88 rule. Of the folds a
-// human reviewer applied by hand on one run, four of seven sat below 0.88 and
-// two below 0.80. This scan found all of them, and it is a string match: no
-// model, no embedding, no measurable cost.
-func containedIn(claim, body string) bool {
-	figs := claimFigures(claim)
-	if len(figs) < minContainmentFigures || body == "" {
-		return false
-	}
-	// WHOLE tokens, through the same parser, not substrings of the body.
-	// `strings.Contains` accepted a headline's 123 and 456 as contained in a
-	// body stating 1123 and 2456 — two different measurements reading as the
-	// same one, and on a pair below the similarity floor the fold would cost
-	// a distinct finding its verdict and its place in Phase 5 on nothing at
-	// all.
-	inBody := make(map[string]struct{}, 8)
-	for _, f := range claimFigures(body) {
-		inBody[f] = struct{}{}
-	}
-	for _, f := range figs {
-		if _, ok := inBody[f]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
 // consolidationDoc is one of the run's findings as the consolidation pass sees
 // it: the comparable part, plus what the provider is shown and what the caller
 // needs in order to decide whether a mark may be written at all.
@@ -237,16 +139,18 @@ type consolidationDoc struct {
 	// slot is the position of this document in the area's own insight slice,
 	// valid only when current.
 	slot int
+	// runSlot is the position of this document in the run's accumulator, the
+	// slice of what the areas before this one reported. Valid only when the
+	// document is NOT current. A mark may never be written there — see
+	// current — but a protection may: it suppresses nothing, so losing it on
+	// a resume costs nothing, while not writing it leaves an earlier area's
+	// protected finding open to the end-of-run check.
+	runSlot int
 
 	name string
 	// prose is the finding's authored body, markdown rendition preferred.
-	// What the provider is shown.
-	prose string
-	// body is prose plus the supporting figures, which is what the
-	// containment test looks inside. Separate from prose because the
-	// provider is shown the figures as their own field, and sending them
-	// twice is prompt budget spent saying one thing.
-	body        string
+	// What the provider is shown, alongside its figures as their own field.
+	prose       string
 	area        string
 	areaScope   string
 	severity    string
@@ -256,6 +160,12 @@ type consolidationDoc struct {
 	metrics     map[string]interface{}
 	verdict     string
 	duplicateOf string
+	// stands is set when an adjudicator has already said this finding carries
+	// detail no survivor of it states — in an earlier area's pass, which the
+	// finding itself remembers, or in this one, where the rewrite pre-pass
+	// sets it before a single mark is written. Nothing may fold a document
+	// that carries it; it can still be the survivor another folds into.
+	stands bool
 }
 
 // pairKey is one unordered pair of document indices.
@@ -268,34 +178,32 @@ func newPairKey(a, b int) pairKey {
 	return pairKey{lo: a, hi: b}
 }
 
-// proposePairs runs both cheap tests over every pair of documents and returns
-// the direct relations, each tagged with which test fired.
+// proposePairs returns the pairs worth an adjudication, keyed low-high.
 //
-// DIRECT relations, never a transitive closure. Containment is not transitive
-// either: on real run output, clustering by connected components over the
-// containment relation — A contains B, B contains C, therefore one cluster —
-// proposed suppressing 23 of 55 insights, where the same data as direct pairs
-// yields 9.
-func proposePairs(docs []consolidationDoc, threshold float64) map[pairKey]agentplugin.Proposal {
+// One test: cosine at or above `floor`, which is the ADJUDICATION floor and
+// sits below the fold floor on purpose. A pair between the two is a pair the
+// model is asked about and the community rule may not fold on its own.
+//
+// There used to be a second test here. It scanned the numbers written in one
+// finding's headline and asked whether all of them appeared in the other's
+// body, to catch the commonest duplicate shape — a headline that is one ROW of
+// another finding's table, which the surrounding prose keeps at 0.71-0.87 and
+// so below any fold floor. The scan read numerals with no idea what they
+// measured, and review found six sentences where it took a quantity for a date
+// or a date for a quantity; because containment asks whether every figure of
+// the claim is in the body, each misread REMOVED a constraint and let two
+// different measurements read as one.
+//
+// That judgement is the model's now. Lowering the floor is what carries those
+// pairs to it: the three folds the scan was earning its place for on two field
+// runs scored 0.814, 0.831 and 0.858, and a 0.80 floor reaches all three at
+// 16-17 adjudications a run.
+func proposePairs(docs []consolidationDoc, floor float64) map[pairKey]agentplugin.Proposal {
 	rel := make(map[pairKey]agentplugin.Proposal)
 	for i := range docs {
 		for j := i + 1; j < len(docs); j++ {
-			var cos, con bool
-			if _, ok := cosineFold(docs[j].foldSubject, docs[i].foldSubject, threshold); ok {
-				cos = true
-			}
-			// Both directions: containment is asymmetric, and which member is
-			// contained in which is the provider's to weigh, not this scan's.
-			if containedIn(docs[j].name, docs[i].body) || containedIn(docs[i].name, docs[j].body) {
-				con = true
-			}
-			switch {
-			case cos && con:
-				rel[newPairKey(i, j)] = agentplugin.ProposalBoth
-			case cos:
+			if _, ok := cosineFold(docs[j].foldSubject, docs[i].foldSubject, floor); ok {
 				rel[newPairKey(i, j)] = agentplugin.ProposalCosine
-			case con:
-				rel[newPairKey(i, j)] = agentplugin.ProposalContainment
 			}
 		}
 	}
@@ -311,6 +219,22 @@ type docCluster struct {
 
 // buildClusters turns the direct relations into stars: one cluster per seed,
 // holding the seed and every document directly related to it.
+//
+// KNOWN LIMITATION, worth a design decision rather than a patch. A star is
+// built over every relation, and the adjudication floor sits below the fold
+// floor — so two unrelated pairs that are each strong enough to fold on their
+// own can land in one star through weaker links between them. A verdict names
+// ONE canonical, so it can describe only one of those pairs, and the provider
+// contract says a member it leaves out is left standing: the other pair is then
+// kept rather than folded, and a duplicate that a higher floor would have
+// folded spends a validation check instead.
+//
+// Left as it is deliberately. The cost is a fold not made, which leaves a
+// visible duplicate for the end-of-run check — the cheap direction — and the
+// two ways to fix it properly are a verdict that can name more than one
+// canonical, which is a contract change, and splitting a star on its strong
+// components, which changes how many clusters an area sends. Neither belongs
+// in a change about where the containment judgement is made.
 //
 // A star rather than a connected component, for the reason proposePairs builds
 // pairs. A star rather than a bare pair, because a fold and an unfold are not
@@ -379,40 +303,13 @@ func buildClusters(docs []consolidationDoc, rel map[pairKey]agentplugin.Proposal
 		if !maximal {
 			continue
 		}
-		out = append(out, docCluster{members: ordered[i], proposal: mergeProposals(rel, ordered[i])})
+		// One proposal kind is emitted now, so the label is a constant rather
+		// than something to re-derive by rescanning every pair of every
+		// maximal cluster. The other constants stay in the shared contract for
+		// callers that still send them.
+		out = append(out, docCluster{members: ordered[i], proposal: agentplugin.ProposalCosine})
 	}
 	return out
-}
-
-// mergeProposals reports which tests fired on the relations INSIDE a cluster.
-//
-// Inside, and not "on any relation touching a member": a member of a
-// containment cluster usually also has similarity relations to documents that
-// are not in it, and reading those would report every such cluster as "both"
-// — which is the one field that says whether the similarity threshold could
-// have seen this duplicate at all.
-func mergeProposals(rel map[pairKey]agentplugin.Proposal, members []int) agentplugin.Proposal {
-	cos, con := false, false
-	for i := 0; i < len(members); i++ {
-		for j := i + 1; j < len(members); j++ {
-			switch rel[newPairKey(members[i], members[j])] {
-			case agentplugin.ProposalCosine:
-				cos = true
-			case agentplugin.ProposalContainment:
-				con = true
-			case agentplugin.ProposalBoth:
-				cos, con = true, true
-			}
-		}
-	}
-	switch {
-	case cos && con:
-		return agentplugin.ProposalBoth
-	case con:
-		return agentplugin.ProposalContainment
-	default:
-		return agentplugin.ProposalCosine
-	}
 }
 
 func isSubset(a, b map[int]bool) bool {
@@ -480,4 +377,59 @@ func resolveMarkClosure(marks map[string]string, exists func(id string) bool) (m
 		out[id] = target
 	}
 	return out, nil
+}
+
+// clusterCanAutoFold reports whether the community rule would write a fold in
+// this cluster with no verdict at all.
+//
+// It is how the adjudication cap decides what to spend its slots on. A cluster
+// the community rule can act on is one where a verdict changes the outcome; a
+// cluster entirely below the fold floor only stands to gain a fold, and losing
+// it costs a duplicate left visible rather than a wrong suppression.
+//
+// WRITE is the operative word, and `current` is how it is read. A pair of two
+// earlier-area findings can sit well above the floor and still not be foldable:
+// only the area being consolidated has insights this pass can mark, so such a
+// pair would take the last slot from a current pair that really would fold
+// unasked.
+func clusterCanAutoFold(docs []consolidationDoc, c docCluster, foldFloor float64, memo map[pairKey]bool) bool {
+	for x := 0; x < len(c.members); x++ {
+		for y := x + 1; y < len(c.members); y++ {
+			i, j := c.members[x], c.members[y]
+			key := newPairKey(i, j)
+			foldable, known := memo[key]
+			if !known {
+				foldable = pairCanAutoFold(docs[i], docs[j], foldFloor)
+				memo[key] = foldable
+			}
+			if foldable {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// pairCanAutoFold is the per-pair half of it: one unordered pair, measured
+// once. Stars overlap, so the same pair appears in several of them and the
+// cosine was being recomputed for each — and in both directions — which cost
+// 14.5 seconds of ranking on 200 findings against 79 milliseconds to propose
+// and build the clusters.
+func pairCanAutoFold(a, b consolidationDoc, foldFloor float64) bool {
+	if !a.current && !b.current {
+		return false
+	}
+	// A pair whose other member already carries a mark is not one the
+	// community rule can write either: it resolves the target through that
+	// mark, and the fold it would then attempt is against a document this
+	// pair was never measured against. Ranking on it spends a slot on a
+	// cluster that folds nothing.
+	if (!a.current && a.duplicateOf != "") || (!b.current && b.duplicateOf != "") {
+		return false
+	}
+	if _, ok := cosineFold(b.foldSubject, a.foldSubject, foldFloor); ok {
+		return true
+	}
+	_, ok := cosineFold(a.foldSubject, b.foldSubject, foldFloor)
+	return ok
 }

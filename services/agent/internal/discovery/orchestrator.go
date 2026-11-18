@@ -2791,6 +2791,13 @@ func splitMarkdownDescription(authored string) (plain, md string) {
 // envelope nor a bare array). A well-formed but empty result returns
 // (empty, 0, nil) so callers can distinguish "no insights" from "could not
 // parse".
+// internalInsightKeys are the fields of the stored insight shape that an
+// analysis response may not set: the two marks the duplicate check owns, and
+// the consolidation adjudicator's refusal. Cleared after the decode wherever
+// one arrives, and dropped from the item when their TYPE is what made the item
+// undecodable — see decodeInsightItems.
+var internalInsightKeys = []string{"duplicate_of", "similarity_score", "stands_on_adjudication"}
+
 // decodeWithoutClaims re-decodes one insight with its `quantifier_claims` key
 // removed, for the case where that optional advisory field is the only thing the
 // strict decoder choked on. Reports false when the rest of the object does not
@@ -2801,15 +2808,30 @@ func splitMarkdownDescription(authored string) (plain, md string) {
 // worse than no verdict. An insight that arrives here ships with no evidence check
 // -- which is the state every insight that declares nothing is already in.
 func decodeWithoutClaims(raw json.RawMessage) (*models.Insight, bool) {
+	return decodeWithout(raw, "quantifier_claims")
+}
+
+// decodeWithout decodes one insight with the named keys dropped from the item.
+//
+// Through the JSON structure rather than over the text, and only ever after a
+// straight decode of the item has already failed: dropping a key means
+// re-marshalling the object, which reorders the rest, and field matching is
+// case-insensitive and takes the LAST match — so an item carrying two case
+// variants of one field would ship the other value. Reordering is acceptable
+// when the alternative is losing the finding; it is not acceptable as the
+// ordinary path.
+func decodeWithout(raw json.RawMessage, keys ...string) (*models.Insight, bool) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return nil, false
 	}
 	found := false
 	for k := range fields {
-		if strings.EqualFold(k, "quantifier_claims") {
-			delete(fields, k)
-			found = true
+		for _, drop := range keys {
+			if strings.EqualFold(k, drop) {
+				delete(fields, k)
+				found = true
+			}
 		}
 	}
 	if !found {
@@ -2903,22 +2925,37 @@ func (o *Orchestrator) decodeInsightItems(raws []json.RawMessage, areaID string,
 		}
 		var insight models.Insight
 		if err := json.Unmarshal(raw, &insight); err != nil {
-			// quantifier_claims is optional and advisory: it buys an evidence
-			// check, and losing the check is a far smaller loss than losing the
-			// finding. The prompt asks the model to author it, so a slightly off
-			// shape -- a single object instead of an array, a string-typed step --
-			// is reachable, and a strict decode would discard the name, body,
-			// metrics and indicators to protect a field none of them depend on.
-			// Retry once without it and keep what parsed.
-			if salvaged, ok := decodeWithoutClaims(raw); ok && salvage {
-				applog.WithFields(applog.Fields{
-					"area":    areaID,
-					"index":   i,
-					"insight": salvaged.Name,
-					"reason":  err.Error(),
-				}).Warn("Dropped an unparseable quantifier_claims declaration and kept the insight; it ships unchecked")
-				insight = *salvaged
-			} else {
+			// Two retries, each dropping one thing the finding does not
+			// depend on, before the finding itself is dropped.
+			//
+			// FIRST the fields a model may not write. Their types are ours and
+			// the response is not always held to a schema, so an authored
+			// `"stands_on_adjudication": "true"` failed the decode on its type
+			// and cost the whole finding — a worse outcome than the value it
+			// was trying to set, and worse than the unknown key it would have
+			// been before the field existed. Here rather than stripped ahead
+			// of every decode, so a well-formed item is still decoded from the
+			// bytes the model sent: see decodeWithout.
+			salvaged, ok := decodeWithout(raw, internalInsightKeys...)
+			// THEN quantifier_claims, which is optional and advisory: it buys
+			// an evidence check, and losing the check is a far smaller loss
+			// than losing the finding. The prompt asks the model to author it,
+			// so a slightly off shape -- a single object instead of an array,
+			// a string-typed step -- is reachable, and a strict decode would
+			// discard the name, body, metrics and indicators to protect a
+			// field none of them depend on.
+			if !ok {
+				if withoutClaims, okClaims := decodeWithoutClaims(raw); okClaims && salvage {
+					applog.WithFields(applog.Fields{
+						"area":    areaID,
+						"index":   i,
+						"insight": withoutClaims.Name,
+						"reason":  err.Error(),
+					}).Warn("Dropped an unparseable quantifier_claims declaration and kept the insight; it ships unchecked")
+					salvaged, ok = withoutClaims, true
+				}
+			}
+			if !ok {
 				dropped++
 				applog.WithFields(applog.Fields{
 					"area":   areaID,
@@ -2927,6 +2964,7 @@ func (o *Orchestrator) decodeInsightItems(raws []json.RawMessage, areaID string,
 				}).Warn("Dropping unparseable insight; keeping the rest of the area")
 				continue
 			}
+			insight = *salvaged
 		}
 
 		// Whatever the model may have put here, it is not evidence about the
@@ -2984,7 +3022,18 @@ func (o *Orchestrator) decodeInsightItems(raws []json.RawMessage, areaID string,
 		// by inventing a reference. Cleared at the boundary rather than trusted
 		// and checked later: the only thing that may set these is the duplicate
 		// check, over documents it has actually compared.
+		//
+		// The consolidation adjudicator's refusal neither: it is a decision
+		// about a PAIR of findings, taken by something that was shown both, and
+		// a finding claiming it for itself would exempt itself from
+		// consolidation and from the end-of-run check at once. Analysis is not
+		// always held to a schema — structured output can be off, or
+		// unenforced by the model — so none of the three is trusted to be
+		// absent: they are stripped from the item above and cleared again
+		// here, which also covers an item that reached this decode by some
+		// other path.
 		insight.DuplicateOf, insight.SimilarityScore = "", 0
+		insight.StandsOnAdjudication = false
 
 		insights = append(insights, insight)
 	}

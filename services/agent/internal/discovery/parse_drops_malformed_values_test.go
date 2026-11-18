@@ -217,3 +217,77 @@ func TestEnvelopeItems_CaseVariantKeysAreDeterministic(t *testing.T) {
 		t.Errorf("got %d items, want 1 -- the exactly-matching key's value", len(first))
 	}
 }
+
+// Three fields on the stored shape are decisions about a finding's
+// RELATIONSHIP to another finding, taken by something that was shown both. The
+// analysis response decodes into that same struct, so a model emitting them
+// would mark its own finding a restatement of any id it named, or — with the
+// consolidation flag — exempt itself from consolidation and from the
+// end-of-run check at once. Analysis is not always held to a schema, so they
+// are cleared at the boundary rather than trusted to be absent.
+func TestParseInsights_RelationshipFieldsAreNotTheModelsToWrite(t *testing.T) {
+	o := &Orchestrator{}
+	const in = `{"insights":[{"name":"idle units are growing","description":"the total rose",
+		"duplicate_of":"some-other-id","similarity_score":0.99,"stands_on_adjudication":true}]}`
+	insights, _, err := o.parseInsights(in, "stock")
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("got %d insights, want 1", len(insights))
+	}
+	if insights[0].DuplicateOf != "" || insights[0].SimilarityScore != 0 {
+		t.Errorf("the model wrote its own mark: {%q, %v}", insights[0].DuplicateOf, insights[0].SimilarityScore)
+	}
+	if insights[0].StandsOnAdjudication {
+		t.Error("the model exempted its own finding from consolidation and from the end-of-run check")
+	}
+}
+
+// And the type of a field the model may not write cannot cost the finding
+// either. Decoding `"stands_on_adjudication": "true"` into the boolean failed
+// before anything cleared it, so the whole item was dropped — where before the
+// field existed the unknown key was simply ignored.
+func TestParseInsights_AMistypedInternalFieldDoesNotDropTheFinding(t *testing.T) {
+	o := &Orchestrator{}
+	for name, in := range map[string]string{
+		"string": `{"insights":[{"name":"idle units are growing","description":"the total rose","stands_on_adjudication":"true"}]}`,
+		"number": `{"insights":[{"name":"idle units are growing","description":"the total rose","stands_on_adjudication":1}]}`,
+		"mistyped similarity": `{"insights":[{"name":"idle units are growing","description":"the total rose",` +
+			`"similarity_score":"very high","duplicate_of":{"id":"x"}}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			insights, dropped, err := o.parseInsights(in, "stock")
+			if err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+			if len(insights) != 1 || dropped != 0 {
+				t.Fatalf("got %d insights and %d dropped, want the finding kept", len(insights), dropped)
+			}
+			if insights[0].StandsOnAdjudication || insights[0].DuplicateOf != "" || insights[0].SimilarityScore != 0 {
+				t.Errorf("a model-authored value survived: %+v", insights[0])
+			}
+		})
+	}
+}
+
+// And ignoring those fields must not change the rest of the finding. Field
+// matching is case-insensitive and takes the LAST match, so an item carrying
+// two case variants of one field ships the second value — which deleting a
+// key and re-marshalling the object silently reordered.
+func TestParseInsights_IgnoringInternalFieldsDoesNotReorderTheRest(t *testing.T) {
+	o := &Orchestrator{}
+	const in = `{"insights":[{"name":"idle units are growing","description":"the total rose",` +
+		`"affected_count":10,"stands_on_adjudication":true,"AFFECTED_COUNT":20}]}`
+	insights, _, err := o.parseInsights(in, "stock")
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(insights) != 1 {
+		t.Fatalf("got %d insights, want 1", len(insights))
+	}
+	if insights[0].AffectedCount != 20 {
+		t.Errorf("affected_count = %d, want 20 — the last of the two case variants, as it was before the field was ignored",
+			insights[0].AffectedCount)
+	}
+}

@@ -301,10 +301,11 @@ func TestForwardedEnv_ReasoningEffort(t *testing.T) {
 // per runner is the failure this guards.
 func TestForwardedEnv_PromptCompositionBudgets(t *testing.T) {
 	want := map[string]string{
-		"DISCOVERY_PRIOR_CONTEXT_SHARE":       "0.35",
-		"DISCOVERY_CONTEXT_PROVIDER_SHARE":    "0.15",
-		"DISCOVERY_CONTEXT_RETRIEVAL_TIMEOUT": "25s",
-		"DISCOVERY_DOCUMENT_DEDUP_MINSCORE":   "0.91",
+		"DISCOVERY_PRIOR_CONTEXT_SHARE":                 "0.35",
+		"DISCOVERY_CONTEXT_PROVIDER_SHARE":              "0.15",
+		"DISCOVERY_CONTEXT_RETRIEVAL_TIMEOUT":           "25s",
+		"DISCOVERY_DOCUMENT_DEDUP_MINSCORE":             "0.91",
+		"DISCOVERY_CONSOLIDATION_ADJUDICATION_MINSCORE": "0.84",
 	}
 	for k, v := range want {
 		t.Setenv(k, v)
@@ -334,6 +335,7 @@ func TestForwardedEnv_PromptCompositionBudgetsAbsentWhenUnset(t *testing.T) {
 		"DISCOVERY_CONTEXT_PROVIDER_SHARE",
 		"DISCOVERY_CONTEXT_RETRIEVAL_TIMEOUT",
 		"DISCOVERY_DOCUMENT_DEDUP_MINSCORE",
+		"DISCOVERY_CONSOLIDATION_ADJUDICATION_MINSCORE",
 	} {
 		if found[k] {
 			t.Errorf("%s should not be forwarded when unset", k)

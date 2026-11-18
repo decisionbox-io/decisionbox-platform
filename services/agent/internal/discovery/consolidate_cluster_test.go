@@ -4,7 +4,6 @@ import (
 	"errors"
 	"math"
 	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
@@ -112,71 +111,13 @@ func TestCosineFoldTarget_CanonicalOutsideTheRunIsNotFolded(t *testing.T) {
 	}
 }
 
-func TestClaimFigures(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		in   string
-		want []string
-	}{
-		{"three digits qualify", "margin loss of 142 units", []string{"142"}},
-		{"one and two digits do not", "5% of 42 stores, 3x worse", nil},
-		{"grouped digits count across separators", "12,450 orders worth 1.234,5", []string{"1.234,5", "12,450"}},
-		{"trailing punctuation is trimmed", "affected 1,250.", []string{"1,250"}},
-		{"duplicates collapse", "142 and 142 again", []string{"142"}},
-		{"percentages with three digits qualify", "fell 23.4% over 180 days", []string{"180", "23.4"}},
-		{"empty", "", nil},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := claimFigures(tc.in)
-			if len(got) == 0 && len(tc.want) == 0 {
-				return
-			}
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Errorf("claimFigures(%q) = %v, want %v", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
-// Containment is the test for the commonest duplicate shape these findings
-// take: a headline that IS one row of another finding's table. The surrounding
-// prose differs, so cosine scores it 0.71-0.87 and never folds it.
-func TestContainedIn(t *testing.T) {
-	table := strings.Join([]string{
-		"| segment | idle units | share |",
-		"|---|---|---|",
-		"| north | 111,222 | 33.3 |",
-		"| south | 444,555 | 66.6 |",
-	}, "\n")
-
-	if !containedIn("The north segment holds 111,222 idle units, 33.3 of the total", table) {
-		t.Error("a headline whose figures are all one row of the table must be contained")
-	}
-	if containedIn("The south segment holds 444,555 idle units, 12.5 of the total", table) {
-		t.Error("a headline with a figure the table does not carry must not be contained")
-	}
-}
-
-// One shared figure is not containment. A single three-digit number between
-// two findings about the same warehouse is coincidence often enough to matter
-// — a row count, a year, a store code — and the cost of a wrong fold here is a
-// finding that loses its verdict.
-func TestContainedIn_NeedsMoreThanOneFigure(t *testing.T) {
-	if containedIn("stores affected: 142", "we counted 142 of them, across 7 regions") {
-		t.Error("a single shared figure must not be read as containment")
-	}
-	if containedIn("no figures at all", "142 and 980 and 3,100") {
-		t.Error("a headline with no distinctive figures must not be contained in anything")
-	}
-	if containedIn("142 units over 980 days", "") {
-		t.Error("nothing is contained in an empty body")
-	}
-}
-
-func doc(idx int, id string, deg float64, current bool, name, body string) consolidationDoc {
+// doc builds a test document. The trailing string was the body the figure scan
+// looked inside; nothing reads it now, and it is kept in the signature only
+// because every call site passes one.
+func doc(idx int, id string, deg float64, current bool, name, _ string) consolidationDoc {
 	return consolidationDoc{
 		foldSubject: foldSubject{id: id, docType: "insight", vec: unit(deg), text: id + " text", magnitude: "affected=1"},
-		index:       idx, current: current, slot: idx, name: name, body: body,
+		index:       idx, current: current, slot: idx, name: name,
 	}
 }
 
@@ -243,24 +184,31 @@ func TestBuildClusters_SubsetsAreNotAdjudicatedTwice(t *testing.T) {
 	}
 }
 
-// The two tests find largely different duplicates, so which one fired is
-// reported rather than collapsed: a containment-only cluster is one the
-// similarity threshold cannot see at all.
-func TestProposePairs_ReportsWhichTestFired(t *testing.T) {
-	table := "| x | 111,222 | 33.3 |"
+// Every proposal is a similarity proposal now, and the floor it is measured
+// against is the ADJUDICATION floor — below the fold floor, so a pair between
+// the two reaches the model and the community rule still may not fold it.
+func TestProposePairs_ProposesOnSimilarityAtTheAdjudicationFloor(t *testing.T) {
 	docs := []consolidationDoc{
-		// Far apart in angle, so cosine says nothing; contained by figures.
-		doc(0, "a", 0, false, "a headline", table),
-		doc(1, "b", 80, true, "b carries 111,222 and 33.3", ""),
-		// Close in angle, no shared figures.
-		doc(2, "c", 1, true, "c headline", ""),
+		doc(0, "a", 0, false, "a headline", ""),
+		// 32 degrees is about 0.848: between the two floors.
+		doc(1, "b", 32, true, "b headline", ""),
+		// 80 degrees is about 0.174: below both.
+		doc(2, "c", 80, true, "c headline", ""),
 	}
-	rel := proposePairs(docs, 0.88)
-	if got := rel[newPairKey(0, 1)]; got != agentplugin.ProposalContainment {
-		t.Errorf("a-b proposal = %q, want containment", got)
+	rel := proposePairs(docs, 0.80)
+	if got := rel[newPairKey(0, 1)]; got != agentplugin.ProposalCosine {
+		t.Errorf("a-b proposal = %q, want cosine", got)
 	}
-	if got := rel[newPairKey(0, 2)]; got != agentplugin.ProposalCosine {
-		t.Errorf("a-c proposal = %q, want cosine", got)
+	if _, ok := rel[newPairKey(0, 2)]; ok {
+		t.Error("a pair below the floor must not be proposed")
+	}
+	if len(rel) != 1 {
+		t.Errorf("proposed %d pairs, want 1", len(rel))
+	}
+	// At the fold floor the same middling pair is not proposed at all, which
+	// is the whole reason the adjudication floor is separate.
+	if _, ok := proposePairs(docs, 0.88)[newPairKey(0, 1)]; ok {
+		t.Error("the fold floor must not reach a pair the adjudication floor exists to carry")
 	}
 }
 
@@ -320,29 +268,4 @@ func TestResolveMarkClosure(t *testing.T) {
 			t.Fatalf("err = %v, want errBrokenMark", err)
 		}
 	})
-}
-
-// Containment compares WHOLE tokens, through the same parser, not substrings.
-// `strings.Contains` accepted a headline's 123 and 456 as contained in a body
-// stating 1123 and 2456 — two different measurements reading as the same one,
-// and on a pair below the similarity floor the fold costs a distinct finding
-// its verdict and its place in recommendation generation on nothing at all.
-func TestContainedIn_ComparesWholeTokens(t *testing.T) {
-	if containedIn("the figures are 123 and 456", "we measured 1123 and 2456") {
-		t.Error("a headline's figures must not match longer numbers that merely contain them")
-	}
-	// The same figures as whole tokens are contained.
-	if !containedIn("the figures are 123 and 456", "we measured 123 and 456 across the set") {
-		t.Error("whole-token matches must still be contained")
-	}
-	// A decimal is a different token from its integer part.
-	if containedIn("the figures are 123 and 456", "we measured 123.45 and 456.78") {
-		t.Error("123 must not match 123.45: they are different measurements")
-	}
-	// And a grouped figure is a different token from its ungrouped spelling,
-	// which the substring rule also could not match — stated so the limit is
-	// recorded rather than discovered.
-	if containedIn("the figures are 1,234 and 5,678", "we measured 1234 and 5678") {
-		t.Error("the comparison is textual: a grouped figure is not matched against its ungrouped spelling")
-	}
 }

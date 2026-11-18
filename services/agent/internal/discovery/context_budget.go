@@ -363,21 +363,58 @@ const documentDedupMinScoreEnv = "DISCOVERY_DOCUMENT_DEDUP_MINSCORE"
 // would do, and it would look exactly like a check that found nothing. A
 // non-positive value would mark every document a duplicate of the first one.
 // Either way the default is the safer answer than the number asked for.
-func documentDedupMinScore() float64 {
-	v := goconfig.GetEnvAsFloat(documentDedupMinScoreEnv, defaultDedupMinScore)
-	// NaN first, and explicitly: ParseFloat accepts "NaN", and every
-	// comparison with NaN is false — so the range check below would pass it
-	// through, and then `score < threshold` would be false for every pair and
-	// mark every document in the run a duplicate of the first one. A range
-	// check written as a range cannot catch the one value that is outside
-	// every range.
+// adjudicationMinScoreEnv overrides the similarity floor a pair must clear to
+// be ADJUDICATED, as against the floor it must clear to be folded.
+//
+// Two floors, because the two questions are different. The fold floor is what
+// the community rule may act on with no model in the loop, and it stays where
+// it was. This one only decides what the adjudicator is asked about, and the
+// adjudicator can say no.
+//
+// It sits below the fold floor on purpose. The pairs that need a judgement
+// rather than a threshold are the ones a threshold cannot settle: a finding
+// whose headline is one row of another's table keeps 0.71-0.87 because the
+// surrounding prose differs. Those used to be caught by scanning the figures
+// out of the text, which read numerals with no idea what they measured; the
+// judgement is the model's now, and this floor is what carries the pairs to it.
+//
+// 0.80 by measurement, not taste: on two field runs the three folds the figure
+// scan was earning its place for scored 0.814, 0.831 and 0.858, and 0.80 is the
+// floor that reaches all three. It costs 16-17 adjudications a run there,
+// against 0-3 at the fold floor.
+const adjudicationMinScoreEnv = "DISCOVERY_CONSOLIDATION_ADJUDICATION_MINSCORE"
+
+const defaultAdjudicationMinScore = 0.80
+
+// adjudicationMinScore resolves that floor. Out-of-range, NaN and infinity fall
+// back to the default for the reason documentDedupMinScore does, and a value
+// above the fold floor is kept as given: narrowing what reaches the model is a
+// legitimate thing for an operator to want.
+func adjudicationMinScore() float64 {
+	return cosineFloorFromEnv(adjudicationMinScoreEnv, defaultAdjudicationMinScore)
+}
+
+// cosineFloorFromEnv resolves a cosine floor from the environment, with the
+// validation both of them need: a cosine cannot exceed 1, so a larger value
+// would silently disable whatever the floor gates and look exactly like a check
+// that found nothing, and a non-positive one would admit everything.
+//
+// NaN first, and explicitly: ParseFloat accepts "NaN", every comparison with it
+// is false, so a range check written as a range cannot catch the one value that
+// is outside every range.
+func cosineFloorFromEnv(key string, fallback float64) float64 {
+	v := goconfig.GetEnvAsFloat(key, fallback)
 	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return defaultDedupMinScore
+		return fallback
 	}
 	if v <= 0 || v > 1 {
-		return defaultDedupMinScore
+		return fallback
 	}
 	return v
+}
+
+func documentDedupMinScore() float64 {
+	return cosineFloorFromEnv(documentDedupMinScoreEnv, defaultDedupMinScore)
 }
 
 // fixedPromptTokens is what every prompt of this run will carry besides the

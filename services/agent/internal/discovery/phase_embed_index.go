@@ -125,8 +125,15 @@ func (o *Orchestrator) denormalizeInsights(result *models.DiscoveryResult) []*co
 			// the mirror image of the drift markDuplicate exists to prevent.
 			DuplicateOf:     ins.DuplicateOf,
 			SimilarityScore: ins.SimilarityScore,
-			DiscoveredAt:    ins.DiscoveredAt,
-			CreatedAt:       now,
+			// And the one refusal the mid-run pass records on the finding
+			// rather than in memory: an adjudicator saying this finding
+			// carries detail no survivor of it states. The end-of-run check
+			// below reads it off the standalone copy, so leaving it here
+			// meant the check never saw it — on a resume, where the
+			// in-memory keeps are gone, and on an ordinary run too.
+			StandsOnAdjudication: ins.StandsOnAdjudication,
+			DiscoveredAt:         ins.DiscoveredAt,
+			CreatedAt:            now,
 		})
 	}
 
@@ -255,6 +262,7 @@ func (o *Orchestrator) embedAndIndex(ctx context.Context, insights []*commonmode
 			id: ins.ID, docType: "insight", projectID: ins.ProjectID, discoveryID: ins.DiscoveryID, vec: vec,
 			text: ins.EmbeddingText, magnitude: magnitudeOf("insight", ins.AffectedCount, ins.Metrics, nil, ins.Indicators),
 			markedBy: ins.DuplicateOf,
+			stands:   ins.StandsOnAdjudication,
 		})
 
 		points = append(points, vectorstore.Point{
@@ -404,6 +412,12 @@ type dedupCandidate struct {
 	// somewhere else, which is a reader sent to a different finding on a
 	// second opinion nobody asked for.
 	markedBy string
+	// stands is set when the consolidation adjudicator decided this finding
+	// must not be folded. Read here as well as in that pass, because this
+	// check runs at the end of the run and on a resumed attempt the pass's own
+	// in-memory record of the decision is gone — the flag rides on the
+	// insight, so it is still here.
+	stands bool
 }
 
 // subject projects a candidate onto the comparable part the shipped pairing
@@ -618,6 +632,33 @@ func (o *Orchestrator) markDuplicates(ctx context.Context, candidates []dedupCan
 			protected++
 			applog.WithField("id", c.id).
 				Info("Phase 9: this document is another finding's canonical; not folding it")
+			continue
+		}
+
+		if c.stands {
+			// The consolidation adjudicator decided this finding must not be
+			// folded at all: it asked for a survivor to be rewritten to carry
+			// this finding's figure or caveat, and nothing rewrites a
+			// survivor. Checked on the finding rather than on a pair, which is
+			// what makes it survive a resume — the pass's own record of the
+			// decision lives only in the process that made it.
+			//
+			// Ahead of BOTH passes, and that it was only ahead of the same-run
+			// one was a hole: an earlier run's copy of the survivor states the
+			// claim no better than this run's does, so folding this finding
+			// into it hides exactly the caveat the adjudicator spoke up about,
+			// and does it behind a row from a previous discovery.
+			//
+			// The reverse is NOT guarded, and that is a decision: review asked
+			// for the refusal to stop the other member of the pair — the
+			// survivor — from folding into an earlier run's copy of this
+			// finding. It should not. The refusal is about these two findings
+			// in THIS run; the cross-run rule is about whether an earlier
+			// discovery already published this claim, which is measured
+			// against that row directly and gated by the magnitude guard
+			// above. Suppressing it would re-publish a finding the customer
+			// already has.
+			protected++
 			continue
 		}
 

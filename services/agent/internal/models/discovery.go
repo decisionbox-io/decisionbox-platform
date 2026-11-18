@@ -146,6 +146,22 @@ type Insight struct {
 	// rebuild their per-run grouping and would not have covered the run detail
 	// page at all, since that page IS the record of one run's output.
 	DuplicateOf     string  `bson:"duplicate_of,omitempty" json:"duplicate_of,omitempty"`
+	// StandsOnAdjudication marks a finding the consolidation adjudicator
+	// decided must not be folded: it asked for the survivor's description to
+	// be rewritten to carry this finding's figure, segment or caveat, and
+	// nothing rewrites a survivor, so folding it would suppress exactly that
+	// detail behind text which does not state it.
+	//
+	// A property of the FINDING rather than of a pair, which is what makes it
+	// hold. The same decision expressed as a protected pair had to be
+	// consulted at every site that writes a mark, with ids that change as
+	// marks are written — and review found three ways past it: a fold
+	// redirected through a third document, the community fallback choosing a
+	// different canonical, and a pause and resume, after which the pairs were
+	// gone because they only ever lived in memory. This travels with the
+	// insight, through the area draft and the checkpoint, so none of those
+	// reach it.
+	StandsOnAdjudication bool `bson:"stands_on_adjudication,omitempty" json:"stands_on_adjudication,omitempty"`
 	SimilarityScore float64 `bson:"similarity_score,omitempty" json:"similarity_score,omitempty"`
 
 	// Flexible domain-specific metrics
@@ -860,9 +876,13 @@ type ConsolidationSummary struct {
 	// RefusedShape counts verdicts discarded as malformed: an id outside its
 	// own cluster, a canonical that is itself folded, a cycle.
 	RefusedShape int `bson:"refused_shape,omitempty" json:"refused_shape,omitempty"`
-	// RefusedUnmergeable counts clusters given back because the survivor
-	// needed a rewrite its own area has already recorded. Applying the fold
-	// without the rewrite is how a fold loses a caveat.
+
+	// RefusedUnmergeable counts the verdicts whose folds were left standing
+	// because the verdict asked for the survivor's description to be
+	// rewritten. A rewrite is requested precisely when a folded member
+	// carries a figure or a caveat the survivor does not, and nothing
+	// rewrites a survivor — so folding without it would suppress those
+	// findings behind text that does not state them.
 	RefusedUnmergeable int `bson:"refused_unmergeable,omitempty" json:"refused_unmergeable,omitempty"`
 	// RefusedKept counts folds refused because the adjudicator had already
 	// decided that pair stands, in another cluster of the same pass. Clusters

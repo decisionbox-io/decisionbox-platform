@@ -103,13 +103,28 @@ type ConsolidationVerdict struct {
 	// standing, which is a legitimate answer: two findings can be proposed
 	// as a pair and turn out to be two findings.
 	Duplicates map[string]float64
-	// MergedDescription replaces the canonical's description, so a figure or
-	// a caveat that only a folded member carried survives the fold. Empty
-	// leaves the canonical alone.
+	// MergedDescription is NO LONGER APPLIED, and setting it costs this
+	// verdict its folds.
 	//
-	// Applied only when the canonical is in the area being consolidated: an
-	// earlier area's text is already recorded in that area's checkpoint, and
-	// rewriting it here would leave the record and the result disagreeing.
+	// It used to replace the canonical's description so that a figure or a
+	// caveat only a folded member carried survived the fold. Whether a
+	// rewritten paragraph still states a particular claim is a question about
+	// particular figures, though, and the check that answered it read the
+	// figures out of the prose; similarity cannot — a rewrite that turned a
+	// folded finding's 33.3% into 38.3% scored well above the fold floor, so
+	// it would publish the changed figure and suppress the finding holding the
+	// right one.
+	//
+	// So a non-empty value is read as what it has always meant: this fold
+	// would lose something. The caller leaves both findings standing and
+	// records the pair as adjudicated. A provider that wants the fold should
+	// name the member that already carries the detail as the canonical, or
+	// fold nothing.
+	//
+	// There is no longer a case in which it is applied, so the restriction
+	// that used to narrow it — current-area canonicals only, because an
+	// earlier area's text is already recorded in its own checkpoint — no
+	// longer applies either.
 	MergedDescription string
 	// Reason is one line for the run log, so a fold can be read back without
 	// re-deriving it.

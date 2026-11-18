@@ -1592,3 +1592,55 @@ func TestMarkDuplicates_SameWordingDifferentIndicators(t *testing.T) {
 		}
 	})
 }
+
+// The whole of Phase 9, over a result carrying the one refusal the mid-run
+// pass records on the finding itself. The flag has to survive denormalization
+// to be read here: this is the path a resumed run takes, where the in-memory
+// pair keeps are gone and the finding is all that remembers the decision.
+func TestRunPhaseEmbedIndex_HonoursAnAdjudicatorsRefusalOnTheFinding(t *testing.T) {
+	store := &mockEmbedIndexStore{}
+	o := &Orchestrator{
+		embedIndexStore: store,
+		// One vector for both findings, so the only thing that can keep them
+		// apart is the refusal.
+		embeddingProvider: &mockEmbeddingProvider{dims: 3, model: "test-model", vectors: [][]float64{{1, 0, 0}, {1, 0, 0}}},
+		vectorStore:       &mockVectorStore{},
+		statusReporter:    &StatusReporter{},
+	}
+
+	result := &models.DiscoveryResult{
+		ID: "disc-1", ProjectID: "proj-1",
+		Insights: []models.Insight{
+			{ID: "a", Name: "the whole total", Description: "every segment", Severity: "high", AffectedCount: 100},
+			{ID: "b", Name: "the north segment", Description: "a slice, with a caveat", Severity: "high",
+				AffectedCount: 100, StandsOnAdjudication: true},
+		},
+	}
+
+	o.runPhaseEmbedIndex(context.Background(), result)
+
+	for _, u := range store.dupUpdates {
+		if u.ID == "b" {
+			t.Fatalf("Phase 9 folded a finding an adjudicator said must stand: %+v", store.dupUpdates)
+		}
+	}
+}
+
+// The protection is checked ahead of BOTH of Phase 9's passes. An earlier
+// run's copy of the survivor states the claim no better than this run's does,
+// so folding a protected finding into it hides exactly the caveat the
+// adjudicator spoke up about — and behind a row from a previous discovery.
+func TestMarkDuplicates_AProtectedFindingIsNotFoldedIntoAnEarlierRun(t *testing.T) {
+	store := &mockEmbedIndexStore{}
+	mockVS := &mockVectorStore{dupes: []vectorstore.SearchResult{{ID: "last-run-copy", Score: 0.97}}}
+	o := &Orchestrator{embedIndexStore: store, vectorStore: mockVS}
+
+	o.markDuplicates(context.Background(), []dedupCandidate{
+		{id: "b", docType: "insight", projectID: "p", vec: []float64{1, 0, 0},
+			text: "b", magnitude: "affected=1", stands: true},
+	}, []string{"this-run"})
+
+	if len(store.dupUpdates) != 0 {
+		t.Errorf("Phase 9 folded a protected finding into an earlier run: %+v", store.dupUpdates)
+	}
+}
