@@ -3,6 +3,7 @@ package discovery
 import (
 	"strings"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -32,50 +33,6 @@ import (
 // warehouse reports multi_currency with EUR and USD in use, so a stated currency is
 // always kept and only an unstated one is filled. Which currency a particular row is in
 // is the model's to say, and the prompt is where it is asked -- see figureContract.
-
-// isoCurrencySymbols maps an ISO 4217 code to the symbol that currency prints.
-//
-// The schema asks for the symbol a figure prints and a model supplies the code about as
-// often: on the run above, every figure that did state a currency stated the code, which
-// rendered as the code in front of the number. Both are an answer to the question asked,
-// so both are accepted and normalised to one of them.
-//
-// Deliberately short. A code is mapped only where the symbol is unambiguous and in
-// common use for that currency; anything else is passed through as written, because a
-// code is a correct, readable answer and an invented symbol is not. That rules out the
-// Nordic kronor, which share "kr"; the renminbi, whose "¥" is the yen's; and the franc,
-// which prints as "CHF" in the places that use it.
-var isoCurrencySymbols = map[string]string{
-	"USD": "$",
-	"EUR": "€",
-	"GBP": "£",
-	"JPY": "¥",
-	"TRY": "₺",
-	"INR": "₹",
-	"RUB": "₽",
-	"KRW": "₩",
-	"ILS": "₪",
-	"BRL": "R$",
-	"NGN": "₦",
-	"PHP": "₱",
-	"VND": "₫",
-	"UAH": "₴",
-}
-
-// currencySymbol is what to print for a currency the model named, by code or by symbol.
-//
-// Case-insensitive on the code, because a model that writes "try" means the lira. The
-// symbols are not affected: none of them is a cased letter.
-func currencySymbol(stated string) string {
-	c := strings.TrimSpace(stated)
-	if c == "" {
-		return ""
-	}
-	if sym, ok := isoCurrencySymbols[strings.ToUpper(c)]; ok {
-		return sym
-	}
-	return c
-}
 
 // localCurrency reads the warehouse's own currency out of the project profile.
 //
@@ -186,10 +143,10 @@ func settleCurrencies(figures []models.Figure, currencyFor func(models.Figure) s
 			continue
 		}
 		if strings.TrimSpace(f.Currency) == "" {
-			f.Currency = currencySymbol(currencyFor(*f))
+			f.Currency = scoring.CurrencySymbol(currencyFor(*f))
 			continue
 		}
-		f.Currency = currencySymbol(f.Currency)
+		f.Currency = scoring.CurrencySymbol(f.Currency)
 	}
 }
 
@@ -251,14 +208,14 @@ func (p currencyPlan) forFigures(figures []models.Figure, stepByID map[int]*mode
 		if _, known := stepByID[f.Step]; !known {
 			continue
 		}
-		distinct[currencySymbol(p.forStep(f.Step, stepByID))] = struct{}{}
+		distinct[scoring.CurrencySymbol(p.forStep(f.Step, stepByID))] = struct{}{}
 	}
 	if len(distinct) != 1 {
 		// None: no currency figure citing a known step, so there is nothing
 		// to read off the document and the run-wide agreement is the best
 		// available answer. Several: genuinely incomparable amounts.
 		if len(distinct) == 0 {
-			return currencySymbol(p.agreed)
+			return scoring.CurrencySymbol(p.agreed)
 		}
 		return ""
 	}

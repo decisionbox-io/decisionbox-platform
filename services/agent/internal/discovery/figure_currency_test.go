@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 	"strings"
 	"testing"
 
@@ -41,7 +42,7 @@ func TestAnISOCodeBecomesTheSymbolItPrints(t *testing.T) {
 	// stated the code, which rendered as the code in front of the number.
 	// Padding is trimmed rather than read as part of the code. Its own assertion
 	// because a map key written with spaces reads like a typo.
-	if got := currencySymbol("  TRY "); got != "₺" {
+	if got := scoring.CurrencySymbol("  TRY "); got != "₺" {
 		t.Errorf("a padded code did not normalise: %q", got)
 	}
 
@@ -56,8 +57,8 @@ func TestAnISOCodeBecomesTheSymbolItPrints(t *testing.T) {
 		// symbol for it would be worse than printing what it asked for.
 		"XYZ": "XYZ",
 	} {
-		if got := currencySymbol(code); got != want {
-			t.Errorf("currencySymbol(%q) = %q, want %q", code, got, want)
+		if got := scoring.CurrencySymbol(code); got != want {
+			t.Errorf("scoring.CurrencySymbol(%q) = %q, want %q", code, got, want)
 		}
 	}
 }
