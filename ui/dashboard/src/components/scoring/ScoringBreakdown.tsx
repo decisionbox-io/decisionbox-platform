@@ -113,9 +113,10 @@ function ConfidenceSection({ scoring, engine }: { scoring: Scoring; engine?: Sco
 //
 // Two figures can appear, and the second line is the one that explains the
 // case a reader would otherwise read as a bug: a finding with a grounded $2.4M
-// banded Medium off a 4% share. Amount bands are a per-business threshold and
-// ship unconfigured, so the amount is the money at stake and the share is what
-// ranked it. Saying both is the only honest rendering of that.
+// banded Medium off a 4% share. Amount bands are a per-business threshold --
+// shipped unconfigured, and configurable per deployment and per datasource --
+// so the amount is the money at stake and the share is what ranked it. Saying
+// both is the only honest rendering of that.
 function SeveritySection({ scoring, engine }: { scoring: Scoring; engine?: ScoringEngine }) {
   const meta = severityMeta(scoring.severity_band);
   const magnitude = scoring.magnitude_score ?? 0;
@@ -178,18 +179,27 @@ function SeveritySection({ scoring, engine }: { scoring: Scoring; engine?: Scori
       {/* Why a grounded amount did not set the band. Two different
           sentences, because there are two different outcomes and one wording
           for both contradicted the line above it: a share-banded document was
-          ranked on its share, and a baseline one was ranked on nothing. */}
-      {severityCfg && severityCfg.amount_bands.length === 0 && driver?.amount
-        && driver.kind === 'share' && (
+          ranked on its share, and a baseline one was ranked on nothing.
+
+          Both say only what THIS DOCUMENT proves, and deliberately no longer
+          read the calibration's own amount bands. That calibration is served
+          per engine version, and money thresholds are per deployment and per
+          datasource — so "no amount thresholds are configured" was a claim
+          about the engine being made about a document, and it became false
+          the moment a deployment could configure some: a finding banded off a
+          real threshold would have been explained by a sentence saying none
+          existed. What a reader needs here is why the amount in front of them
+          did not set the band, which the driver's own kind answers. Where to
+          configure thresholds belongs on the page that configures them. */}
+      {driver?.amount && driver.kind === 'share' && (
         <Text size="xs" c="dimmed" data-testid="severity-no-amount-bands">
-          No amount thresholds are configured, so the band comes from the share.
+          The band comes from the share; the amount is what the finding is about.
         </Text>
       )}
-      {severityCfg && severityCfg.amount_bands.length === 0 && driver?.amount
-        && driver.kind === 'baseline' && (
+      {driver?.amount && driver.kind === 'baseline' && (
         <Text size="xs" c="dimmed" data-testid="severity-no-amount-bands">
-          No amount thresholds are configured and this finding states no share, so
-          nothing could rank the amount and the area baseline applies.
+          No threshold ranked this amount and the finding states no share, so the
+          area baseline applies.
         </Text>
       )}
 

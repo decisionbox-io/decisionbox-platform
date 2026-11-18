@@ -224,14 +224,20 @@ describe('ScoringBreakdown, severity axis', () => {
 
   it('explains why a grounded amount did not set the band', async () => {
     // The case a reader would otherwise read as a bug: a finding with a real
-    // ₺2.4M banded off a share. An absolute money cutoff is a property of a
-    // business, so the engine ships none, and the breakdown has to say so.
+    // ₺2.4M banded off a share. The sentence says what the DOCUMENT shows --
+    // the share ranked it, the amount is what it is about -- and not what the
+    // deployment has configured, which this component cannot know now that
+    // thresholds are per deployment and per datasource.
     wrap(<ScoringBreakdown scoring={shareBanded()} axis="severity" />);
 
     await waitFor(() => {
       expect(screen.getByTestId('severity-no-amount-bands'))
-        .toHaveTextContent(/no amount thresholds are configured/i);
+        .toHaveTextContent(/the band comes from the share/i);
     });
+    // And it must NOT claim the deployment has no thresholds: a finding can
+    // band on its share on a deployment that configured several.
+    expect(screen.getByTestId('severity-no-amount-bands'))
+      .not.toHaveTextContent(/no amount thresholds are configured/i);
   });
 
   it('names the area baseline when nothing could be measured', () => {
@@ -547,7 +553,7 @@ describe('the amount explanation matches the band it explains', () => {
 
     await waitFor(() => {
       const note = screen.getByTestId('severity-no-amount-bands');
-      expect(note).toHaveTextContent(/nothing could rank the amount/i);
+      expect(note).toHaveTextContent(/no threshold ranked this amount/i);
       expect(note).not.toHaveTextContent(/the band comes from the share/i);
     });
   });
@@ -591,9 +597,14 @@ describe('a confidence-only calibration response', () => {
     expect(screen.getByTestId('severity-magnitude')).toHaveTextContent('1.00');
     expect(screen.getByTestId('severity-final')).toHaveTextContent('1.00');
     expect(screen.getByTestId('severity-banded-by')).toBeInTheDocument();
-    // The two lines that need the calibration are omitted, not faked.
+    // The line that needs the calibration is omitted, not faked.
     expect(screen.queryByTestId('severity-cutoff')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('severity-no-amount-bands')).not.toBeInTheDocument();
+    // The amount explanation is NOT one of them any more, and that is the
+    // point of the rewording: it is derived from the document's own driver,
+    // so an API too old to serve a severity calibration still explains why
+    // the amount in front of the reader did not set the band.
+    expect(screen.getByTestId('severity-no-amount-bands'))
+      .toHaveTextContent(/the band comes from the share/i);
   });
 
   it('renders all three axes without throwing', async () => {

@@ -138,7 +138,8 @@ The example is abridged: each engine also carries a `priority` block with the ti
 - `bases` is keyed by the verdict a document carries. The two verdicts that mean validation never ran (`validation_disabled`, `skipped_budget_cap`) are deliberately absent — they take `default`, and their band is terminal rather than decided by a cutoff.
 - `cutoffs` are inclusive: a score at exactly `high` is high.
 - A deduction's `cap` bounds the total it may charge; `shared_cap_with` names the other deduction it shares that total with, which is why two 0.1 deductions can only come to 0.15 between them.
-- `severity.amount_bands` ships EMPTY, and the empty array is the information rather than an omission: an absolute money cutoff is a property of a business, not of the engine, so an unconfigured deployment bands on the share and still shows the amount at stake.
+- `severity.amount_bands` ships EMPTY on the **engine's own** calibration, and the empty array is the information rather than an omission: an absolute money cutoff is a property of a business, not of the engine, so a deployment that configures none bands on the share and still shows the amount at stake.
+  This endpoint always serves the engine's calibration for a version, never a project's resolved configuration — the cutoffs it reports are what makes a stored document explainable with the numbers that actually scored it, and those cannot vary by project. A deployment may configure thresholds of its own, in which case the run that applied them records them in its own `scoring_config` (see [Discovery run](data-models.md#discovery-run)).
 - `severity.max_weight` is the top of the range a configured severity weight must fall in, `(0, max_weight]`, and `severity.global_risk_categories` are the cross-cutting risk category ids available to every domain pack. See [Risk taxonomy and severity weights](data-models.md#risk-taxonomy-and-severity-weights).
 
 Read-only, and served to any authenticated viewer.

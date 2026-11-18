@@ -63,7 +63,8 @@ export function driverSummary(driver: SeverityDriver | undefined): string {
   if (!driver) return '';
   if (driver.kind === 'baseline') {
     // An amount can exist here: a checked amount in the home currency on a
-    // document with no percentage figure and no amount thresholds configured.
+    // document with no percentage figure and no amount threshold that ranked
+    // its amount.
     // The amount is real and worth showing, but it did NOT rank the finding,
     // and a bare "₺2.40M" in this slot would read as though it had. Saying
     // both is the only short form that is true.
