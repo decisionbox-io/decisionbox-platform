@@ -285,19 +285,26 @@ func confidenceAxis(in Input, cfg Config) gomodels.Scoring {
 	base, reason := baseFor(in.Verdict, conf)
 	docks, score := applyFloor(base, candidateDocks(in, conf), conf.Floor)
 
-	version := cfg.Version
-	if version == 0 {
-		version = EngineVersion
-	}
-
 	return gomodels.Scoring{
 		ConfidenceBand:   bandFor(in.Verdict, score, conf),
 		ConfidenceBase:   base,
 		ConfidenceScore:  score,
 		ConfidenceReason: composeReason(reason, docks),
 		ConfidenceDocks:  docks,
-		EngineVersion:    version,
+		EngineVersion:    stampedVersion(cfg),
 	}
+}
+
+// stampedVersion is the engine version a document scored under cfg carries:
+// the calibration's own, or this build's when the calibration left it unset.
+// One function, because Score stamps it and Reweigh compares against it, and
+// two readings of an unset version would refuse to re-weigh a document under
+// the very configuration that scored it.
+func stampedVersion(cfg Config) int {
+	if cfg.Version == 0 {
+		return EngineVersion
+	}
+	return cfg.Version
 }
 
 // withPriority rolls the two bands up into a tier and a sort score.
@@ -413,7 +420,7 @@ func RescoreConfidence(prior gomodels.Scoring, in Input) gomodels.Scoring {
 // it cites, so it moves when they do rather than by a weight of its own.
 func Reweigh(prior gomodels.Scoring, area gomodels.RunAreaRisk, cfg Config) (gomodels.Scoring, bool) {
 	cfg = resolvedConfig(cfg)
-	if prior.SeverityBand == "" || prior.EngineVersion != cfg.Version {
+	if prior.SeverityBand == "" || prior.EngineVersion != stampedVersion(cfg) {
 		return prior, false
 	}
 

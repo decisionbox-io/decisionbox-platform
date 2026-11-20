@@ -182,3 +182,20 @@ func TestReweighDoesNotWriteIntoThePrior(t *testing.T) {
 		t.Errorf("the prior changed:\n before %s\n after  %s", before, after)
 	}
 }
+
+// TestReweighReadsAnUnsetVersionTheWayScoreStampsIt -- a populated calibration
+// that leaves Version unset is stamped with this build's version by Score, so
+// Reweigh must compare against the same reading or refuse the document the
+// configuration itself just scored.
+func TestReweighReadsAnUnsetVersionTheWayScoreStampsIt(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Version = 0
+	stored := scoreArea(cfg, 7.5, []string{"compliance"}, nil)
+	if stored.EngineVersion != EngineVersion {
+		t.Fatalf("Score stamped %d, want %d", stored.EngineVersion, EngineVersion)
+	}
+	got, ok := Reweigh(stored, gomodels.RunAreaRisk{RiskCategories: []string{"compliance"}}, cfg)
+	if !ok || !reflect.DeepEqual(got, stored) {
+		t.Errorf("Reweigh under the scoring configuration: ok %v, changed %v", ok, !reflect.DeepEqual(got, stored))
+	}
+}
