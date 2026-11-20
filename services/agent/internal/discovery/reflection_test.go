@@ -11,6 +11,7 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -2335,4 +2336,49 @@ func amountIn(t *testing.T, currency string, value float64) *models.DiscoveryRes
 		},
 		AffectedCount: 100,
 	}}}
+}
+
+// TestTheLadderBasisIsBoundedAndStable.
+//
+// The basis is stored on the finding AND on every sighting, so its SIZE is a
+// property of the ledger, not of the ladder. Writing the thresholds out meant
+// a valid ten-thousand-rung ladder produced a 3 MB basis and the fifth
+// sighting pushed the document past MongoDB's 16 MiB limit — a finding that
+// silently stops recording history.
+func TestTheLadderBasisIsBoundedAndStable(t *testing.T) {
+	huge := make([]commonmodels.MagnitudeBand, 0, 10_000)
+	for i := 10_000; i > 0; i-- {
+		huge = append(huge, commonmodels.MagnitudeBand{At: float64(i) * 1000, Band: commonmodels.SeverityBandHigh})
+	}
+	cfg := scoring.SeverityConfig{AmountBands: huge, AmountCurrency: "$"}
+
+	got := amountLadderBasis(cfg)
+	if len(got) > 64 {
+		t.Errorf("basis is %d bytes for a 10,000-rung ladder; it is stored on every sighting", len(got))
+	}
+
+	// The same ladder, the same basis — that is the whole job, since the
+	// basis is compared across runs.
+	if again := amountLadderBasis(cfg); again != got {
+		t.Errorf("basis is not stable: %q then %q", got, again)
+	}
+
+	// A different ladder, a different basis. Both halves matter: the currency
+	// and the rungs.
+	other := cfg
+	other.AmountBands = []commonmodels.MagnitudeBand{{At: 1_000_000, Band: commonmodels.SeverityBandHigh}}
+	if amountLadderBasis(other) == got {
+		t.Error("two different ladders share a basis")
+	}
+	sameRungsOtherCurrency := other
+	sameRungsOtherCurrency.AmountCurrency = "₺"
+	if amountLadderBasis(sameRungsOtherCurrency) == amountLadderBasis(other) {
+		t.Error("the same rungs in another currency share a basis")
+	}
+
+	// No ladder is no basis, which is what every deployment that configures
+	// nothing carries — and two of those compare equal.
+	if b := amountLadderBasis(scoring.SeverityConfig{}); b != "" {
+		t.Errorf("basis = %q for no ladder, want empty", b)
+	}
 }

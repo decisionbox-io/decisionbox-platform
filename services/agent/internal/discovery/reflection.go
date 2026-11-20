@@ -2,7 +2,9 @@ package discovery
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strconv"
@@ -1075,15 +1077,30 @@ func amountLadderBasis(cfg scoring.SeverityConfig) string {
 	if len(cfg.AmountBands) == 0 {
 		return ""
 	}
-	var b strings.Builder
-	b.WriteString(cfg.AmountCurrency)
+	// HASHED, not spelled out.
+	//
+	// The first version wrote every threshold into the string, which is fine
+	// for the handful a person types and ruinous for what the API accepts: a
+	// valid ladder of ten thousand rungs produced a 3 MB basis, and since it
+	// is stored on the finding AND on every sighting, the fifth observation
+	// pushed the document past MongoDB's 16 MiB limit and the finding stopped
+	// recording history altogether. A ledger that silently stops accumulating
+	// is worse than one that never started.
+	//
+	// What the basis is for is equality across runs, so a fixed-size digest
+	// answers it exactly as well. SHA-256 because it is stable across builds
+	// and architectures — a hash/maphash or a Go map iteration would not be —
+	// and truncated to 16 hex characters, which is far more than enough to
+	// tell two ladders apart in one project's ledger.
+	h := sha256.New()
+	h.Write([]byte(cfg.AmountCurrency))
 	for _, band := range cfg.AmountBands {
-		b.WriteString("/")
-		b.WriteString(strconv.FormatFloat(band.At, 'f', -1, 64))
-		b.WriteString(":")
-		b.WriteString(band.Band)
+		h.Write([]byte{0})
+		h.Write([]byte(strconv.FormatFloat(band.At, 'f', -1, 64)))
+		h.Write([]byte{0})
+		h.Write([]byte(band.Band))
 	}
-	return b.String()
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
 // buildFindingCandidates extracts durable, substance-carrying findings from the

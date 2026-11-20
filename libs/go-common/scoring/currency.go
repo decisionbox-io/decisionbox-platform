@@ -79,6 +79,23 @@ func CurrencySymbol(stated string) string {
 	return c
 }
 
+// SameCurrency reports whether two stated currencies are the same currency.
+//
+// THE comparison, exported, because the severity axis compares currencies in
+// several places and every one of them was getting it wrong in a different
+// way: a raw `==` against a normalised value, a normalised value against a
+// raw one, the same code in two casings. Four review findings in three rounds
+// were that comparison written out by hand at a fourth site. A function
+// cannot be half-applied.
+//
+// An EMPTY ladder currency is not a currency and never equal to one: callers
+// that mean "any currency" test for empty themselves, because "unstated" and
+// "the same as" are different questions and conflating them is how a
+// currency-free ladder came to rank amounts it was never written for.
+func SameCurrency(a, b string) bool {
+	return CurrencySymbol(a) == CurrencySymbol(b)
+}
+
 // isISOCode reports whether this is shaped like an ISO 4217 code: exactly
 // three ASCII letters. Deliberately shape alone -- the point is to normalise
 // the casing of something a reader would recognise as a code, not to decide

@@ -359,3 +359,132 @@ func TestTheReplayNormalisesAStoredCurrency(t *testing.T) {
 			got.SeverityBand)
 	}
 }
+
+// TestTheReplayRecoversAnAmountTheStoringRunDropped.
+//
+// Documents scored before the engine's currency comparison was normalised
+// carry a driver with NO amount, where the profile and the figure stated the
+// same currency in different casing: the old eligibility check excluded the
+// figure, so there is nothing on the driver to replay. Replaying the driver
+// alone then showed a new money ladder changing nothing, while the next run —
+// which no longer drops the figure — ranked the same evidence far higher. A
+// preview saying "nothing moves" about a configuration that moves plenty is
+// the one thing it may not say.
+func TestTheReplayRecoversAnAmountTheStoringRunDropped(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Severity.AmountBands = []MagnitudeBand{{At: 1_000_000, Band: gomodels.SeverityBandHigh}}
+	cfg.Severity.AmountCurrency = "CAD"
+
+	// What such a run stored: a share-banded driver, and no amount at all.
+	prior := gomodels.Scoring{
+		SeverityBand:   gomodels.SeverityBandLow,
+		MagnitudeScore: 0.25,
+		SeverityDriver: &gomodels.SeverityDriver{
+			Kind:       gomodels.SeverityDriverShare,
+			Quantified: true,
+			Figure:     &gomodels.SeverityFigure{Value: 1.2, Unit: gomodels.UnitPercent, Display: "1.20%"},
+		},
+	}
+	// The evidence it kept beside that driver.
+	figures := []gomodels.Figure{
+		{ID: "a1", Value: 2_400_000, Unit: gomodels.UnitCurrency, Currency: "cad"},
+		{ID: "f1", Value: 1.2, Unit: gomodels.UnitPercent},
+	}
+	verdicts := []gomodels.FigureVerdict{
+		{ID: "a1", Display: "CAD 2.40M", Status: gomodels.FigureHolds, Claimed: 2_400_000, Evaluated: 2_400_000},
+		{ID: "f1", Display: "1.20%", Status: gomodels.FigureHolds, Claimed: 1.2, Evaluated: 1.2},
+	}
+
+	in := Input{
+		AreaID: "revenue", Config: cfg,
+		Figures: figures, FigureVerdicts: verdicts, HomeCurrency: "CAD",
+	}
+	got := RescoreSeverity(prior, in)
+
+	if got.SeverityDriver == nil || got.SeverityDriver.Kind != gomodels.SeverityDriverAmount {
+		t.Fatalf("driver = %+v, want the recovered amount to band it", got.SeverityDriver)
+	}
+	if got.SeverityBand != gomodels.SeverityBandHigh {
+		t.Errorf("band = %q, want high — what the next run will produce for this evidence", got.SeverityBand)
+	}
+
+	// WITHOUT the evidence, the replay has nothing to recover and says so by
+	// leaving the document on its share. That is the behaviour a caller who
+	// passes no figures gets, and it must not change.
+	bare := RescoreSeverity(prior, Input{AreaID: "revenue", Config: cfg})
+	if bare.SeverityDriver.Kind != gomodels.SeverityDriverShare {
+		t.Errorf("driver = %q with no evidence supplied, want the stored share", bare.SeverityDriver.Kind)
+	}
+
+	// And a document whose driver DOES carry an amount is untouched by the
+	// recovery: it is additive, never a second opinion about an amount the
+	// run already chose.
+	withAmount := prior
+	withAmount.SeverityDriver = &gomodels.SeverityDriver{
+		Kind: gomodels.SeverityDriverAmount, Quantified: true,
+		Amount: &gomodels.SeverityFigure{Value: 500, Currency: "CAD", Unit: gomodels.UnitCurrency},
+		Figure: &gomodels.SeverityFigure{Value: 500, Currency: "CAD", Unit: gomodels.UnitCurrency},
+	}
+	kept := RescoreSeverity(withAmount, in)
+	if kept.SeverityDriver.Amount.Value != 500 {
+		t.Errorf("amount = %v, want the driver's own 500 rather than the figures'", kept.SeverityDriver.Amount.Value)
+	}
+}
+
+// TestAProvidersLadderAppliesWhateverFormItsCurrencyTook.
+//
+// The ladder's currency and the document's home currency arrive from different
+// places — a provider or a hand-edited document on one side, the agent's own
+// resolution on the other — so they are routinely the same currency in
+// different forms. A raw comparison meant a provider returning `USD` had its
+// thresholds accepted, stored, pinned and then silently never applied to a run
+// whose home currency had been normalised to `$`; and in the other direction a
+// fresh score banded on the share while the replay banded on the amount, which
+// is the preview disagreeing with the run.
+func TestAProvidersLadderAppliesWhateverFormItsCurrencyTook(t *testing.T) {
+	for _, tc := range []struct{ name, ladder, home string }{
+		{"code against symbol", "USD", "$"},
+		{"symbol against code", "$", "USD"},
+		{"both codes, different casing", "cad", "CAD"},
+		{"both the same", "$", "$"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Severity.AmountBands = []MagnitudeBand{{At: 1_000_000, Band: gomodels.SeverityBandHigh}}
+			cfg.Severity.AmountCurrency = tc.ladder
+
+			prior := gomodels.Scoring{
+				SeverityBand:   gomodels.SeverityBandLow,
+				MagnitudeScore: 0.25,
+				SeverityDriver: &gomodels.SeverityDriver{
+					Kind: gomodels.SeverityDriverAmount, Quantified: true,
+					Amount: &gomodels.SeverityFigure{
+						Value: 2_400_000, Currency: tc.home, Unit: gomodels.UnitCurrency,
+					},
+				},
+			}
+
+			got := RescoreSeverity(prior, Input{AreaID: "revenue", Config: cfg})
+			if got.SeverityBand != gomodels.SeverityBandHigh {
+				t.Errorf("band = %q for a %s ladder on a %s amount, want high — same currency, different form",
+					got.SeverityBand, tc.ladder, tc.home)
+			}
+		})
+	}
+
+	// And a ladder in a genuinely different currency still ranks nothing.
+	cfg := DefaultConfig()
+	cfg.Severity.AmountBands = []MagnitudeBand{{At: 1_000_000, Band: gomodels.SeverityBandHigh}}
+	cfg.Severity.AmountCurrency = "TRY"
+	prior := gomodels.Scoring{
+		SeverityBand:   gomodels.SeverityBandLow,
+		MagnitudeScore: 0.25,
+		SeverityDriver: &gomodels.SeverityDriver{
+			Kind: gomodels.SeverityDriverAmount, Quantified: true,
+			Amount: &gomodels.SeverityFigure{Value: 2_400_000, Currency: "$", Unit: gomodels.UnitCurrency},
+		},
+	}
+	if got := RescoreSeverity(prior, Input{AreaID: "revenue", Config: cfg}); got.SeverityBand == gomodels.SeverityBandHigh {
+		t.Error("a lira ladder banded a dollar amount high")
+	}
+}

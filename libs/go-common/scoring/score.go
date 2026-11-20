@@ -180,12 +180,7 @@ func Score(in Input) gomodels.Scoring {
 	out := confidenceAxis(in, cfg)
 
 	weight, weightSource := in.areaWeight(cfg.Severity)
-	magnitude, sevScore, sevBand, driver, sevReason := scoreSeverity(severityInput{
-		figures:      in.Figures,
-		verdicts:     in.FigureVerdicts,
-		homeCurrency: in.HomeCurrency,
-		weight:       weight,
-	}, cfg.Severity)
+	magnitude, sevScore, sevBand, driver, sevReason := scoreSeverity(in.severityInput(weight), cfg.Severity)
 
 	out.MagnitudeScore = magnitude
 	out.SeverityBand = sevBand
@@ -394,6 +389,18 @@ func RescoreConfidence(prior gomodels.Scoring, in Input) gomodels.Scoring {
 // A prior with no severity band is returned untouched. There is nothing to
 // re-band: the document was scored by an engine that had no severity axis, and
 // giving it one here would date a number to a run that never computed it.
+// severityInput is the candidate-bearing half of an Input, as the severity
+// axis reads it. One constructor, because a fresh score and the replay's
+// recovery of a dropped amount must read the same fields the same way.
+func (in Input) severityInput(weight float64) severityInput {
+	return severityInput{
+		figures:      in.Figures,
+		verdicts:     in.FigureVerdicts,
+		homeCurrency: in.HomeCurrency,
+		weight:       weight,
+	}
+}
+
 func RescoreSeverity(prior gomodels.Scoring, in Input) gomodels.Scoring {
 	if prior.SeverityBand == "" {
 		return prior
@@ -401,7 +408,7 @@ func RescoreSeverity(prior gomodels.Scoring, in Input) gomodels.Scoring {
 	cfg := in.resolvedConfig()
 
 	weight, weightSource := in.areaWeight(cfg.Severity)
-	magnitude, score, band, driver, reason := rescoreSeverityFrom(prior.SeverityDriver, weight, cfg.Severity)
+	magnitude, score, band, driver, reason := rescoreSeverityFrom(prior.SeverityDriver, weight, cfg.Severity, in)
 
 	out := prior
 	out.MagnitudeScore = magnitude
@@ -434,7 +441,7 @@ func RescoreSeverity(prior gomodels.Scoring, in Input) gomodels.Scoring {
 // A driver that is nil, or one whose kind says nothing was quantified, has no
 // candidate to re-band: the magnitude goes back to the area baseline, which is
 // what it was.
-func rescoreSeverityFrom(prior *gomodels.SeverityDriver, weight float64, cfg SeverityConfig) (
+func rescoreSeverityFrom(prior *gomodels.SeverityDriver, weight float64, cfg SeverityConfig, in Input) (
 	magnitude float64,
 	score float64,
 	band string,
@@ -454,24 +461,48 @@ func rescoreSeverityFrom(prior *gomodels.SeverityDriver, weight float64, cfg Sev
 			share = prior.Share
 		}
 	}
-	// The home currency is the one the amount itself carries. The document was
+	// The home currency is the one the amount itself carries: the document was
 	// scored once already, and qualifyingFigures only ever admitted an amount
-	// in the document's own home currency -- so a stored amount's currency IS
+	// in the document's own home currency, so a stored amount's currency IS
 	// that currency, recorded by the run that could still determine it.
+	//
+	// NORMALISED rather than taken as stored. A document written before
+	// CurrencySymbol upper-cased the codes it does not map carries whatever
+	// casing that run recorded, `cad` as well as `CAD`, and this value goes
+	// into a comparison that is character for character. Reading it raw made
+	// the replay rank such a finding on its share while a fresh run ranked
+	// the same evidence on its amount: the preview disagreeing with the run,
+	// which is the one thing it may not do.
 	home := ""
 	if amount != nil {
-		// NORMALISED, not taken as stored.
-		//
-		// A document written before CurrencySymbol upper-cased the codes it
-		// does not map carries whatever casing that run recorded -- `cad` as
-		// well as `CAD` -- and this value goes into a comparison that is
-		// character for character. Reading it raw made the replay rank such a
-		// finding on its share while a fresh run ranked the same evidence on
-		// its amount: the preview disagreeing with the run, which is the one
-		// thing it may not do. Through the same helper every other reader of
-		// a currency uses, so there is one answer to "is this the same
-		// currency" and old documents get it too.
 		home = CurrencySymbol(amount.Currency)
+	}
+
+	// An amount the STORING run dropped can still be recovered from the
+	// evidence it kept, when the caller supplies it.
+	//
+	// The same casing bug that this function now normalises around also ran
+	// at scoring time: a profile stating `cad` against a figure stating
+	// `CAD` excluded the amount, so those documents carry a driver with no
+	// amount at all and there is nothing here to normalise. Replaying only
+	// the driver would then show a new money ladder changing nothing, while
+	// the next run -- which no longer drops the figure -- ranks the same
+	// evidence far higher. A preview that says "nothing moves" about a
+	// configuration that moves plenty is the one failure this cannot have.
+	//
+	// So when the driver carries no amount and the caller passed the stored
+	// figures, the candidates are re-derived from them. Additive by
+	// construction: it can only supply a candidate the driver lacks, and
+	// `tiers_before` is read from the stored document rather than from here,
+	// so the record of what the run found is untouched either way.
+	if amount == nil && len(in.Figures) > 0 {
+		if recovered, recoveredShare := qualifyingFigures(in.severityInput(weight)); recovered != nil {
+			amount = recovered
+			home = CurrencySymbol(in.HomeCurrency)
+			if share == nil {
+				share = recoveredShare
+			}
+		}
 	}
 
 	// THE calculation, the same one a fresh run goes through.

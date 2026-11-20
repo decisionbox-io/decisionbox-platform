@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"reflect"
 	"strconv"
 	"testing"
@@ -68,7 +69,6 @@ func TestLedgerFindingRank(t *testing.T) {
 		}
 	})
 }
-
 
 // TestANewTopSeverityFindingIsNotCappedBelowALegacyOne is the vocabulary
 // change, pinned where it would have done quiet damage.
@@ -329,4 +329,74 @@ func TestNormalizedLearningKey(t *testing.T) {
 	if NormalizedLearningKey("", "") != "" {
 		t.Error("an empty learning should produce an empty key, not a punctuation artefact")
 	}
+}
+
+// TestALedgerFindingRoundTripsItsMagnitudeBasis.
+//
+// Required for every new model field, and this one carries the condition under
+// which a magnitude may be compared at all: the next run reads it off a
+// sighting written by the one before, so a basis that did not survive a round
+// trip would make every comparison either fall back needlessly or compare two
+// magnitudes measured against different ladders. Both encodings, because BSON
+// is how it is stored and JSON is how the API serves it.
+func TestALedgerFindingRoundTripsItsMagnitudeBasis(t *testing.T) {
+	in := LedgerFinding{
+		ID: "f1", ProjectID: "p1", Area: "refunds", Name: "A refund leak",
+		Severity: SeverityBandHigh, Status: LedgerFindingStatusConfirmed,
+		MagnitudeScore: 1.0,
+		MagnitudeBasis: "amount|9f8e7d6c5b4a3210@$",
+		AffectedCount:  100,
+		Sightings: []FindingSighting{{
+			RunID: "r1", DiscoveryID: "d1",
+			MagnitudeScore: 1.0,
+			MagnitudeBasis: "amount|9f8e7d6c5b4a3210@$",
+		}},
+	}
+
+	t.Run("bson", func(t *testing.T) {
+		raw, err := bson.Marshal(in)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var out LedgerFinding
+		if err := bson.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if out.MagnitudeBasis != in.MagnitudeBasis {
+			t.Errorf("basis = %q, want %q", out.MagnitudeBasis, in.MagnitudeBasis)
+		}
+		if len(out.Sightings) != 1 || out.Sightings[0].MagnitudeBasis != in.MagnitudeBasis {
+			t.Errorf("sighting basis = %+v, want it carried too", out.Sightings)
+		}
+	})
+
+	t.Run("json", func(t *testing.T) {
+		raw, err := json.Marshal(in)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var out LedgerFinding
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if out.MagnitudeBasis != in.MagnitudeBasis {
+			t.Errorf("basis = %q, want %q", out.MagnitudeBasis, in.MagnitudeBasis)
+		}
+	})
+
+	t.Run("a document written before the field existed", func(t *testing.T) {
+		// Omitted on the wire and empty on read, which is what lets two
+		// pre-upgrade sightings go on comparing exactly as they did.
+		raw, err := bson.Marshal(LedgerFinding{ID: "f2", MagnitudeScore: 0.6})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var out LedgerFinding
+		if err := bson.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if out.MagnitudeBasis != "" {
+			t.Errorf("basis = %q, want empty", out.MagnitudeBasis)
+		}
+	})
 }

@@ -354,11 +354,35 @@ func TestAStalledProviderDoesNotStopARunStarting(t *testing.T) {
 
 	agentplugin.ResetScoringForTest()
 	t.Cleanup(agentplugin.ResetScoringForTest)
-	// A provider that ignores cancellation entirely.
-	agentplugin.RegisterScoringConfigProvider(stalledProvider{release: make(chan struct{})})
+	// A provider that ignores cancellation entirely. Released on cleanup, so
+	// a passing test leaves no goroutine parked on a channel nobody will ever
+	// write to.
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	agentplugin.RegisterScoringConfigProvider(stalledProvider{release: release})
 
+	// Bounded by the TEST as well as by the code under test: if the lookup
+	// regresses to blocking, this fails in a second with a clear message
+	// instead of hanging until the package timeout kills the whole run.
+	type result struct {
+		override agentplugin.ScoringOverride
+		err      error
+	}
+	answered := make(chan result, 1)
 	start := time.Now()
-	got, err := resolveScoringConfigBounded(context.Background(), "p1", "default")
+	go func() {
+		o, e := resolveScoringConfigBounded(context.Background(), "p1", "default")
+		answered <- result{o, e}
+	}()
+
+	var got agentplugin.ScoringOverride
+	var err error
+	select {
+	case r := <-answered:
+		got, err = r.override, r.err
+	case <-time.After(2 * time.Second):
+		t.Fatal("the lookup did not give up on a provider that never answers")
+	}
 	elapsed := time.Since(start)
 
 	if err == nil {

@@ -209,7 +209,7 @@ func qualifyingFigures(in severityInput) (amount, share *gomodels.SeverityFigure
 			// amount, so resuming a draft written by an older build lost a
 			// checked amount the page still shows. One answer to "is this the
 			// same currency", applied to whatever each side happens to hold.
-			if in.homeCurrency == "" || CurrencySymbol(f.Currency) != CurrencySymbol(in.homeCurrency) {
+			if in.homeCurrency == "" || !SameCurrency(f.Currency, in.homeCurrency) {
 				continue
 			}
 			amount = larger(amount, severityFigure(f, v))
@@ -240,7 +240,21 @@ func amountBandsApply(homeCurrency string, cfg SeverityConfig) bool {
 	if len(cfg.AmountBands) == 0 {
 		return false
 	}
-	return cfg.AmountCurrency == "" || cfg.AmountCurrency == homeCurrency
+	// Through the ONE comparison, on both sides.
+	//
+	// A raw `==` here meant a provider returning `USD` lost its thresholds on
+	// a run whose home currency had been normalised to `$` — the ladder
+	// accepted, stored, pinned and silently never applied — and it broke
+	// replay parity in the other direction too: `$` thresholds against a
+	// fresh input stating `USD` banded on the share while the replay banded
+	// on the amount. Both are the same mistake as the three sites already
+	// fixed, which is why the comparison is now a function rather than a
+	// convention.
+	//
+	// An unstated ladder currency still means "whatever this document is
+	// in", which is a different question from "the same as", so it is tested
+	// separately rather than through the comparison.
+	return cfg.AmountCurrency == "" || SameCurrency(cfg.AmountCurrency, homeCurrency)
 }
 
 // larger returns whichever figure has the greater absolute value, keeping the
