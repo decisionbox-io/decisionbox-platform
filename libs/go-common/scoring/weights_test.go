@@ -29,7 +29,7 @@ func weightedConfig(projectWeights map[string]float64) Config {
 		{ID: "compliance", Label: "Compliance", Weight: 3.0},
 		{ID: "revenue_leak", Label: "Revenue leakage", Weight: 2.0},
 		{ID: "engagement", Label: "Engagement", Weight: 1.0},
-	}, projectWeights)
+	}, nil, projectWeights)
 	return cfg
 }
 
@@ -191,7 +191,7 @@ func TestAProjectWeightWinsOverThePacksDeclaredOne(t *testing.T) {
 // declare a taxonomy at all.
 func TestAProjectMayWeightACategoryNoPackDeclares(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Severity = ResolveSeverity(cfg.Severity, nil, map[string]float64{"compliance": 3.0})
+	cfg.Severity = ResolveSeverity(cfg.Severity, nil, nil, map[string]float64{"compliance": 3.0})
 
 	got := scoreArea(cfg, 1.2, []string{"compliance"}, nil)
 	if got.AreaWeight != 3.0 {
@@ -318,7 +318,7 @@ func TestAnIllegalWeightIsTreatedAsUnstated(t *testing.T) {
 			cfg := DefaultConfig()
 			cfg.Severity = ResolveSeverity(cfg.Severity, []gomodels.RiskCategory{
 				{ID: "compliance", Label: "Compliance", Weight: w},
-			}, nil)
+			}, nil, nil)
 			got := scoreArea(cfg, 24.66, []string{"compliance"}, nil)
 			if got.AreaWeight != 1.0 || got.WeightSource.Kind != gomodels.WeightSourceDefault {
 				t.Errorf("category weight %v: weight %v from %q, want 1.0 from the default",
@@ -349,7 +349,7 @@ func TestResolveSeverityLeavesNothingBehindWhenThereIsNothingToResolve(t *testin
 		{name: "a project weight with no id", project: map[string]float64{"": 2}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ResolveSeverity(base, tc.taxonomy, tc.project)
+			got := ResolveSeverity(base, tc.taxonomy, nil, tc.project)
 			if got.CategoryWeights != nil {
 				t.Errorf("CategoryWeights = %v, want nil", got.CategoryWeights)
 			}
@@ -366,7 +366,7 @@ func TestResolveSeverityDoesNotWriteIntoItsInput(t *testing.T) {
 
 	got := ResolveSeverity(base, []gomodels.RiskCategory{
 		{ID: "compliance", Label: "Compliance", Weight: 3.0},
-	}, nil)
+	}, nil, nil)
 
 	if len(base.CategoryWeights) != 1 || base.CategoryWeights["existing"] != 2.0 {
 		t.Errorf("the input's map was modified: %v", base.CategoryWeights)
@@ -431,7 +431,7 @@ func TestRiskFlagsAreAreaDerivedDeterministicAndMultiTag(t *testing.T) {
 // still land.
 func TestTheGlobalSetIsAvailableToAPackWithNoTaxonomy(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Severity = ResolveSeverity(cfg.Severity, nil, nil)
+	cfg.Severity = ResolveSeverity(cfg.Severity, nil, nil, nil)
 	if cfg.Severity.CategoryWeights != nil {
 		t.Fatalf("CategoryWeights = %v, want nil for a pack with no taxonomy", cfg.Severity.CategoryWeights)
 	}
@@ -542,7 +542,7 @@ func TestRescoreConfidenceStillFreezesTheSeverityAxis(t *testing.T) {
 	// Today's configuration weights compliance at 1.0 instead, and the area
 	// now maps to nothing.
 	cfg := DefaultConfig()
-	cfg.Severity = ResolveSeverity(cfg.Severity, nil, map[string]float64{"compliance": 1.0})
+	cfg.Severity = ResolveSeverity(cfg.Severity, nil, nil, map[string]float64{"compliance": 1.0})
 	got := RescoreConfidence(prior, Input{Verdict: valmodels.StatusConfirmed, Config: cfg})
 
 	if got.AreaWeight != 3.0 {
@@ -563,5 +563,84 @@ func TestRescoreConfidenceStillFreezesTheSeverityAxis(t *testing.T) {
 	}
 	if got.PriorityTier != gomodels.PriorityTierCritical {
 		t.Errorf("PriorityTier = %q, want critical", got.PriorityTier)
+	}
+}
+
+// TestResolveSeverityAppliesTheLayersMostSpecificLast -- the deployment-wide
+// layer sits between the pack and the project, per category id, and an
+// illegal weight at any layer leaves the layer below it standing.
+func TestResolveSeverityAppliesTheLayersMostSpecificLast(t *testing.T) {
+	taxonomy := []gomodels.RiskCategory{
+		{ID: "compliance", Label: "Compliance", Weight: 1.0},
+		{ID: "revenue_leak", Label: "Revenue leakage", Weight: 2.0},
+		{ID: "engagement", Label: "Engagement", Weight: 1.5},
+	}
+
+	for _, tc := range []struct {
+		name       string
+		deployment map[string]float64
+		project    map[string]float64
+		id         string
+		want       float64
+		absent     bool
+	}{
+		{name: "the pack alone", id: "compliance", want: 1.0},
+		{name: "the deployment over the pack", deployment: map[string]float64{"compliance": 3}, id: "compliance", want: 3},
+		{name: "the project over the deployment",
+			deployment: map[string]float64{"compliance": 3}, project: map[string]float64{"compliance": 0.5},
+			id: "compliance", want: 0.5},
+		{name: "the project over the pack with no deployment layer", project: map[string]float64{"compliance": 2}, id: "compliance", want: 2},
+		{name: "a deployment weight for one id leaves another to the pack",
+			deployment: map[string]float64{"compliance": 3}, id: "revenue_leak", want: 2.0},
+		{name: "a project weight for one id leaves another to the deployment",
+			deployment: map[string]float64{"compliance": 3, "engagement": 2.5}, project: map[string]float64{"compliance": 1},
+			id: "engagement", want: 2.5},
+		{name: "a global id only the deployment weights", deployment: map[string]float64{"data_quality": 2}, id: "data_quality", want: 2},
+		{name: "an illegal deployment weight leaves the pack's", deployment: map[string]float64{"compliance": 0}, id: "compliance", want: 1.0},
+		{name: "an illegal project weight leaves the deployment's",
+			deployment: map[string]float64{"compliance": 3}, project: map[string]float64{"compliance": 4},
+			id: "compliance", want: 3},
+		{name: "an id nobody weights", id: "security", absent: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ResolveSeverity(DefaultConfig().Severity, taxonomy, tc.deployment, tc.project).CategoryWeights
+			w, ok := got[tc.id]
+			if tc.absent {
+				if ok {
+					t.Errorf("%s = %v, want it absent", tc.id, w)
+				}
+				return
+			}
+			if !ok || w != tc.want {
+				t.Errorf("%s = %v (present %v), want %v", tc.id, w, ok, tc.want)
+			}
+		})
+	}
+}
+
+// TestADeploymentWeightMovesABand -- the layer is not inert: a deployment
+// that weights compliance at 3 turns a low-share compliance finding high,
+// and a project that weights it back to 1 turns it low again.
+func TestADeploymentWeightMovesABand(t *testing.T) {
+	taxonomy := []gomodels.RiskCategory{{ID: "compliance", Label: "Compliance", Weight: 1.0}}
+
+	score := func(deployment, project map[string]float64) gomodels.Scoring {
+		cfg := DefaultConfig()
+		cfg.Severity = ResolveSeverity(cfg.Severity, taxonomy, deployment, project)
+		return scoreArea(cfg, 1.2, []string{"compliance"}, nil)
+	}
+
+	if got := score(nil, nil); got.SeverityBand != gomodels.SeverityBandLow {
+		t.Fatalf("pack alone: band %q, want low", got.SeverityBand)
+	}
+	weighted := score(map[string]float64{"compliance": 3}, nil)
+	if weighted.SeverityBand != gomodels.SeverityBandHigh || weighted.SeverityScore != 0.75 {
+		t.Errorf("deployment ×3: %s at %v, want high at 0.75", weighted.SeverityBand, weighted.SeverityScore)
+	}
+	if weighted.PriorityTier != gomodels.PriorityTierCritical {
+		t.Errorf("deployment ×3: tier %q, want critical", weighted.PriorityTier)
+	}
+	if got := score(map[string]float64{"compliance": 3}, map[string]float64{"compliance": 1}); got.SeverityBand != gomodels.SeverityBandLow {
+		t.Errorf("project ×1 over deployment ×3: band %q, want low", got.SeverityBand)
 	}
 }

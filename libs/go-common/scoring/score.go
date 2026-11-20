@@ -106,8 +106,11 @@ type Input struct {
 	Config Config
 }
 
-// areaWeight is the multiplier for this input's analysis area, and what set
-// it.
+// areaWeight is the multiplier for an analysis area, and what set it.
+//
+// A function of the area's categories and override rather than a method on
+// Input, because Reweigh reads the same two facts off a run's pinned
+// configuration, not off an Input.
 //
 // The ladder, in order:
 //
@@ -134,13 +137,13 @@ type Input struct {
 // shown the number that multiplied the magnitude AND what set it, and a 1.0
 // that came from a category is a different statement from a 1.0 nothing
 // configured.
-func (in Input) areaWeight(cfg SeverityConfig) (float64, *gomodels.WeightSource) {
-	if in.AreaOverride != nil && ValidSeverityWeight(*in.AreaOverride) {
-		return *in.AreaOverride, &gomodels.WeightSource{Kind: gomodels.WeightSourceAreaOverride}
+func areaWeight(categories []string, override *float64, cfg SeverityConfig) (float64, *gomodels.WeightSource) {
+	if override != nil && ValidSeverityWeight(*override) {
+		return *override, &gomodels.WeightSource{Kind: gomodels.WeightSourceAreaOverride}
 	}
 
 	best, from := 0.0, ""
-	for _, id := range in.AreaCategories {
+	for _, id := range categories {
 		w, ok := cfg.CategoryWeights[id]
 		if !ok || !ValidSeverityWeight(w) {
 			continue
@@ -179,7 +182,7 @@ func Score(in Input) gomodels.Scoring {
 	cfg := in.resolvedConfig()
 	out := confidenceAxis(in, cfg)
 
-	weight, weightSource := in.areaWeight(cfg.Severity)
+	weight, weightSource := areaWeight(in.AreaCategories, in.AreaOverride, cfg.Severity)
 	magnitude, sevScore, sevBand, driver, sevReason := scoreSeverity(severityInput{
 		figures:      in.Figures,
 		verdicts:     in.FigureVerdicts,
@@ -263,10 +266,16 @@ func ScoreRecommendation(in Input, cited []InheritedSeverity) gomodels.Scoring {
 // case a caller has not deliberately overridden. It also makes the stamped
 // engine_version true rather than an unexplainable 0.
 func (in Input) resolvedConfig() Config {
-	if len(in.Config.Confidence.Bases) == 0 || len(in.Config.Priority.TierWeights) == 0 {
+	return resolvedConfig(in.Config)
+}
+
+// resolvedConfig is cfg, or this build's own calibration when cfg was left
+// unset. See Input.resolvedConfig for why falling back is the right answer.
+func resolvedConfig(cfg Config) Config {
+	if len(cfg.Confidence.Bases) == 0 || len(cfg.Priority.TierWeights) == 0 {
 		return DefaultConfig()
 	}
-	return in.Config
+	return cfg
 }
 
 // confidenceAxis fills the confidence fields and the engine version, which is
@@ -276,19 +285,26 @@ func confidenceAxis(in Input, cfg Config) gomodels.Scoring {
 	base, reason := baseFor(in.Verdict, conf)
 	docks, score := applyFloor(base, candidateDocks(in, conf), conf.Floor)
 
-	version := cfg.Version
-	if version == 0 {
-		version = EngineVersion
-	}
-
 	return gomodels.Scoring{
 		ConfidenceBand:   bandFor(in.Verdict, score, conf),
 		ConfidenceBase:   base,
 		ConfidenceScore:  score,
 		ConfidenceReason: composeReason(reason, docks),
 		ConfidenceDocks:  docks,
-		EngineVersion:    version,
+		EngineVersion:    stampedVersion(cfg),
 	}
+}
+
+// stampedVersion is the engine version a document scored under cfg carries:
+// the calibration's own, or this build's when the calibration left it unset.
+// One function, because Score stamps it and Reweigh compares against it, and
+// two readings of an unset version would refuse to re-weigh a document under
+// the very configuration that scored it.
+func stampedVersion(cfg Config) int {
+	if cfg.Version == 0 {
+		return EngineVersion
+	}
+	return cfg.Version
 }
 
 // withPriority rolls the two bands up into a tier and a sort score.
@@ -360,6 +376,69 @@ func RescoreConfidence(prior gomodels.Scoring, in Input) gomodels.Scoring {
 	}
 
 	return withPriority(out, in.resolvedConfig())
+}
+
+// Reweigh re-derives the weight-dependent half of an ALREADY SCORED insight
+// under cfg, keeping everything that does not depend on a weight exactly as
+// it was stored: the magnitude, the driver behind it, and the whole confidence
+// axis.
+//
+// It is what lets a settings surface answer "what would these weights have
+// done to my last run?" without re-running anything, and the answer is only
+// worth showing if it is the one a run would give. So it reads only what a
+// stored document carries, and applies the weight through the same functions
+// Score does:
+//
+//   - the magnitude is stored, weight-free and already rounded, so it is
+//     re-used rather than re-measured. Re-measuring would need inputs a
+//     stored document does not carry -- the home currency a run resolved,
+//     the count of references its prose left unresolved -- and rebuilding
+//     them yields a band no run would produce;
+//   - the area's categories and override come from the caller, which reads
+//     them from the run's pinned configuration, exactly as the run's scoring
+//     phase did;
+//   - the score, band, sentence, flags and priority are recomputed by
+//     areaWeight, weigh, riskFlags and withPriority, the functions Score
+//     calls.
+//
+// So for a document Score produced under cfg, Reweigh under the same cfg
+// returns it unchanged; under any other cfg it returns what Score would have
+// produced under that one. Both are pinned by tests.
+//
+// Only the weights may differ between cfg and the configuration the document
+// was scored under. The magnitude was measured against that configuration's
+// share and amount bands, and re-using it under different bands would mix two
+// calibrations in one number; within one engine version nothing configures
+// those bands, which is what makes the stored magnitude re-usable.
+//
+// The second result is false, and the prior is returned untouched, when the
+// document cannot be re-weighed under cfg: it has no severity half (an older
+// engine scored it on confidence alone, or it was never scored), or it was
+// scored by a different engine version, whose cutoffs cfg does not describe.
+//
+// Insights only. A recommendation's severity is inherited from the insights
+// it cites, so it moves when they do rather than by a weight of its own.
+func Reweigh(prior gomodels.Scoring, area gomodels.RunAreaRisk, cfg Config) (gomodels.Scoring, bool) {
+	cfg = resolvedConfig(cfg)
+	if prior.SeverityBand == "" || prior.EngineVersion != stampedVersion(cfg) {
+		return prior, false
+	}
+
+	weight, source := areaWeight(area.RiskCategories, area.SeverityWeight, cfg.Severity)
+	var driver gomodels.SeverityDriver
+	if prior.SeverityDriver != nil {
+		driver = *prior.SeverityDriver
+	}
+	score, band, reason := weigh(prior.MagnitudeScore, weight, driver, cfg.Severity)
+
+	out := prior
+	out.AreaWeight = weight
+	out.WeightSource = source
+	out.SeverityScore = score
+	out.SeverityBand = band
+	out.SeverityReason = reason
+	out.RiskFlags = riskFlags(area.RiskCategories, cfg.Severity.CategoryWeights)
+	return withPriority(out, cfg), true
 }
 
 // composeReason is the verdict's own sentence, plus one clause naming what

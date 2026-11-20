@@ -1,0 +1,456 @@
+## resolve: taxonomy only
+{
+  "compliance": 3,
+  "engagement": 1,
+  "revenue_leak": 2
+}
+
+## resolve: taxonomy and project weights
+{
+  "compliance": 3,
+  "data_quality": 2.5,
+  "engagement": 1,
+  "revenue_leak": 1.5
+}
+
+## resolve: project weights only
+{
+  "data_quality": 2.5,
+  "revenue_leak": 1.5
+}
+
+## resolve: an illegal taxonomy weight is skipped
+{
+  "revenue_leak": 2
+}
+
+## resolve: an illegal project weight falls back to the pack
+{
+  "compliance": 3,
+  "engagement": 1,
+  "revenue_leak": 2
+}
+
+## resolve: an empty id is skipped at both levels
+null
+
+## resolve: nothing to resolve
+null
+
+## score: a low share in a compliance area
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 0.25,
+  "severity_band": "high",
+  "severity_score": 0.75,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "lo",
+      "display": "share",
+      "value": 1.2,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by share, checked against warehouse rows.",
+  "area_weight": 3,
+  "weight_source": {
+    "kind": "category",
+    "category": "compliance"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.16,
+  "risk_flags": [
+    "compliance"
+  ],
+  "engine_version": 1
+}
+
+## score: a medium share in an engagement area
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 0.6,
+  "severity_band": "medium",
+  "severity_score": 0.6,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "mid",
+      "display": "share",
+      "value": 7.5,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "Medium — driven by share, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "category",
+    "category": "engagement"
+  },
+  "priority_tier": "high",
+  "priority_score": 1.1375,
+  "risk_flags": [
+    "engagement"
+  ],
+  "engine_version": 1
+}
+
+## score: a high share in a compliance area clamps
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 1,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "hi",
+      "display": "share",
+      "value": 24.66,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by share, checked against warehouse rows.",
+  "area_weight": 3,
+  "weight_source": {
+    "kind": "category",
+    "category": "compliance"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.1975,
+  "risk_flags": [
+    "compliance"
+  ],
+  "engine_version": 1
+}
+
+## score: two categories take the larger
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 0.25,
+  "severity_band": "high",
+  "severity_score": 0.75,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "lo",
+      "display": "share",
+      "value": 1.2,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by share, checked against warehouse rows.",
+  "area_weight": 3,
+  "weight_source": {
+    "kind": "category",
+    "category": "compliance"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.16,
+  "risk_flags": [
+    "revenue_leak",
+    "compliance"
+  ],
+  "engine_version": 1
+}
+
+## score: a project weight over the pack's
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 0.25,
+  "severity_band": "medium",
+  "severity_score": 0.38,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "lo",
+      "display": "share",
+      "value": 1.2,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "Medium — driven by share, checked against warehouse rows.",
+  "area_weight": 1.5,
+  "weight_source": {
+    "kind": "category",
+    "category": "revenue_leak"
+  },
+  "priority_tier": "high",
+  "priority_score": 1.1045,
+  "risk_flags": [
+    "engagement",
+    "revenue_leak"
+  ],
+  "engine_version": 1
+}
+
+## score: a per-area override wins over its categories
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 1,
+  "severity_band": "medium",
+  "severity_score": 0.5,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "hi",
+      "display": "share",
+      "value": 24.66,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "Medium — driven by share, checked against warehouse rows.",
+  "area_weight": 0.5,
+  "weight_source": {
+    "kind": "area_override"
+  },
+  "priority_tier": "high",
+  "priority_score": 1.1225,
+  "risk_flags": [
+    "compliance"
+  ],
+  "engine_version": 1
+}
+
+## score: an illegal override falls through to the categories
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 0.25,
+  "severity_band": "high",
+  "severity_score": 0.75,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "lo",
+      "display": "share",
+      "value": 1.2,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by share, checked against warehouse rows.",
+  "area_weight": 3,
+  "weight_source": {
+    "kind": "category",
+    "category": "compliance"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.16,
+  "risk_flags": [
+    "compliance"
+  ],
+  "engine_version": 1
+}
+
+## score: nothing quantified in a global category the project weights
+{
+  "confidence_band": "high",
+  "confidence_base": 0.8,
+  "confidence_score": 0.8,
+  "confidence_reason": "Warehouse rows are consistent with the claims that were checked.",
+  "magnitude_score": 0.6,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "baseline",
+    "quantified": false
+  },
+  "severity_reason": "High — not quantified: this finding states no checked figure to measure it by, so the area baseline applies.",
+  "area_weight": 2.5,
+  "weight_source": {
+    "kind": "category",
+    "category": "data_quality"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.19,
+  "risk_flags": [
+    "data_quality"
+  ],
+  "engine_version": 1
+}
+
+## score: an unknown category weighs nothing and flags nothing
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 0.6,
+  "severity_band": "medium",
+  "severity_score": 0.6,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "mid",
+      "display": "share",
+      "value": 7.5,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "Medium — driven by share, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "high",
+  "priority_score": 1.1375,
+  "engine_version": 1
+}
+
+## score: an unverifiable finding in a weighted area
+{
+  "confidence_band": "unverifiable",
+  "confidence_base": 0.2,
+  "confidence_score": 0.2,
+  "confidence_reason": "Nothing in the cited evidence could check these claims.",
+  "magnitude_score": 0.25,
+  "severity_band": "high",
+  "severity_score": 0.75,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "lo",
+      "display": "share",
+      "value": 1.2,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by share, checked against warehouse rows.",
+  "area_weight": 3,
+  "weight_source": {
+    "kind": "category",
+    "category": "compliance"
+  },
+  "priority_tier": "investigate",
+  "priority_score": 2.1225,
+  "risk_flags": [
+    "compliance"
+  ],
+  "engine_version": 1
+}
+
+## score: a rejected finding in a weighted area
+{
+  "confidence_band": "low",
+  "confidence_base": 0.05,
+  "confidence_score": 0.05,
+  "confidence_reason": "Warehouse rows contradict a headline claim.",
+  "magnitude_score": 0.6,
+  "severity_band": "high",
+  "severity_score": 1,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "mid",
+      "display": "share",
+      "value": 7.5,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "High — driven by share, checked against warehouse rows.",
+  "area_weight": 3,
+  "weight_source": {
+    "kind": "category",
+    "category": "compliance"
+  },
+  "priority_tier": "investigate",
+  "priority_score": 2.1525,
+  "risk_flags": [
+    "compliance"
+  ],
+  "engine_version": 1
+}
+
+## score: an area with no categories
+{
+  "confidence_band": "high",
+  "confidence_base": 0.95,
+  "confidence_score": 0.95,
+  "confidence_reason": "Warehouse rows matched every claim exactly.",
+  "magnitude_score": 0.6,
+  "severity_band": "medium",
+  "severity_score": 0.6,
+  "severity_driver": {
+    "kind": "share",
+    "quantified": true,
+    "figure": {
+      "figure_id": "mid",
+      "display": "share",
+      "value": 7.5,
+      "unit": "percent",
+      "verdict": "holds"
+    }
+  },
+  "severity_reason": "Medium — driven by share, checked against warehouse rows.",
+  "area_weight": 1,
+  "weight_source": {
+    "kind": "default"
+  },
+  "priority_tier": "high",
+  "priority_score": 1.1375,
+  "engine_version": 1
+}
+
+## score: a recommendation inheriting a weighted insight
+{
+  "confidence_band": "high",
+  "confidence_base": 0.8,
+  "confidence_score": 0.8,
+  "confidence_reason": "Warehouse rows are consistent with the claims that were checked.",
+  "magnitude_score": 0.25,
+  "severity_band": "high",
+  "severity_score": 0.75,
+  "severity_reason": "High — banded on 1.20%, checked against warehouse rows.",
+  "area_weight": 3,
+  "weight_source": {
+    "kind": "category",
+    "category": "compliance"
+  },
+  "priority_tier": "critical",
+  "priority_score": 3.1525,
+  "risk_flags": [
+    "compliance"
+  ],
+  "engine_version": 1
+}
+

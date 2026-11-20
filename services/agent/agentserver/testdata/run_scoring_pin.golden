@@ -1,0 +1,63 @@
+## a taxonomy, project weights and an area override
+{
+  "category_weights": {
+    "compliance": 3,
+    "revenue_leak": 2.5
+  },
+  "areas": {
+    "billing": {
+      "risk_categories": [
+        "revenue_leak"
+      ],
+      "severity_weight": 1.5
+    },
+    "consent": {
+      "risk_categories": [
+        "compliance"
+      ]
+    }
+  }
+}
+
+## illegal weights at both levels
+{
+  "category_weights": {
+    "data_quality": 2,
+    "revenue_leak": 2
+  },
+  "areas": {
+    "billing": {
+      "risk_categories": [
+        "revenue_leak"
+      ],
+      "severity_weight": 1.5
+    },
+    "consent": {
+      "risk_categories": [
+        "compliance"
+      ]
+    }
+  }
+}
+
+## global categories weighted by the project alone
+{
+  "category_weights": {
+    "compliance": 2.5
+  },
+  "areas": {
+    "consent": {
+      "risk_categories": [
+        "compliance",
+        "security"
+      ]
+    }
+  }
+}
+
+## an unconfigured project
+{}
+
+## no project
+{}
+

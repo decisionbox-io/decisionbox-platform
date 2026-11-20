@@ -163,13 +163,6 @@ func ValidateDomainPackForTarget(pack *DomainPack, target warehouse.SourceShape)
 	return nil
 }
 
-// RiskCategoryIDRegex is the shape of a risk category id.
-//
-// Underscores, unlike DomainPackSlugRegex: the engine's own cross-cutting ids
-// include `data_quality`, and a rule that rejected the ids the engine ships
-// would be a rule no pack could follow.
-var RiskCategoryIDRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*[a-z0-9]$`)
-
 // RiskConfigIssues returns everything wrong with a pack's risk configuration:
 // its taxonomy, and the per-area mapping and weight override that read it.
 //
@@ -305,6 +298,17 @@ func ProjectRiskConfigIssues(prompts *ProjectPrompts, categoryWeights map[string
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
+		// The id is checked too. An id nothing declares is still a legal
+		// standing priority, but one no category could ever have -- `Compliance`,
+		// `a.b` -- is a weight that never applies, and every other writer of
+		// these weights (the pack validator, the scoring-configuration seam)
+		// already refuses that shape. One rule, so no writer can store what
+		// another rejects.
+		if !scoring.ValidRiskCategoryID(id) {
+			issues = append(issues, fmt.Sprintf(
+				"category_weights: %q is not a risk category id (a lowercase slug of letters, digits, hyphens or underscores)", id))
+			continue
+		}
 		if !scoring.ValidSeverityWeight(categoryWeights[id]) {
 			issues = append(issues, fmt.Sprintf("category_weights[%q]: weight %v is outside (0, %g]",
 				id, categoryWeights[id], scoring.MaxSeverityWeight))
@@ -323,7 +327,7 @@ func riskCategoryIssues(cat PackRiskCategory, label string, declared map[string]
 	if cat.ID == "" {
 		issues = append(issues, label+": id is required")
 	} else {
-		if !RiskCategoryIDRegex.MatchString(cat.ID) {
+		if !scoring.ValidRiskCategoryID(cat.ID) {
 			issues = append(issues, fmt.Sprintf(
 				"%s: id %q must be a lowercase slug of letters, digits, hyphens or underscores (e.g. 'revenue_leak')",
 				label, cat.ID))
