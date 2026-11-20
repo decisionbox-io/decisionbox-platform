@@ -841,6 +841,11 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			// rather than implied, so a missing first point is a missing
 			// baseline for every comparison after it.
 			MagnitudeScore: cand.MagnitudeScore,
+			// And what it was measured against, for the same reason: a
+			// magnitude in the trail that cannot be told apart from one
+			// measured under another ladder is a baseline nothing may be
+			// compared to.
+			MagnitudeBasis: cand.MagnitudeBasis,
 			AffectedCount:  cand.AffectedCount,
 			Severity:       cand.Severity,
 			InsightID:      insightID,
@@ -942,7 +947,17 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 // reported as a move when the magnitude under it did, which is a weight
 // change away from being the only honest thing to say.
 func trendReason(prior, cur trendSnapshot) string {
-	if prior.magnitude != 0 && cur.magnitude != 0 && prior.magnitude != cur.magnitude {
+	// The SAME comparison the detection made, not a second one that happens
+	// to look like it.
+	//
+	// They had drifted apart the moment magnitudes stopped always being
+	// comparable: detection fell back to the affected count when the two
+	// magnitudes answered different questions, while this still saw unequal
+	// magnitudes and announced a severity or magnitude move -- so a trend
+	// found by the count was explained by the settings change that made the
+	// magnitudes incomparable. Both halves read magnitudesComparable now.
+	if magnitudesComparable(prior.magnitudeBasis, cur.magnitudeBasis) &&
+		prior.magnitude != 0 && cur.magnitude != 0 && prior.magnitude != cur.magnitude {
 		if prior.severity != cur.severity {
 			return fmt.Sprintf("severity moved from %s to %s", prior.severity, cur.severity)
 		}
@@ -955,13 +970,22 @@ func trendReason(prior, cur trendSnapshot) string {
 // trendSnapshot is one side of a trend comparison: the three fields both
 // halves read, so the two cannot be transposed at the call site.
 type trendSnapshot struct {
-	severity  string
-	magnitude float64
-	affected  int
+	severity string
+	// magnitude and magnitudeBasis travel together, because a magnitude on
+	// its own cannot be compared: the basis is what says whether two of them
+	// answer the same question.
+	magnitude      float64
+	magnitudeBasis string
+	affected       int
 }
 
 func snapshotOf(f *commonmodels.LedgerFinding) trendSnapshot {
-	return trendSnapshot{severity: f.Severity, magnitude: f.MagnitudeScore, affected: f.AffectedCount}
+	return trendSnapshot{
+		severity:       f.Severity,
+		magnitude:      f.MagnitudeScore,
+		magnitudeBasis: f.MagnitudeBasis,
+		affected:       f.AffectedCount,
+	}
 }
 
 // dedupSearchBudget is how long ALL of this run's semantic lookups may take
@@ -1001,6 +1025,22 @@ func (o *Orchestrator) searchLedgerNeighbour(ctx context.Context, vec []float64,
 		return ""
 	}
 	return hits[0].ID
+}
+
+// observedCurrency is the currency the figure that banded this magnitude was
+// measured in, normalised the way every other reader of a currency normalises
+// it. Empty when the driver recorded no figure, which is its own basis.
+func observedCurrency(driver *commonmodels.SeverityDriver) string {
+	if driver == nil {
+		return ""
+	}
+	if driver.Amount != nil {
+		return scoring.CurrencySymbol(driver.Amount.Currency)
+	}
+	if driver.Figure != nil {
+		return scoring.CurrencySymbol(driver.Figure.Currency)
+	}
+	return ""
 }
 
 // magnitudesComparable reports whether two magnitudes measured under these
@@ -1095,7 +1135,15 @@ func buildFindingCandidates(result *models.DiscoveryResult, magnitudeBasis strin
 			// ladder is named only for that driver.
 			cand.MagnitudeBasis = string(ins.Scoring.SeverityDriver.Kind)
 			if ins.Scoring.SeverityDriver.Kind == commonmodels.SeverityDriverAmount {
-				cand.MagnitudeBasis += "|" + magnitudeBasis
+				// The ladder AND the currency the winning figure was measured
+				// in. A ladder with no currency of its own ranks an amount in
+				// any currency, so its basis was identical for all of them --
+				// and the same exposure reported as 900 USD in one run and
+				// 1,200 CAD in the next crossed a currency-free cutoff of
+				// 1,000 and was recorded as growth. Two sightings in
+				// different money are not comparable magnitudes whatever the
+				// ladder says.
+				cand.MagnitudeBasis += "|" + magnitudeBasis + "@" + observedCurrency(ins.Scoring.SeverityDriver)
 			}
 		}
 		// The insight's own id, which is also its id in the `insights`

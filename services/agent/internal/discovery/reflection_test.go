@@ -2297,20 +2297,42 @@ func TestABasisIsOnlyTheLadderWhenTheLadderBandedIt(t *testing.T) {
 		t.Errorf("basis = %q, want the driver alone for a share-banded magnitude", got[0].MagnitudeBasis)
 	}
 
-	amount := &models.DiscoveryResult{Insights: []models.Insight{{
+	got = buildFindingCandidates(amountIn(t, "$", 2_400_000), "$/2000000:high")
+	if len(got) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(got))
+	}
+	// The ladder AND the currency the winning figure was measured in: a
+	// ladder with no currency of its own ranks an amount in any currency, so
+	// without the observed one the same exposure reported as 900 USD and then
+	// as 1,200 CAD crossed a bare 1,000 cutoff and read as growth.
+	if got[0].MagnitudeBasis != "amount|$/2000000:high@$" {
+		t.Errorf("basis = %q, want the driver, the ladder and the observed currency", got[0].MagnitudeBasis)
+	}
+
+	// The case that needs it: a ladder with no currency, and the same finding
+	// measured in two different ones.
+	inUSD := buildFindingCandidates(amountIn(t, "$", 900), "/1000:high")
+	inCAD := buildFindingCandidates(amountIn(t, "CAD", 1200), "/1000:high")
+	if inUSD[0].MagnitudeBasis == inCAD[0].MagnitudeBasis {
+		t.Errorf("two currencies share a basis (%q) under a currency-free ladder", inUSD[0].MagnitudeBasis)
+	}
+	if findingMagnitudeChanged(&inUSD[0], &inCAD[0], 0.2) {
+		t.Error("the same exposure in another currency was reported as growth")
+	}
+}
+
+// amountIn is an amount-banded finding measured in one currency.
+func amountIn(t *testing.T, currency string, value float64) *models.DiscoveryResult {
+	t.Helper()
+	return &models.DiscoveryResult{Insights: []models.Insight{{
 		Name: "An amount-banded finding",
 		Scoring: &models.Scoring{
 			MagnitudeScore: 1.0,
 			SeverityDriver: &commonmodels.SeverityDriver{
 				Kind: commonmodels.SeverityDriverAmount, Quantified: true,
+				Amount: &commonmodels.SeverityFigure{Value: value, Currency: currency, Unit: commonmodels.UnitCurrency},
 			},
 		},
+		AffectedCount: 100,
 	}}}
-	got = buildFindingCandidates(amount, "$/2000000:high")
-	if len(got) != 1 {
-		t.Fatalf("candidates = %d, want 1", len(got))
-	}
-	if got[0].MagnitudeBasis != "amount|$/2000000:high" {
-		t.Errorf("basis = %q, want the driver and the ladder", got[0].MagnitudeBasis)
-	}
 }

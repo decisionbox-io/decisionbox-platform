@@ -460,7 +460,18 @@ func rescoreSeverityFrom(prior *gomodels.SeverityDriver, weight float64, cfg Sev
 	// that currency, recorded by the run that could still determine it.
 	home := ""
 	if amount != nil {
-		home = amount.Currency
+		// NORMALISED, not taken as stored.
+		//
+		// A document written before CurrencySymbol upper-cased the codes it
+		// does not map carries whatever casing that run recorded -- `cad` as
+		// well as `CAD` -- and this value goes into a comparison that is
+		// character for character. Reading it raw made the replay rank such a
+		// finding on its share while a fresh run ranked the same evidence on
+		// its amount: the preview disagreeing with the run, which is the one
+		// thing it may not do. Through the same helper every other reader of
+		// a currency uses, so there is one answer to "is this the same
+		// currency" and old documents get it too.
+		home = CurrencySymbol(amount.Currency)
 	}
 
 	// THE calculation, the same one a fresh run goes through.

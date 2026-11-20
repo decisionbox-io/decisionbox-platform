@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
+	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -86,7 +87,59 @@ func pinRunScoringConfig(
 // enough that a database that is not does not hold up a run: the fallback is
 // the configuration the run would have been scored on before this feature
 // existed, so taking it costs a preference and taking too long costs the run.
-const scoringLookupTimeout = 15 * time.Second
+//
+// Configurable, because "long enough" is a property of someone's database and
+// not of this code.
+const scoringLookupTimeoutEnv = "INSIGHT_SCORING_LOOKUP_TIMEOUT"
+
+const defaultScoringLookupTimeout = 15 * time.Second
+
+func scoringLookupTimeout() time.Duration {
+	if d := goconfig.GetEnvAsDuration(scoringLookupTimeoutEnv, defaultScoringLookupTimeout); d > 0 {
+		return d
+	}
+	return defaultScoringLookupTimeout
+}
+
+// resolveScoringConfigBounded stops WAITING after the timeout, which a context
+// alone cannot do.
+//
+// A context deadline only signals: a provider that does not observe
+// cancellation -- a driver call that has already committed to a socket read,
+// or an implementation that simply ignores it -- goes on running, and the
+// synchronous caller goes on waiting with it. Since this runs BEFORE the
+// discovery deadline exists, that meant a stalled provider could stop a run
+// from starting at all, and the fallback this whole path is built around could
+// never be taken.
+//
+// So the lookup runs on its own goroutine and the caller stops waiting. The
+// goroutine is left to finish and its result dropped -- it holds nothing the
+// run needs, and abandoning a read is the point. One per run.
+func resolveScoringConfigBounded(ctx context.Context, projectID, warehouseID string) (agentplugin.ScoringOverride, error) {
+	type answer struct {
+		override agentplugin.ScoringOverride
+		err      error
+	}
+	// Buffered, so the goroutine never blocks writing to a channel nobody is
+	// reading any more.
+	done := make(chan answer, 1)
+
+	lookupCtx, cancelLookup := context.WithTimeout(ctx, scoringLookupTimeout())
+	go func() {
+		defer cancelLookup()
+		override, err := agentplugin.ResolveScoringConfig(lookupCtx, projectID, warehouseID)
+		done <- answer{override, err}
+	}()
+
+	select {
+	case got := <-done:
+		return got.override, got.err
+	case <-lookupCtx.Done():
+		return agentplugin.ScoringOverride{}, fmt.Errorf(
+			"scoring configuration lookup did not answer within %s (%s); scoring on the pack and project configuration: %w",
+			scoringLookupTimeout(), scoringLookupTimeoutEnv, lookupCtx.Err())
+	}
+}
 
 // resolveRunScoringConfig is the project's severity configuration, resolved:
 // the pack's taxonomy and the project's category weights folded into one
@@ -163,9 +216,7 @@ func resolveRunScoringConfig(ctx context.Context, project *models.Project) gomod
 	//
 	// The ORIGINAL context carries on below, so persisting the fallback is not
 	// cancelled by this deadline passing.
-	lookupCtx, cancelLookup := context.WithTimeout(ctx, scoringLookupTimeout)
-	override, err := agentplugin.ResolveScoringConfig(lookupCtx, project.ID, warehouseIDOrDefault(project.PrimaryWarehouse()))
-	cancelLookup()
+	override, err := resolveScoringConfigBounded(ctx, project.ID, warehouseIDOrDefault(project.PrimaryWarehouse()))
 	if err != nil {
 		applog.WithError(err).Warn("Scoring configuration provider failed; scoring this run on the pack and project configuration")
 	}

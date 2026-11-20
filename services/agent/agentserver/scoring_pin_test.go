@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 
@@ -337,4 +338,49 @@ func TestAResumeDoesNotResolveTheOverrideAgain(t *testing.T) {
 	if stub.gotProject != "" {
 		t.Error("a resume asked the provider for a configuration it must not use")
 	}
+}
+
+// TestAStalledProviderDoesNotStopARunStarting.
+//
+// A context deadline only SIGNALS. A provider that does not observe
+// cancellation — a driver call already committed to a socket read, or an
+// implementation that ignores it — goes on running, and a synchronous caller
+// goes on waiting with it. This lookup happens before the discovery deadline
+// exists, so that meant a stalled provider could stop the run from starting at
+// all: the opposite of the trade this path makes, where losing a preference
+// must never cost hours of warehouse queries.
+func TestAStalledProviderDoesNotStopARunStarting(t *testing.T) {
+	t.Setenv("INSIGHT_SCORING_LOOKUP_TIMEOUT", "100ms")
+
+	agentplugin.ResetScoringForTest()
+	t.Cleanup(agentplugin.ResetScoringForTest)
+	// A provider that ignores cancellation entirely.
+	agentplugin.RegisterScoringConfigProvider(stalledProvider{release: make(chan struct{})})
+
+	start := time.Now()
+	got, err := resolveScoringConfigBounded(context.Background(), "p1", "default")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Error("a stalled provider was reported as a success")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("waited %s for a provider that never answers", elapsed)
+	}
+	// And what comes back is the zero override, so the caller pins the pack
+	// and project configuration — the one it would have used before this
+	// feature existed.
+	if got.CategoryWeights != nil || got.AmountBands != nil {
+		t.Errorf("override = %+v, want the zero value", got)
+	}
+}
+
+// stalledProvider never answers and never looks at the context.
+type stalledProvider struct{ release chan struct{} }
+
+func (stalledProvider) Name() string { return "stalled" }
+
+func (p stalledProvider) ScoringConfig(_ context.Context, _, _ string) (agentplugin.ScoringOverride, error) {
+	<-p.release // never closed: the point is a call that cannot be cancelled
+	return agentplugin.ScoringOverride{}, nil
 }

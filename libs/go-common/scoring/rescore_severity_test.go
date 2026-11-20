@@ -323,3 +323,39 @@ func TestRescoreSeverityDropsFlagsACategoryNoLongerCarries(t *testing.T) {
 		t.Errorf("flags = %v, want none once nothing declares the category", got.RiskFlags)
 	}
 }
+
+// TestTheReplayNormalisesAStoredCurrency.
+//
+// A document written before CurrencySymbol upper-cased the codes it does not
+// map carries whatever casing that run recorded. Reading it raw sent `cad`
+// into a character-for-character comparison against a `CAD` ladder: the replay
+// ranked the finding on its share while a fresh run ranked the same evidence
+// on its amount, which is the preview disagreeing with the run.
+func TestTheReplayNormalisesAStoredCurrency(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Severity.AmountBands = []MagnitudeBand{{At: 1_000_000, Band: gomodels.SeverityBandHigh}}
+	cfg.Severity.AmountCurrency = "CAD"
+
+	// A stored driver carrying the old lower-case spelling.
+	prior := gomodels.Scoring{
+		SeverityBand:   gomodels.SeverityBandLow,
+		MagnitudeScore: 0.25,
+		SeverityDriver: &gomodels.SeverityDriver{
+			Kind:       gomodels.SeverityDriverAmount,
+			Quantified: true,
+			Amount: &gomodels.SeverityFigure{
+				Value: 2_400_000, Currency: "cad", Unit: gomodels.UnitCurrency, Display: "CAD 2.40M",
+			},
+		},
+	}
+
+	got := RescoreSeverity(prior, Input{AreaID: "revenue", Config: cfg})
+
+	if got.SeverityDriver == nil || got.SeverityDriver.Kind != gomodels.SeverityDriverAmount {
+		t.Fatalf("driver = %+v, want the amount to have banded it", got.SeverityDriver)
+	}
+	if got.SeverityBand != gomodels.SeverityBandHigh {
+		t.Errorf("band = %q, want high — the ladder's currency and the stored one are the same currency",
+			got.SeverityBand)
+	}
+}
