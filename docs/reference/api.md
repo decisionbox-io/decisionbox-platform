@@ -280,7 +280,11 @@ Returns a JSON Schema object defining the profile fields (basic_info, gameplay, 
 
 ### GET /api/v1/domains/{domain}/categories/{category}/areas
 
-Get analysis areas for a domain/category.
+Get the analysis areas a **domain pack** declares for a category.
+
+These seed a project's own areas once, at project creation, and the two diverge from then on — a project adds custom areas, switches areas off and deletes custom ones.
+So this endpoint answers "what would a project in this category start with", which is what a flow that picks a category *before* the project exists needs.
+For a project that already exists, read its own areas from [`GET /projects/{id}/prompts`](#get-apiv1projectsidprompts); those, and not these, are what a discovery run can be asked for.
 
 ```bash
 curl http://localhost:8080/api/v1/domains/gaming/categories/match3/areas
@@ -568,6 +572,9 @@ curl "http://localhost:8080/api/v1/projects/507f.../schema-editor/edits?datasour
 
 Get the project's editable prompts. These are copies of the domain pack defaults, customizable per-project.
 
+`analysis_areas` is the project's own set of areas, and it is what a discovery run executes: the agent builds its list from here and skips every entry with `enabled: false`.
+The dashboard's **Run discovery → Select areas** picker and the `areas` field of [`POST /projects/{id}/discover`](#post-apiv1projectsiddiscover) both read these ids, so a custom area added here is runnable and a disabled one is not.
+
 ```bash
 curl http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/prompts
 ```
@@ -624,7 +631,7 @@ Request body (all fields optional):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `areas` | `string[]` | *(all)* | Selective discovery — run only these analysis areas. Empty/omitted = all areas. |
+| `areas` | `string[]` | *(all)* | Selective discovery — run only these analysis areas. Empty/omitted = every **enabled** area. The ids are the project's own (`GET /projects/{id}/prompts` → `analysis_areas`), so a custom area is as runnable as a pack one; an area with `enabled: false` is not. |
 | `max_steps` | `int` | `100` | Maximum exploration steps. |
 | `min_steps` | `int` | `floor(0.6 * max_steps)` | Floor on exploration steps before the agent will accept a `done` signal from the LLM. `0` disables the floor. Recommended for reasoning models (Qwen3, DeepSeek-R1, GPT-OSS) that tend to terminate exploration too early. Must be in `[0, max_steps]` — values outside that range return `400`. |
 
@@ -664,6 +671,10 @@ curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/disc
 
 Returns `409 Conflict` if a discovery is already running for this project.
 Returns `400 Bad Request` if `min_steps` is negative or exceeds `max_steps`.
+
+Returns `400 Bad Request` when `areas` is given and **none** of its ids is an enabled analysis area on the project, naming the ids the project can run.
+Such a run would analyse nothing — the agent drops disabled areas before it matches the requested ids — and then report `completed`, which reads as a result rather than a rejected request.
+A request that names one enabled area and one disabled one still runs; the agent works through the areas it resolved.
 
 ### GET /api/v1/projects/{id}/discoveries
 

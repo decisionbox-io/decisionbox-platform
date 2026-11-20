@@ -464,7 +464,16 @@ func TestDiscoveriesHandler_TriggerDiscovery_Success_MockRepo(t *testing.T) {
 	mockRun := newMockRunner()
 	h := NewDiscoveriesHandler(discRepo, projRepo, runRepo, nil, nil, nil, mockRun)
 
-	p := &models.Project{Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion}
+	p := &models.Project{
+		Name: "Test", Domain: "gaming", Category: "match3", LLMConfigVersion: llmlayer.ConfigVersion,
+		// The run below is selective, and a selective run is refused unless
+		// the project's own playbook has one of the requested areas enabled.
+		Prompts: &models.ProjectPrompts{
+			AnalysisAreas: map[string]models.AnalysisAreaConfig{
+				"churn": {Name: "Churn", Enabled: true, Priority: 1},
+			},
+		},
+	}
 	projRepo.Create(context.Background(), p)
 
 	req := httptest.NewRequest("POST", "/api/v1/projects/"+p.ID+"/discover",

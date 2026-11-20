@@ -910,6 +910,39 @@ export interface AnalysisAreaConfig {
   enabled: boolean;
 }
 
+/**
+ * enabledAnalysisAreas turns a project's playbook into the areas a discovery
+ * run can be asked for.
+ *
+ * It reads the PROJECT's own areas (`GET /projects/{id}/prompts`), not its
+ * domain pack's (`GET /domains/{d}/categories/{c}/areas`). The pack seeds these
+ * once, at project creation, and the two diverge from then on — that divergence
+ * is what the playbook is for. It is where a custom area is added, an area is
+ * switched off and a custom one is deleted, none of which the pack knows about.
+ *
+ * Only the enabled entries, because that is exactly the set a run can execute:
+ * the agent builds its list from this same place and drops everything switched
+ * off, so an area offered here that is off would start a run that analyses
+ * nothing.
+ *
+ * Sorted by priority, then id — the Playbook page's own order, with the id as a
+ * tiebreaker so areas sharing a priority (a seeded pack area and a custom one
+ * can collide) still list the same way every time.
+ *
+ * `prompts` is nullable because the endpoint answers `null` for a project whose
+ * prompts were never seeded.
+ */
+export function enabledAnalysisAreas(prompts: ProjectPrompts | null): { id: string; name: string }[] {
+  const areas = prompts?.analysis_areas;
+  if (!areas) return [];
+  return Object.entries(areas)
+    .filter(([, a]) => a.enabled)
+    .sort(([idA, a], [idB, b]) => a.priority - b.priority || idA.localeCompare(idB))
+    // An area's name is a free-text field on the Playbook page and can be
+    // saved blank; the id is what keeps the checkbox from rendering unlabelled.
+    .map(([id, a]) => ({ id, name: a.name || id }));
+}
+
 export interface ProviderMeta {
   id: string;
   name: string;

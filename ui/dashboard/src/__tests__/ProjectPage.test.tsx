@@ -3,6 +3,7 @@
  */
 import '@testing-library/jest-dom';
 import { render, screen, waitFor, act, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MantineProvider } from '@mantine/core';
 import ProjectPage from '@/app/projects/[id]/page';
 import type { DiscoveryRunStatus, ProjectStatus } from '@/lib/api';
@@ -26,7 +27,7 @@ jest.mock('@/components/projects/UpcomingInvestigation', () => ({
 }));
 
 const getProject = jest.fn();
-const getAnalysisAreas = jest.fn();
+const getPrompts = jest.fn();
 const listDiscoveries = jest.fn();
 const getProjectStatus = jest.fn();
 const listProjectQuestions = jest.fn();
@@ -46,13 +47,17 @@ jest.mock('@/lib/api', () => ({
   },
   PROJECT_STATE_READY: 'ready',
   DEFAULT_WAREHOUSE_ID: 'default',
-  // Pure helper the project page calls during render to scope the schema-index
-  // roll-up; this suite doesn't exercise datasource resolution (api.test.ts
-  // does), so a constant keeps the page rendering.
+  // Pure helpers the project page calls; neither is what this suite exercises
+  // (api.test.ts covers both), so the real implementations are not needed.
+  // enabledAnalysisAreas turns the project's playbook into the picker's list.
   resolvePrimaryDatasourceId: () => 'default',
+  enabledAnalysisAreas: (p: { analysis_areas?: Record<string, { name: string; enabled: boolean }> } | null) =>
+    Object.entries(p?.analysis_areas || {})
+      .filter(([, a]) => a.enabled)
+      .map(([id, a]) => ({ id, name: a.name })),
   api: {
     getProject: (...a: unknown[]) => getProject(...a),
-    getAnalysisAreas: (...a: unknown[]) => getAnalysisAreas(...a),
+    getPrompts: (...a: unknown[]) => getPrompts(...a),
     listDiscoveries: (...a: unknown[]) => listDiscoveries(...a),
     getProjectStatus: (...a: unknown[]) => getProjectStatus(...a),
     listProjectQuestions: (...a: unknown[]) => listProjectQuestions(...a),
@@ -105,9 +110,11 @@ const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0))
 
 beforeEach(() => {
   jest.clearAllMocks();
-  // domain/category blank → the page skips getAnalysisAreas (mux redirect guard).
   getProject.mockResolvedValue({ id: 'p1', name: 'Acme', domain: '', category: '' });
-  getAnalysisAreas.mockResolvedValue([]);
+  // The area picker reads the project's own playbook (#573), not its domain
+  // pack's areas — so it is addressed by project id and needs no
+  // domain/category.
+  getPrompts.mockResolvedValue({ analysis_areas: {} });
   listDiscoveries.mockResolvedValue([]);
   listProjectQuestions.mockResolvedValue([]);
   listRunSteps.mockResolvedValue([]);
@@ -1645,4 +1652,62 @@ it('refreshes discoveries when a watched paused run completes elsewhere', async 
   } finally {
     jest.useRealTimers();
   }
+});
+
+// The Run discovery area picker (#573). It used to list the DOMAIN PACK's
+// areas, which seed a project's playbook once at creation and then know
+// nothing about it: a custom area added afterwards was missing from the picker
+// (and so could only be run through the API), an area switched off was still
+// offered, and a deleted custom area was offered too. It reads the project's
+// own playbook now, and lists the entries a run can execute.
+describe('Run discovery area picker (#573)', () => {
+  const playbook = () => ({
+    analysis_areas: {
+      churn: { name: 'Churn Risks', enabled: true, priority: 1 },
+      cart_abandonment: { name: 'Cart Abandonment', enabled: true, priority: 2 },
+      levels: { name: 'Level Difficulty', enabled: false, priority: 3 },
+    },
+  });
+
+  async function openPicker() {
+    const user = userEvent.setup();
+    getProjectStatus.mockResolvedValue({ project_id: 'p1' } as ProjectStatus);
+    getPrompts.mockResolvedValue(playbook());
+    renderPage();
+    await waitFor(() => expect(screen.getByRole('button', { name: /Run discovery/ })).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: /Run discovery/ }));
+    return user;
+  }
+
+  it('reads the project playbook rather than the domain pack', async () => {
+    await openPicker();
+    expect(getPrompts).toHaveBeenCalledWith('p1');
+  });
+
+  it('offers a custom area the domain pack never had', async () => {
+    await openPicker();
+    await waitFor(() => expect(screen.getByLabelText('Cart Abandonment')).toBeInTheDocument());
+    expect(screen.getByLabelText('Churn Risks')).toBeInTheDocument();
+  });
+
+  it('does not offer an area switched off on the playbook', async () => {
+    // Ticking a disabled area started a run that analysed nothing: the agent
+    // drops it before the requested id is matched against anything.
+    await openPicker();
+    await waitFor(() => expect(screen.getByLabelText('Churn Risks')).toBeInTheDocument());
+    expect(screen.queryByLabelText('Level Difficulty')).not.toBeInTheDocument();
+  });
+
+  it('sends the ticked area ids to the trigger', async () => {
+    const user = await openPicker();
+    await waitFor(() => expect(screen.getByLabelText('Cart Abandonment')).toBeInTheDocument());
+    await user.click(screen.getByLabelText('Cart Abandonment'));
+    triggerDiscovery.mockResolvedValue({ run_id: '' });
+
+    await user.click(screen.getByText(/Run Selected \(1\)/));
+
+    expect(triggerDiscovery).toHaveBeenCalledWith('p1', expect.objectContaining({
+      areas: ['cart_abandonment'],
+    }));
+  });
 });

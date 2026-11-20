@@ -90,6 +90,8 @@ The dropdown lets you configure:
 - **Exploration steps**: More steps = more comprehensive (default: 100). Start with 50-100 for your first run.
 - **Run All Areas**: Runs all analysis areas (churn, engagement, monetization, etc.)
 - **Select areas**: Run only specific analysis areas.
+  The list is your project's own analysis areas — the ones on its [Playbook](../guides/customizing-prompts.md), including any custom area you added, and only the ones switched on.
+  An area you switch off there stops being offered here, because a run would skip it.
 
 Click **Run All Areas** to start.
 
