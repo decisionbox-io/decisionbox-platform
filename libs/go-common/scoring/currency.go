@@ -29,9 +29,22 @@ import "strings"
 // It also rules out the other dollars. CAD and AUD are not here, so they stay
 // codes and never collide with the USD ladder's "$" -- but a deployment that
 // states the bare symbol "$" for one of them is asserting something no map
-// can undo, because "$" does not identify a currency. A deployment reporting
-// in more than one currency that prints the same symbol has to state the
-// codes; the guide says so, and the engine can only compare what it is told.
+// can undo, because "$" does not identify a currency.
+//
+// WHICH IS A LIMITATION OF READING IDENTITY OFF NOTATION, and this map is a
+// notation map: it answers "what does this currency print", which is the
+// question the renderer asks. Identity is a second question, and a shared
+// symbol does not answer it -- "¥" is the yen's and the yuan's both, so a
+// deployment reporting in one of them can have a ladder band an amount read
+// in the other, whatever the operator configures. The yen is the one mapped
+// symbol another currency shares; everything else here is unambiguous, and
+// the kronor, the renminbi and the franc are unmapped for this reason.
+//
+// Not solvable here. A figure's currency is what the analysis wrote, and
+// separating identity from notation means an ISO code on the figure, which is
+// the figure contract's business and a change to what the model is asked for.
+// Tracked rather than half-done, and stated in the configuration guide so an
+// affected deployment knows not to configure money thresholds. See #575.
 var isoCurrencySymbols = map[string]string{
 	"USD": "$",
 	"EUR": "€",

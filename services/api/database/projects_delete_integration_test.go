@@ -109,6 +109,16 @@ func TestInteg_ProjectRepo_DeleteCascade(t *testing.T) {
 	// One document per project, whose _id IS the project id. These cannot be
 	// reached by a DeleteMany on project_id, which is the whole reason they
 	// have their own cascade step — and the reason they leaked before it.
+	//
+	// The LIST is pinned literally first, because this test walks the same
+	// list the cascade does. A name misspelled or dropped from production
+	// would leave this loop seeding nothing, verifying nothing, and passing
+	// green over the leak it exists to catch — the one failure a test built
+	// on the code under test always has.
+	if want := []string{"insight_scoring"}; !equalStrings(projectIDKeyedCollections, want) {
+		t.Fatalf("projectIDKeyedCollections = %v, want %v — extend this pin when a plugin adds one, and the cascade will be covered",
+			projectIDKeyedCollections, want)
+	}
 	for _, name := range projectIDKeyedCollections {
 		col := testDB.Collection(name)
 		for _, projID := range []string{projDel, projKeep} {
@@ -329,4 +339,21 @@ func TestInteg_ProjectRepo_DeleteCascade_EmptyID(t *testing.T) {
 	if err := repo.DeleteCascade(ctx, ""); err == nil {
 		t.Error("DeleteCascade(\"\") should error, got nil")
 	}
+}
+
+// equalStrings compares two name lists element for element.
+//
+// Written out rather than reached for, because this package builds under the
+// `integration` tag against the repo's own toolchain floor and a test helper
+// is not the place to find out about it.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

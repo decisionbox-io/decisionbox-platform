@@ -91,6 +91,17 @@ Generation is off by default and, where it is enabled, respects a per-project **
 | `INSIGHT_SCORING_LOOKUP_TIMEOUT` | `15s` | How long a run waits for a registered scoring-configuration provider to answer before scoring on the pack and project configuration instead. Go duration format. The trade it bounds is one-sided: a severity weight is a preference and a discovery run is hours of warehouse queries, so a provider that cannot answer must cost the preference and not the run. Raise it on a deployment whose settings database is slow to respond; the fallback is exactly what a run was scored on before per-deployment weights existed, so the cost of it firing is a preference ignored for one run, logged. A non-positive value falls back to the default. Set it on the **API** process as well as the agent: the API forwards it to the agent Jobs/containers it spawns, so on the Docker and Kubernetes runners that is the only way it reaches the agent at all. |
 | `DISCOVERY_QUESTIONS_TIMEOUT` | `3m` | Dedicated wall-clock budget for the questions hop, independent of `DISCOVERY_MAX_DURATION`. Go duration format. |
 
+#### A money threshold and a shared currency symbol
+
+A money threshold applies to an amount while the two are in the same currency, and the engine compares the **symbol** each currency prints: `USD` and `$` are one currency, and so are `TRY` and `₺`.
+
+A symbol that two currencies share cannot be told apart that way.
+`¥` is the yen's symbol and the yuan's both, so on a deployment that reports in one of them an amount read in the other can be banded by a ladder written for the first.
+The engine keeps the Canadian and Australian dollar as ISO codes for this reason, so neither collides with a `$` ladder, and the Nordic kronor, the renminbi and the franc are unmapped for the same reason; the yen is the one mapped symbol another currency shares.
+
+If a deployment holds both yen and yuan amounts, leave amount thresholds unset — area and category weights are unaffected, and the ranking falls back to the share, which carries no currency.
+Tracked in [#575](https://github.com/decisionbox-io/decisionbox-platform/issues/575).
+
 ### Compounding Discovery (Discovery Ledger + reflection)
 
 After a discovery run, a best-effort **reflection** hop consolidates the run into a persistent, per-project **Discovery Ledger** (coverage map, findings-with-substance and status, next-task queue, convergence signal) so the next run builds on it instead of re-treading it.
