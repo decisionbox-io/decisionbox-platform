@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
+	"time"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 )
@@ -111,6 +114,32 @@ func ResolveScoringConfig(ctx context.Context, projectID, warehouseID string) (o
 	return normaliseScoringOverride(got), nil
 }
 
+// LookupTimeoutEnv bounds how long a run waits for a registered scoring
+// configuration provider to answer.
+//
+// EXPORTED, with its default, because two processes read it: the agent, which
+// bounds the lookup, and a provider implementation, which bounds whatever it
+// has to open to answer. Each carrying its own default is how they came to
+// disagree -- the agent waited 15 seconds for a provider that gave up dialling
+// at 10, so the configured number described neither of them and a deployment
+// that raised it got the lower one anyway.
+const LookupTimeoutEnv = "INSIGHT_SCORING_LOOKUP_TIMEOUT"
+
+// defaultLookupTimeout is the wait when nothing is configured. Generous
+// against a cold settings database and far below what a discovery run costs,
+// which is the trade this bounds: a severity weight is a preference, and a run
+// is hours of warehouse queries.
+const defaultLookupTimeout = 15 * time.Second
+
+// LookupTimeout is the configured wait, or the default. A non-positive or
+// unparseable value falls back, because "0s" is not a deadline anyone means.
+func LookupTimeout() time.Duration {
+	if d := config.GetEnvAsDuration(LookupTimeoutEnv, defaultLookupTimeout); d > 0 {
+		return d
+	}
+	return defaultLookupTimeout
+}
+
 // normaliseScoringOverride drops everything the engine would refuse, so what
 // comes back can be folded into a calibration without a second opinion.
 //
@@ -130,6 +159,21 @@ func normaliseScoringOverride(in ScoringOverride) ScoringOverride {
 	weights := make(map[string]float64, len(in.CategoryWeights))
 	for id, w := range in.CategoryWeights {
 		if id == "" || !scoring.ValidSeverityWeight(w) {
+			continue
+		}
+		// A key BSON cannot carry is dropped here rather than at the write.
+		//
+		// The resolved configuration is pinned on the run document, and the
+		// encoder refuses an element key containing a NUL byte -- so a custom
+		// provider returning one failed the pin and ABORTED THE RUN, which is
+		// the one outcome this seam exists to prevent: a severity weight is a
+		// preference, and losing it must never cost hours of warehouse
+		// queries. Dropped exactly as an illegal weight is.
+		//
+		// Only the NUL byte, checked rather than assumed: a dot, a leading
+		// `$` and invalid UTF-8 all marshal, and refusing them would discard
+		// a category id a deployment can legitimately use.
+		if strings.ContainsRune(id, 0) {
 			continue
 		}
 		weights[id] = w

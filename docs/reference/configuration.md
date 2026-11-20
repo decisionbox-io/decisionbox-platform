@@ -96,10 +96,14 @@ Generation is off by default and, where it is enabled, respects a per-project **
 A money threshold applies to an amount while the two are in the same currency, and the engine compares the **symbol** each currency prints: `USD` and `$` are one currency, and so are `TRY` and `₺`.
 
 A symbol that two currencies share cannot be told apart that way.
-`¥` is the yen's symbol and the yuan's both, so on a deployment that reports in one of them an amount read in the other can be banded by a ladder written for the first.
-The engine keeps the Canadian and Australian dollar as ISO codes for this reason, so neither collides with a `$` ladder, and the Nordic kronor, the renminbi and the franc are unmapped for the same reason; the yen is the one mapped symbol another currency shares.
+`¥` is the yen's symbol and the yuan's both, and `$` is the US, Canadian, Australian and several other dollars'.
+So on a deployment reporting in one of them, an amount read in another can be banded by a ladder written for the first.
 
-If a deployment holds both yen and yuan amounts, leave amount thresholds unset — area and category weights are unaffected, and the ranking falls back to the share, which carries no currency.
+Keeping `CAD` and `AUD` out of the engine's symbol map limits this but does not close it: it only helps while a figure states the **code**.
+A figure that states the bare symbol — which the analysis contract allows, since a symbol is a correct answer to "what currency is this in" — is asserting something no map can undo.
+
+If a deployment holds amounts in two currencies that print the same symbol, leave amount thresholds unset.
+Area and category weights are unaffected, and the ranking falls back to each finding's share, which carries no currency.
 Tracked in [#575](https://github.com/decisionbox-io/decisionbox-platform/issues/575).
 
 ### Compounding Discovery (Discovery Ledger + reflection)

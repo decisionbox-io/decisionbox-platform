@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
-	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -90,16 +89,13 @@ func pinRunScoringConfig(
 //
 // Configurable, because "long enough" is a property of someone's database and
 // not of this code.
-const scoringLookupTimeoutEnv = "INSIGHT_SCORING_LOOKUP_TIMEOUT"
-
-const defaultScoringLookupTimeout = 15 * time.Second
-
-func scoringLookupTimeout() time.Duration {
-	if d := goconfig.GetEnvAsDuration(scoringLookupTimeoutEnv, defaultScoringLookupTimeout); d > 0 {
-		return d
-	}
-	return defaultScoringLookupTimeout
-}
+// Read from the SEAM's own package, not from a copy here.
+//
+// A provider bounds whatever it opens to answer by the same budget, so both
+// sides read this variable -- and each having its own default is how they came
+// to disagree: this side waited 15 seconds for a provider that gave up at 10,
+// and a deployment that raised the budget got the lower number anyway.
+func scoringLookupTimeout() time.Duration { return agentplugin.LookupTimeout() }
 
 // resolveScoringConfigBounded stops WAITING after the timeout, which a context
 // alone cannot do.
@@ -163,7 +159,7 @@ func resolveScoringConfigBounded(ctx context.Context, projectID, warehouseID str
 		}
 		return agentplugin.ScoringOverride{}, fmt.Errorf(
 			"scoring configuration lookup did not answer within %s (%s); scoring on the pack and project configuration: %w",
-			scoringLookupTimeout(), scoringLookupTimeoutEnv, lookupCtx.Err())
+			scoringLookupTimeout(), agentplugin.LookupTimeoutEnv, lookupCtx.Err())
 	}
 }
 

@@ -1068,11 +1068,25 @@ func amountDrivenBasis(basis string) bool {
 // and stably.
 //
 // Stable because it is compared across runs: the same ladder has to produce
-// the same string, and a different one a different string. The currency is
-// part of it, since the same cutoffs in another currency rank other findings.
-// Empty when no ladder is configured, which is the state every deployment is
-// in until someone sets one — and two empties match, so nothing changes for
-// them.
+// the same string, and a different one a different string. Empty when no
+// ladder is configured, which is the state every deployment is in until
+// someone sets one — and two empties match, so nothing changes for them.
+//
+// THE RUNGS, and not the ladder's currency scope.
+//
+// The currency that matters is the one the FIGURE was measured in, and the
+// caller already appends it (`basis@currency`), which is what keeps 900 USD
+// and 1,200 CAD from reading as growth. Hashing the ladder's scope as well
+// double-counted it in one direction only: an operator narrowing an unscoped
+// ladder to USD, without touching a cutoff, left every USD finding measured
+// against exactly the same thresholds — and moved their basis, so an amount
+// that then crossed a cutoff recorded no trend at all unless its affected
+// count happened to move too.
+//
+// Safe in the other direction because a sighting is only amount-driven when
+// the ladder APPLIED, which means its scope matched that figure's currency or
+// stated none: same rungs plus same observed currency is the same measurement,
+// however the scope was written.
 func amountLadderBasis(cfg scoring.SeverityConfig) string {
 	if len(cfg.AmountBands) == 0 {
 		return ""
@@ -1092,15 +1106,7 @@ func amountLadderBasis(cfg scoring.SeverityConfig) string {
 	// and architectures — a hash/maphash or a Go map iteration would not be —
 	// and truncated to 16 hex characters, which is far more than enough to
 	// tell two ladders apart in one project's ledger.
-	// The currency goes in CANONICAL, not as the provider spelled it.
-	//
-	// The scorer reads `USD` and `$` as one currency, so a provider that
-	// changes only the spelling between runs is running the same ladder. Hashed
-	// verbatim, that respelling produced a different basis, the ledger read the
-	// two magnitudes as incomparable, and a finding whose amount crossed an
-	// unchanged cutoff recorded no trend at all.
 	h := sha256.New()
-	h.Write([]byte(scoring.CurrencySymbol(cfg.AmountCurrency)))
 	for _, band := range cfg.AmountBands {
 		h.Write([]byte{0})
 		h.Write([]byte(strconv.FormatFloat(band.At, 'f', -1, 64)))

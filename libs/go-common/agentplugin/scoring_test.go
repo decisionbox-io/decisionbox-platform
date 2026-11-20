@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 // The scoring-configuration registry, tested the way the discovery-policy one
@@ -379,5 +381,42 @@ func TestALaddersCurrencyIsPinnedCanonical(t *testing.T) {
 	empty := normaliseScoringOverride(ScoringOverride{AmountCurrency: "USD"})
 	if empty.AmountCurrency != "" {
 		t.Errorf("currency = %q with no bands, want it dropped with them", empty.AmountCurrency)
+	}
+}
+
+// TestAKeyTheRunDocumentCannotCarryIsDropped.
+//
+// The seam's contract is that a provider costs a preference, never a run. A
+// category id containing a NUL byte broke it from the far end: the id was
+// accepted here, and the BSON encoder then refused the element key when the
+// resolved configuration was pinned on the run document — so a custom
+// provider returning one aborted a discovery that would otherwise have scored
+// on its pack and project configuration.
+//
+// Only the NUL byte, because that is the only one the encoder refuses: a dot,
+// a leading `$` and invalid UTF-8 all marshal, and dropping them would discard
+// ids a deployment can legitimately use.
+func TestAKeyTheRunDocumentCannotCarryIsDropped(t *testing.T) {
+	got := normaliseScoringOverride(ScoringOverride{
+		CategoryWeights: map[string]float64{
+			"comp\x00liance": 3,
+			"compliance":     3,
+			"rev.leak":       2,
+			"$ops":           2,
+		},
+	})
+
+	if _, ok := got.CategoryWeights["comp\x00liance"]; ok {
+		t.Error("a key with a NUL byte survived; pinning the run document will fail and abort the run")
+	}
+	for _, keep := range []string{"compliance", "rev.leak", "$ops"} {
+		if _, ok := got.CategoryWeights[keep]; !ok {
+			t.Errorf("%q was dropped, but BSON carries it", keep)
+		}
+	}
+
+	// And what survives is storable, which is the actual requirement.
+	if _, err := bson.Marshal(bson.M{"category_weights": got.CategoryWeights}); err != nil {
+		t.Errorf("the surviving keys do not marshal: %v", err)
 	}
 }

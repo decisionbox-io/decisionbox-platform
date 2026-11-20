@@ -2370,22 +2370,23 @@ func TestTheLadderBasisIsBoundedAndStable(t *testing.T) {
 	if amountLadderBasis(other) == got {
 		t.Error("two different ladders share a basis")
 	}
-	sameRungsOtherCurrency := other
-	sameRungsOtherCurrency.AmountCurrency = "₺"
-	if amountLadderBasis(sameRungsOtherCurrency) == amountLadderBasis(other) {
-		t.Error("the same rungs in another currency share a basis")
-	}
-
-	// The same ladder RESPELLED is the same ladder. The scorer reads `USD`
-	// and `$` as one currency, so a provider that changes only the spelling
-	// between runs has changed nothing — and a basis that moved there made
-	// the ledger read two magnitudes as incomparable and record no trend for
-	// a finding whose amount crossed an unchanged cutoff.
-	for _, spelling := range []string{"USD", "usd", " $ "} {
-		respelled := other
-		respelled.AmountCurrency = spelling
-		if got, want := amountLadderBasis(respelled), amountLadderBasis(other); got != want {
-			t.Errorf("basis for %q = %q, want %q — the same currency, spelled differently", spelling, got, want)
+	// The ladder's own CURRENCY SCOPE is not part of it, in any spelling.
+	//
+	// The currency that matters is the one the figure was measured in, and the
+	// caller appends that (`basis@currency`) — so hashing the scope here
+	// double-counted it in one direction only: an operator narrowing an
+	// unscoped ladder to USD, without touching a cutoff, left every USD
+	// finding measured against exactly the same thresholds and still moved
+	// their basis, so an amount that crossed a cutoff then recorded no trend
+	// unless its affected count moved too.
+	//
+	// Safe because a sighting is amount-driven only when the ladder APPLIED,
+	// which means its scope matched that figure's currency or stated none.
+	for _, scope := range []string{"", "USD", "usd", " $ ", "₺", "CAD"} {
+		rescoped := other
+		rescoped.AmountCurrency = scope
+		if got, want := amountLadderBasis(rescoped), amountLadderBasis(other); got != want {
+			t.Errorf("basis for scope %q = %q, want %q — the rungs are the measurement", scope, got, want)
 		}
 	}
 
