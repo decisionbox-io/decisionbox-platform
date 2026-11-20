@@ -199,7 +199,17 @@ func qualifyingFigures(in severityInput) (amount, share *gomodels.SeverityFigure
 			// empty home currency excludes every amount: the caller could not
 			// determine one, and guessing is how an amount read from one
 			// datasource gets banded against another's thresholds.
-			if in.homeCurrency == "" || f.Currency != in.homeCurrency {
+			// BOTH operands normalised, because neither is guaranteed to
+			// have been.
+			//
+			// A figure stored before CurrencySymbol upper-cased unmapped
+			// codes carries `cad`, and a resumed analysis draft reuses that
+			// figure without settling it again — while the profile side is
+			// resolved fresh to `CAD`. Comparing them raw excluded the
+			// amount, so resuming a draft written by an older build lost a
+			// checked amount the page still shows. One answer to "is this the
+			// same currency", applied to whatever each side happens to hold.
+			if in.homeCurrency == "" || CurrencySymbol(f.Currency) != CurrencySymbol(in.homeCurrency) {
 				continue
 			}
 			amount = larger(amount, severityFigure(f, v))

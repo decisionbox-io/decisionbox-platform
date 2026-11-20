@@ -284,3 +284,59 @@ func TestNothingLegalLeftIsIndistinguishableFromNothingConfigured(t *testing.T) 
 		t.Errorf("override = %+v, want the zero value", got)
 	}
 }
+
+// TestALadderNobodyCanReadInOrderIsDropped.
+//
+// The engine takes the first rung an amount reaches, so `100,000 -> medium`
+// before `1,000,000 -> high` bands a $2M amount MEDIUM and makes every rung
+// after the first unreachable. The settings API refuses that, but this seam
+// also carries what a hand-edited document or another provider supplies.
+//
+// Dropped whole, not sorted: reordering would apply a ladder nobody wrote. The
+// weights survive, because they are a separate statement about the same
+// project.
+func TestALadderNobodyCanReadInOrderIsDropped(t *testing.T) {
+	got := normaliseScoringOverride(ScoringOverride{
+		CategoryWeights: map[string]float64{"compliance": 3},
+		AmountBands: []gomodels.MagnitudeBand{
+			{At: 100_000, Band: gomodels.SeverityBandMedium},
+			{At: 1_000_000, Band: gomodels.SeverityBandHigh},
+		},
+		AmountCurrency: "$",
+	})
+
+	if got.AmountBands != nil {
+		t.Errorf("bands = %+v, want them dropped", got.AmountBands)
+	}
+	if got.AmountCurrency != "" {
+		t.Errorf("currency = %q, want it dropped with the bands it described", got.AmountCurrency)
+	}
+	if got.CategoryWeights["compliance"] != 3 {
+		t.Errorf("weights = %+v, want them kept — a ladder and a weight are different statements", got.CategoryWeights)
+	}
+
+	// A descending ladder is kept, including one with a single rung.
+	ok := normaliseScoringOverride(ScoringOverride{
+		AmountBands: []gomodels.MagnitudeBand{
+			{At: 1_000_000, Band: gomodels.SeverityBandHigh},
+			{At: 100_000, Band: gomodels.SeverityBandMedium},
+		},
+		AmountCurrency: "$",
+	})
+	if len(ok.AmountBands) != 2 {
+		t.Errorf("bands = %+v, want both kept", ok.AmountBands)
+	}
+
+	// Two rungs at the same amount are not an order either: the second can
+	// never be reached.
+	dup := normaliseScoringOverride(ScoringOverride{
+		AmountBands: []gomodels.MagnitudeBand{
+			{At: 1_000_000, Band: gomodels.SeverityBandHigh},
+			{At: 1_000_000, Band: gomodels.SeverityBandMedium},
+		},
+		AmountCurrency: "$",
+	})
+	if dup.AmountBands != nil {
+		t.Errorf("bands = %+v, want a duplicated rung dropped", dup.AmountBands)
+	}
+}

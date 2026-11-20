@@ -384,3 +384,49 @@ func (p stalledProvider) ScoringConfig(_ context.Context, _, _ string) (agentplu
 	<-p.release // never closed: the point is a call that cannot be cancelled
 	return agentplugin.ScoringOverride{}, nil
 }
+
+// TestAFastProviderIsNeverMistakenForATimeout.
+//
+// The bug this covers was a race, and reproducing it needs the worker to
+// FINISH before the caller reaches its select — then a buffered send followed
+// by a cancel leaves both cases ready, and Go picks at random between ready
+// cases, so a successful lookup reported a timeout and the run pinned the pack
+// and project defaults. A deployment's configuration lost on a coin flip.
+//
+// This test does NOT reproduce that interleaving, and it is worth saying so
+// rather than implying otherwise: the window is between `go` and `select` in
+// the function under test, and nothing outside can hold the caller there.
+// Pinning the scheduler makes the SAFE order certain rather than the unsafe
+// one, and a plain loop on the default scheduler passed with the bug in place.
+//
+// What makes the bug impossible is structural, and in two parts: the worker no
+// longer cancels (so Done is ready only when the deadline really passed), and
+// a delivered answer is preferred even when Done is ready. This test holds the
+// happy path that the second part protects — a provider that answers is never
+// reported as a timeout — and the reasoning above is the argument for the
+// first.
+func TestAFastProviderIsNeverMistakenForATimeout(t *testing.T) {
+	agentplugin.ResetScoringForTest()
+	t.Cleanup(agentplugin.ResetScoringForTest)
+	agentplugin.RegisterScoringConfigProvider(instantProvider{})
+
+	for i := 0; i < 200; i++ {
+		got, err := resolveScoringConfigBounded(context.Background(), "p1", "default")
+		if err != nil {
+			t.Fatalf("attempt %d: a provider that answered instantly reported %v", i, err)
+		}
+		if got.CategoryWeights["compliance"] != 3 {
+			t.Fatalf("attempt %d: override = %+v, want the provider's answer", i, got)
+		}
+	}
+}
+
+// instantProvider answers immediately, which is what every healthy provider
+// does and what the race needed to go wrong.
+type instantProvider struct{}
+
+func (instantProvider) Name() string { return "instant" }
+
+func (instantProvider) ScoringConfig(_ context.Context, _, _ string) (agentplugin.ScoringOverride, error) {
+	return agentplugin.ScoringOverride{CategoryWeights: map[string]float64{"compliance": 3}}, nil
+}

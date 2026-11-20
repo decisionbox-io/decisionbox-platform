@@ -103,6 +103,13 @@ var agentForwardedEnvKeys = []string{
 	// a feature switched off everywhere a user can see and still running
 	// where the numbers are produced.
 	"INSIGHT_SCORING_ENABLED",
+	// INSIGHT_SCORING_LOOKUP_TIMEOUT bounds how long a run waits for that
+	// plugin to answer before scoring on the pack and project configuration.
+	// It is read in the AGENT, so setting it on the API deployment did
+	// nothing for the containerised runs that are the whole point of setting
+	// it: a deployment whose database answers in twenty seconds would have
+	// gone on discarding its own configuration after fifteen.
+	"INSIGHT_SCORING_LOOKUP_TIMEOUT",
 	// VALIDATION_* knobs for the LLM-native verifier+refuter pipeline.
 	// All consumed by the agent via verifier.LoadConfigFromEnv during
 	// both full-discovery validation and manual --mode=validate-doc runs.

@@ -73,6 +73,27 @@ func TestForwardedEnv_InsightScoringEnabled(t *testing.T) {
 	}
 }
 
+// TestForwardedEnv_InsightScoringLookupTimeout.
+//
+// How long a run waits for the scoring provider before scoring on the pack and
+// project configuration. It is read in the AGENT, so setting it on the API
+// deployment did nothing for the containerised runs that are the only reason
+// to set it: a deployment whose database answers in twenty seconds would have
+// gone on discarding its own configuration after fifteen, with the variable
+// sitting right there in the API's environment.
+func TestForwardedEnv_InsightScoringLookupTimeout(t *testing.T) {
+	t.Setenv("INSIGHT_SCORING_LOOKUP_TIMEOUT", "25s")
+
+	found := map[string]string{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		found[kv.Key] = kv.Value
+	}
+
+	if found["INSIGHT_SCORING_LOOKUP_TIMEOUT"] != "25s" {
+		t.Errorf("INSIGHT_SCORING_LOOKUP_TIMEOUT not forwarded: %q", found["INSIGHT_SCORING_LOOKUP_TIMEOUT"])
+	}
+}
+
 // TestForwardedEnv_CloudPolicyIdentity pins that the cloud policy-checker
 // identity + the governance init gate reach agent Jobs. On cloud tenants the
 // agent runs the cloud-enterprise agent image, whose policy.Checker is the

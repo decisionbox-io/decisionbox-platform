@@ -125,8 +125,20 @@ func resolveScoringConfigBounded(ctx context.Context, projectID, warehouseID str
 	done := make(chan answer, 1)
 
 	lookupCtx, cancelLookup := context.WithTimeout(ctx, scoringLookupTimeout())
+	// Cancelled by the CALLER, never by the worker.
+	//
+	// The worker used to cancel on its way out, which made both of the cases
+	// below ready at once: it sends to a buffered channel, then cancels, and
+	// a caller that had not yet reached the select saw a closed Done as well
+	// as a waiting answer. Go picks at random between ready cases, so about
+	// half of all SUCCESSFUL lookups reported a timeout and pinned the pack
+	// and project defaults for the whole run — a configuration silently lost
+	// on a coin flip, which is worse than the stall the timeout was added
+	// for. Cancelling here means Done fires only when the deadline really
+	// passes, and the abandoned worker is still cancelled on the way out.
+	defer cancelLookup()
+
 	go func() {
-		defer cancelLookup()
 		override, err := agentplugin.ResolveScoringConfig(lookupCtx, projectID, warehouseID)
 		done <- answer{override, err}
 	}()
@@ -135,6 +147,20 @@ func resolveScoringConfigBounded(ctx context.Context, projectID, warehouseID str
 	case got := <-done:
 		return got.override, got.err
 	case <-lookupCtx.Done():
+		// An answer that arrived anyway WINS, whatever made Done ready.
+		//
+		// Select picks at random between ready cases, so "the deadline
+		// passed" and "the answer is waiting" being simultaneously true was
+		// enough to discard a configuration the provider had successfully
+		// returned. Moving the cancel to the caller above removes the way
+		// this code caused that; checking here removes the question, for the
+		// parent being cancelled at the same moment too. A delivered answer
+		// is never worse than the fallback.
+		select {
+		case got := <-done:
+			return got.override, got.err
+		default:
+		}
 		return agentplugin.ScoringOverride{}, fmt.Errorf(
 			"scoring configuration lookup did not answer within %s (%s); scoring on the pack and project configuration: %w",
 			scoringLookupTimeout(), scoringLookupTimeoutEnv, lookupCtx.Err())

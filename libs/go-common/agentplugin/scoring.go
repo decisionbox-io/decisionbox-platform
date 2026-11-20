@@ -150,7 +150,18 @@ func normaliseScoringOverride(in ScoringOverride) ScoringOverride {
 		}
 		bands = append(bands, b)
 	}
-	if len(bands) > 0 {
+	// And the surviving rungs have to DESCEND.
+	//
+	// The engine takes the first rung an amount reaches, so a ladder reading
+	// `100,000 -> medium` before `1,000,000 -> high` bands a $2M amount
+	// medium and makes every rung after the first unreachable. The settings
+	// API refuses such a ladder, but this seam also carries what a
+	// hand-edited document or another provider implementation supplies.
+	//
+	// Dropped whole rather than sorted: reordering would silently apply a
+	// ladder nobody wrote. The weights beside it are untouched, because a
+	// ladder and a weight are separate statements about the same project.
+	if len(bands) > 0 && descending(bands) {
 		out.AmountBands = bands
 	}
 
@@ -167,6 +178,17 @@ func normaliseScoringOverride(in ScoringOverride) ScoringOverride {
 // The three severity bands and nothing else: a cutoff naming a fourth would
 // land a figure in a band with no magnitude behind it, which scores every such
 // document at zero.
+// descending reports whether every rung sits strictly below the one before
+// it, which is the order the engine reads them in.
+func descending(bands []gomodels.MagnitudeBand) bool {
+	for i := 1; i < len(bands); i++ {
+		if bands[i].At >= bands[i-1].At {
+			return false
+		}
+	}
+	return true
+}
+
 func validMagnitudeBand(band string) bool {
 	switch band {
 	case gomodels.SeverityBandHigh, gomodels.SeverityBandMedium, gomodels.SeverityBandLow:

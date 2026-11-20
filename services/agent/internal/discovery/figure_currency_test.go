@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
+	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -277,5 +279,39 @@ func TestAFigureCitingAStepThatDoesNotExistIsFilledOnlyWhereThereIsNoDoubt(t *te
 	settleInsightFigureCurrencies(ins, disagree, map[int]*models.ExplorationStep{})
 	if c := ins[0].Figures[0].Currency; c != "" {
 		t.Errorf("datasources disagreeing: stamped %q, where no currency is knowable", c)
+	}
+}
+
+// TestAResumedPreUpgradeDraftKeepsItsCheckedAmount.
+//
+// A draft saved before codes were upper-cased carries a figure stating `cad`,
+// and restoreAreaDraft reuses that figure without settling it again — while
+// the profile side is resolved fresh to `CAD`. Comparing them raw excluded the
+// amount from the severity axis, so resuming such a draft lost a checked
+// amount the page still shows, with no provider or threshold involved at all.
+func TestAResumedPreUpgradeDraftKeepsItsCheckedAmount(t *testing.T) {
+	// The figure as an older build stored it.
+	stored := gomodels.Figure{
+		ID: "a1", Value: 2_400_000, Unit: gomodels.UnitCurrency, Currency: "cad",
+	}
+	verdict := gomodels.FigureVerdict{
+		ID: "a1", Display: "CAD 2.40M", Status: gomodels.FigureHolds,
+		Claimed: 2_400_000, Evaluated: 2_400_000,
+	}
+
+	got := scoring.Score(scoring.Input{
+		Verdict: valmodels.StatusConfirmed, AreaID: "revenue",
+		// Resolved fresh, so normalised.
+		HomeCurrency:   "CAD",
+		Figures:        []gomodels.Figure{stored},
+		FigureVerdicts: []gomodels.FigureVerdict{verdict},
+		Config:         scoring.DefaultConfig(),
+	})
+
+	if got.SeverityDriver == nil || got.SeverityDriver.Amount == nil {
+		t.Fatalf("driver = %+v, want the stored amount to have qualified", got.SeverityDriver)
+	}
+	if got.SeverityDriver.Amount.Value != 2_400_000 {
+		t.Errorf("amount = %v, want the figure the draft carried", got.SeverityDriver.Amount.Value)
 	}
 }
