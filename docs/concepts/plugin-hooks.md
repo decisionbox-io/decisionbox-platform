@@ -3,7 +3,7 @@
 DecisionBox exposes a small set of generic extension points so plugins can add behavior without forking the platform code.
 Each hook is a leaf-level registry: a plugin imports it (often with a blank import) and calls `Register*` from `init()`; the platform consults the registry at the right moment in its normal flow.
 
-This page documents the seven hooks. They are intentionally feature-agnostic so multiple unrelated plugins can attach without naming collisions.
+This page documents the eight hooks. They are intentionally feature-agnostic so multiple unrelated plugins can attach without naming collisions.
 
 ## Hook 1 — Context providers
 
@@ -242,6 +242,40 @@ Behavior:
 - Registering `nil` panics. Order of registration is preserved; later extenders see calls only when earlier ones disclaim ownership (for `Resolve`) or after earlier ones finish (for `Extend`).
 
 The default build registers no extenders; both endpoints return empty lists until a plugin attaches.
+
+## Hook 8 — Scoring configuration provider
+
+A plugin can supply deployment-wide category weights for insight severity: a standing statement such as "compliance matters three times as much", true of every project, which no single project document can hold.
+There is a single provider; the last registration wins.
+
+```go
+import (
+    "context"
+
+    "github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
+)
+
+type myScoring struct{}
+
+func (myScoring) Name() string { return "my-scoring" }
+
+func (myScoring) ScoringConfig(ctx context.Context, projectID string) (agentplugin.ScoringOverride, error) {
+    return agentplugin.ScoringOverride{CategoryWeights: map[string]float64{"compliance": 3.0}}, nil
+}
+
+func init() {
+    agentplugin.RegisterScoringConfigProvider(myScoring{})
+}
+```
+
+Behavior:
+
+- The agent asks once, at a run's first attempt, and folds the answer into the scoring configuration it pins on the run document. A resume replays that pin and never asks again, so a weight changed between two attempts cannot reach the second.
+- The weights sit between the pack and the project: the pack's declared taxonomy, then these, then the project's own `category_weights`, per category id. See [Risk taxonomy and severity weights](../reference/data-models.md#risk-taxonomy-and-severity-weights).
+- The answer is normalised before it is used: an entry whose weight is outside `(0, 3]`, or whose id is not a lowercase slug of letters, digits, hyphens or underscores, is dropped.
+- A provider that errors or panics costs the run its weights and nothing else: the error is logged and the run is weighted by the pack and the project alone. Registering `nil`, or a provider with an empty `Name()`, panics.
+
+The default build registers no provider, and its scoring output is byte-for-byte what it is with none (`libs/go-common/scoring/testdata/v3_parity.golden`).
 
 ## Migration & compatibility
 

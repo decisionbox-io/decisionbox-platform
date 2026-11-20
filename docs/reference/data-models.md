@@ -98,14 +98,19 @@ A `SeverityFigure` carries `figure_id`, `display` (the figure as the prose rende
 
 #### Risk taxonomy and severity weights
 
-Not every analysis area matters equally. A domain pack declares a **risk taxonomy** — the business-risk categories its domain has, with a weight each — and maps every analysis area to one or more of them. A project overrides any category's weight deployment-wide, and a single area can override the weight its categories would give it.
+Not every analysis area matters equally. A domain pack declares a **risk taxonomy** — the business-risk categories its domain has, with a weight each — and maps every analysis area to one or more of them. A project overrides any category's weight across all of its datasources, and a single area can override the weight its categories would give it.
 
 ```
+weight(c)    = the project's category_weights[c], when set
+             | a registered scoring-configuration provider's weight for c, when it supplies one
+             | the pack taxonomy's weight for c
 weight(area) = the area's own severity_weight, when one is configured
              | max(weight(c) for c in the area's risk_categories)
              | 1.0                                                     (the engine default)
 risk_flags   = the area's risk_categories, deduped, in declaration order
 ```
+
+The provider layer is an extension point ([Hook 8](../concepts/plugin-hooks.md#hook-8--scoring-configuration-provider)): deployment-wide weights that apply to every project unless the project states its own. With no provider registered it is empty, and the ladder is the pack and the project alone.
 
 **`max`, not the product or the mean.** A product double-counts: a finding that is both a revenue leak (2.0) and a compliance exposure (3.0) would be weighted 6.0 and clamp to the top of the scale whatever its magnitude. A mean dilutes the category that matters by averaging it with one that does not. `max` says *weighted by whichever is worse*, which is the sentence a reader expects from a list ordered by it.
 
@@ -119,10 +124,11 @@ A stated weight must be in **(0, 3]**. Zero is excluded because it multiplies a 
 |---|---|---|
 | Domain pack | `risk_taxonomy` (`id`, `label`, `description`, `weight`) | The pack, and so the warehouse it is bound to |
 | Domain pack / project area | `risk_categories`, `severity_weight` | The pack, and so the warehouse — a project snapshots both at creation and they are editable per area on the playbook page |
+| Scoring-configuration provider | category weights | The deployment, below each project's own `category_weights` — present only when a plugin registers one |
 | Project | `category_weights` | The project, across every datasource: "compliance is three times anything else for us" is not a per-warehouse statement |
 | Discovery run | `scoring_config` | One run, pinned at its first attempt |
 
-**A run's weighting is pinned.** `scoring_config` records the resolved category weights and each configured area's mapping at the run's first attempt, and every later attempt replays it. A resume can happen days after the attempt it continues, and a weight changed in between would score the second half of a run against different numbers from the first. It stores the resolved *inputs* rather than the per-area weights, so a later attempt re-derives both the weight and the flags through the same engine code the first used.
+**A run's weighting is pinned.** `scoring_config` records the resolved category weights — pack, provider and project layers already folded — and each configured area's mapping at the run's first attempt, and every later attempt replays it without consulting the provider again. A resume can happen days after the attempt it continues, and a weight changed in between would score the second half of a run against different numbers from the first. It stores the resolved *inputs* rather than the per-area weights, so a later attempt re-derives both the weight and the flags through the same engine code the first used.
 
 **A weight change is not a trend.** The cross-run comparison in the discovery ledger reads `magnitude_score`, which is weight-free, precisely so that raising a category's weight cannot make every finding in it look as though it got worse on the day someone changed a setting.
 
