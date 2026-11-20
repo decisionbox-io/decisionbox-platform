@@ -120,7 +120,12 @@ func ResolveScoringConfig(ctx context.Context, projectID, warehouseID string) (o
 // distinguishable would mean a deployment whose only weight was illegal
 // looking configured while behaving unconfigured.
 func normaliseScoringOverride(in ScoringOverride) ScoringOverride {
-	out := ScoringOverride{AmountCurrency: in.AmountCurrency}
+	// NORMALISED here, where a provider's answer is accepted, so the value
+	// pinned on the run is the one the engine compares. A ladder currency is
+	// read by the engine, by the trend basis and by the stored sentence, and
+	// each of those normalising for itself is how `usd` came to be stored as a
+	// currency distinct from `USD`.
+	out := ScoringOverride{AmountCurrency: scoring.CurrencySymbol(in.AmountCurrency)}
 
 	weights := make(map[string]float64, len(in.CategoryWeights))
 	for id, w := range in.CategoryWeights {

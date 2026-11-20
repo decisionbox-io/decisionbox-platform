@@ -176,6 +176,17 @@ services:
       # discovery matches.
       # - LLM_TIMEOUT=15m
 
+      # How long a discovery run waits for a registered
+      # scoring-configuration provider to answer before scoring on the
+      # pack and project configuration instead. Go duration string
+      # (default: 15s). A non-positive value falls back to the default.
+      # Only affects a deployment that registers such a provider; with
+      # none registered, nothing is looked up and nothing waits.
+      # Set here as well as on the agent service: the API forwards it to
+      # the agent Jobs/containers it spawns, so on the docker and
+      # kubernetes runners this is the only way it reaches the agent.
+      # - INSIGHT_SCORING_LOOKUP_TIMEOUT=15s
+
       # ============================================================
       # TELEMETRY — Anonymous usage metrics
       # ============================================================
@@ -259,6 +270,16 @@ services:
       # Delay between consecutive LLM calls (rate limiting / cost control)
       # Values: milliseconds (0 = no delay)
       - LLM_REQUEST_DELAY_MS=1000
+
+      # How long this run waits for a registered scoring-configuration
+      # provider to answer before scoring on the pack and project
+      # configuration instead. Go duration string (default: 15s).
+      # A non-positive value falls back to the default. Only affects a
+      # build that registers such a provider; with none registered,
+      # nothing is looked up and nothing waits.
+      # The API forwards its own value to the agent it spawns, so set it
+      # here only to override that for a directly-run agent.
+      # - INSIGHT_SCORING_LOOKUP_TIMEOUT=15s
 
       # ============================================================
       # SECRETS — Per-project secret management (must match API config)

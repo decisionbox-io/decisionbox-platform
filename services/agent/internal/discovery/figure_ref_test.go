@@ -763,10 +763,16 @@ func TestRecommendationFigures_SumAcrossCurrenciesIsUndecidable(t *testing.T) {
 // schema says "omit for dollars", so a model doing both across two figures is ordinary --
 // and the total it refused had been settling correctly until then. Whitespace is the same
 // bug with a different spelling.
+//
+// So is CASING, which arrived with the pass-through normalisation: a run resumed across
+// that upgrade holds a restored figure printing `cad` beside a newly settled one printing
+// `CAD`, and refusing their total reports a currency disagreement between a currency and
+// itself.
 func TestRecommendationFigures_DollarOperandsAgreeHoweverTheyAreSpelled(t *testing.T) {
 	for _, tc := range []struct{ name, a, b string }{
 		{"omitted and explicit dollars", "", "$"},
 		{"padded and bare lira", " ₺", "₺"},
+		{"restored and settled canadian dollars", "cad", "CAD"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ins := liraInsight()

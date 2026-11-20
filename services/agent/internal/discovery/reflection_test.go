@@ -2376,6 +2376,19 @@ func TestTheLadderBasisIsBoundedAndStable(t *testing.T) {
 		t.Error("the same rungs in another currency share a basis")
 	}
 
+	// The same ladder RESPELLED is the same ladder. The scorer reads `USD`
+	// and `$` as one currency, so a provider that changes only the spelling
+	// between runs has changed nothing — and a basis that moved there made
+	// the ledger read two magnitudes as incomparable and record no trend for
+	// a finding whose amount crossed an unchanged cutoff.
+	for _, spelling := range []string{"USD", "usd", " $ "} {
+		respelled := other
+		respelled.AmountCurrency = spelling
+		if got, want := amountLadderBasis(respelled), amountLadderBasis(other); got != want {
+			t.Errorf("basis for %q = %q, want %q — the same currency, spelled differently", spelling, got, want)
+		}
+	}
+
 	// No ladder is no basis, which is what every deployment that configures
 	// nothing carries — and two of those compare equal.
 	if b := amountLadderBasis(scoring.SeverityConfig{}); b != "" {

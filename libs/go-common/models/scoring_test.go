@@ -284,3 +284,131 @@ func assertVocabulary(t *testing.T, name string, got []string, want ...string) {
 		t.Errorf("the %s vocabulary no longer declares %q", name, value)
 	}
 }
+
+// TestResumeAndReplayFieldsSurviveBothEncodings covers the three fields a
+// resume and a preview READ BACK rather than compute.
+//
+// The pinning and replay suites exercise these in memory, where a dropped
+// `bson` tag is invisible. Both readers come off MongoDB: a resumed attempt
+// reads its pinned ladder from the run document, and the settings preview
+// reads a stored driver out of the discovery. A ladder that does not decode is
+// a second attempt banding money the first attempt did not -- silently, since
+// absent reads as "no amount can be banded" -- and a Share that does not
+// decode is a preview that cannot tell which candidate an amount beat.
+//
+// Both encodings, because the run document is written as BSON and served as
+// JSON, and these fields have separate tags for each.
+func TestResumeAndReplayFieldsSurviveBothEncodings(t *testing.T) {
+	pinned := RunScoringConfig{
+		CategoryWeights: map[string]float64{"revenue_leak": 3.0},
+		Areas: map[string]RunAreaRisk{
+			"pricing": {RiskCategories: []string{"revenue_leak"}},
+		},
+		AmountBands: []MagnitudeBand{
+			{At: 1_000_000, Band: SeverityBandHigh},
+			{At: 100_000, Band: SeverityBandMedium},
+		},
+		AmountCurrency: "$",
+	}
+
+	// An AMOUNT-banded driver, which is the shape that fills Share: the
+	// percentage the amount beat. The shared fixture is share-banded, so
+	// nothing else in this package round-trips this slot.
+	driver := &SeverityDriver{
+		Kind:       SeverityDriverAmount,
+		Quantified: true,
+		Figure: &SeverityFigure{
+			FigureID: "f3", Display: "$2.40M", Value: 2_400_000,
+			Unit: UnitCurrency, Currency: "$", Verdict: FigureHolds,
+		},
+		Amount: &SeverityFigure{
+			FigureID: "f3", Display: "$2.40M", Value: 2_400_000,
+			Unit: UnitCurrency, Currency: "$", Verdict: FigureHolds,
+		},
+		Share: &SeverityFigure{
+			FigureID: "f1", Display: "12.40%", Value: 12.4,
+			Unit: UnitPercent, Verdict: FigureHolds,
+		},
+	}
+
+	checkLadder := func(t *testing.T, encoding string, got RunScoringConfig) {
+		t.Helper()
+		if len(got.AmountBands) != len(pinned.AmountBands) {
+			t.Fatalf("%s: %d pinned rungs decoded, want %d — a resume would band on no ladder at all",
+				encoding, len(got.AmountBands), len(pinned.AmountBands))
+		}
+		for i, want := range pinned.AmountBands {
+			if got.AmountBands[i] != want {
+				t.Errorf("%s: rung %d = %+v, want %+v", encoding, i, got.AmountBands[i], want)
+			}
+		}
+		if got.AmountCurrency != pinned.AmountCurrency {
+			t.Errorf("%s: currency = %q, want %q — a ladder whose currency is lost applies to nothing",
+				encoding, got.AmountCurrency, pinned.AmountCurrency)
+		}
+	}
+
+	t.Run("pinned ladder through BSON", func(t *testing.T) {
+		bs, err := bson.Marshal(pinned)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var got RunScoringConfig
+		if err := bson.Unmarshal(bs, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		checkLadder(t, "bson", got)
+	})
+
+	t.Run("pinned ladder through JSON", func(t *testing.T) {
+		bs, err := json.Marshal(pinned)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var got RunScoringConfig
+		if err := json.Unmarshal(bs, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		checkLadder(t, "json", got)
+	})
+
+	checkDriver := func(t *testing.T, encoding string, got *SeverityDriver) {
+		t.Helper()
+		if got == nil {
+			t.Fatalf("%s: driver decoded to nil", encoding)
+		}
+		if got.Share == nil {
+			t.Fatalf("%s: Share decoded to nil, want the candidate the amount beat", encoding)
+		}
+		if *got.Share != *driver.Share {
+			t.Errorf("%s: Share = %+v, want %+v", encoding, *got.Share, *driver.Share)
+		}
+		if got.Amount == nil || *got.Amount != *driver.Amount {
+			t.Errorf("%s: Amount = %+v, want %+v", encoding, got.Amount, *driver.Amount)
+		}
+	}
+
+	t.Run("amount-banded driver through BSON", func(t *testing.T) {
+		bs, err := bson.Marshal(Scoring{SeverityDriver: driver})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var got Scoring
+		if err := bson.Unmarshal(bs, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		checkDriver(t, "bson", got.SeverityDriver)
+	})
+
+	t.Run("amount-banded driver through JSON", func(t *testing.T) {
+		bs, err := json.Marshal(Scoring{SeverityDriver: driver})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var got Scoring
+		if err := json.Unmarshal(bs, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		checkDriver(t, "json", got.SeverityDriver)
+	})
+}

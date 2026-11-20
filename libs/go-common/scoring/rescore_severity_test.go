@@ -370,12 +370,21 @@ func TestTheReplayNormalisesAStoredCurrency(t *testing.T) {
 // which no longer drops the figure — ranked the same evidence far higher. A
 // preview saying "nothing moves" about a configuration that moves plenty is
 // the one thing it may not say.
-func TestTheReplayRecoversAnAmountTheStoringRunDropped(t *testing.T) {
+// TestTheReplayNeverBandsOnEvidenceARunWouldNotRead.
+//
+// A run admits an amount only when its PUBLISHED prose states the figure and
+// the figure's own arithmetic held, and it resolves home currency from the
+// steps those figures cite. A stored document carries neither of those
+// decisions, so an earlier version of the replay — which re-derived candidates
+// from the full stored figure list against the primary datasource's currency
+// whenever the driver had no amount — banded findings a fresh run leaves where
+// they are. The replay reads the stored driver, and that is the whole contract.
+func TestTheReplayNeverBandsOnEvidenceARunWouldNotRead(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Severity.AmountBands = []MagnitudeBand{{At: 1_000_000, Band: gomodels.SeverityBandHigh}}
 	cfg.Severity.AmountCurrency = "CAD"
 
-	// What such a run stored: a share-banded driver, and no amount at all.
+	// A document a run banded on its share, having read no amount it could use.
 	prior := gomodels.Scoring{
 		SeverityBand:   gomodels.SeverityBandLow,
 		MagnitudeScore: 0.25,
@@ -385,49 +394,35 @@ func TestTheReplayRecoversAnAmountTheStoringRunDropped(t *testing.T) {
 			Figure:     &gomodels.SeverityFigure{Value: 1.2, Unit: gomodels.UnitPercent, Display: "1.20%"},
 		},
 	}
-	// The evidence it kept beside that driver.
-	figures := []gomodels.Figure{
-		{ID: "a1", Value: 2_400_000, Unit: gomodels.UnitCurrency, Currency: "cad"},
-		{ID: "f1", Value: 1.2, Unit: gomodels.UnitPercent},
-	}
-	verdicts := []gomodels.FigureVerdict{
-		{ID: "a1", Display: "CAD 2.40M", Status: gomodels.FigureHolds, Claimed: 2_400_000, Evaluated: 2_400_000},
-		{ID: "f1", Display: "1.20%", Status: gomodels.FigureHolds, Claimed: 1.2, Evaluated: 1.2},
-	}
-
+	// Evidence stored beside it that clears this ladder twice over. The run
+	// that stored the document did not band on it; neither may the preview.
 	in := Input{
 		AreaID: "revenue", Config: cfg,
-		Figures: figures, FigureVerdicts: verdicts, HomeCurrency: "CAD",
+		Figures: []gomodels.Figure{
+			{ID: "a1", Value: 2_400_000, Unit: gomodels.UnitCurrency, Currency: "cad"},
+			{ID: "f1", Value: 1.2, Unit: gomodels.UnitPercent},
+		},
+		FigureVerdicts: []gomodels.FigureVerdict{
+			{ID: "a1", Display: "CAD 2.40M", Status: gomodels.FigureHolds, Claimed: 2_400_000, Evaluated: 2_400_000},
+			{ID: "f1", Display: "1.20%", Status: gomodels.FigureHolds, Claimed: 1.2, Evaluated: 1.2},
+		},
+		HomeCurrency: "CAD",
 	}
 	got := RescoreSeverity(prior, in)
 
-	if got.SeverityDriver == nil || got.SeverityDriver.Kind != gomodels.SeverityDriverAmount {
-		t.Fatalf("driver = %+v, want the recovered amount to band it", got.SeverityDriver)
+	if got.SeverityDriver == nil || got.SeverityDriver.Kind != gomodels.SeverityDriverShare {
+		t.Fatalf("driver = %+v, want the stored share — the amount was never a run's to read", got.SeverityDriver)
 	}
-	if got.SeverityBand != gomodels.SeverityBandHigh {
-		t.Errorf("band = %q, want high — what the next run will produce for this evidence", got.SeverityBand)
+	if got.SeverityBand == gomodels.SeverityBandHigh {
+		t.Errorf("band = high, want the ladder to leave a share-banded document alone")
 	}
 
-	// WITHOUT the evidence, the replay has nothing to recover and says so by
-	// leaving the document on its share. That is the behaviour a caller who
-	// passes no figures gets, and it must not change.
+	// And it makes no difference whether the caller supplies the evidence at
+	// all: the two answers are the same answer.
 	bare := RescoreSeverity(prior, Input{AreaID: "revenue", Config: cfg})
-	if bare.SeverityDriver.Kind != gomodels.SeverityDriverShare {
-		t.Errorf("driver = %q with no evidence supplied, want the stored share", bare.SeverityDriver.Kind)
-	}
-
-	// And a document whose driver DOES carry an amount is untouched by the
-	// recovery: it is additive, never a second opinion about an amount the
-	// run already chose.
-	withAmount := prior
-	withAmount.SeverityDriver = &gomodels.SeverityDriver{
-		Kind: gomodels.SeverityDriverAmount, Quantified: true,
-		Amount: &gomodels.SeverityFigure{Value: 500, Currency: "CAD", Unit: gomodels.UnitCurrency},
-		Figure: &gomodels.SeverityFigure{Value: 500, Currency: "CAD", Unit: gomodels.UnitCurrency},
-	}
-	kept := RescoreSeverity(withAmount, in)
-	if kept.SeverityDriver.Amount.Value != 500 {
-		t.Errorf("amount = %v, want the driver's own 500 rather than the figures'", kept.SeverityDriver.Amount.Value)
+	if bare.SeverityBand != got.SeverityBand || bare.MagnitudeScore != got.MagnitudeScore {
+		t.Errorf("band/magnitude = %q/%v with evidence and %q/%v without; the replay must read only the driver",
+			got.SeverityBand, got.MagnitudeScore, bare.SeverityBand, bare.MagnitudeScore)
 	}
 }
 

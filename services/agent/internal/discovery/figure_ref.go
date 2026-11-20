@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
@@ -238,7 +239,19 @@ func (ix figureRefIndex) agreedCurrency(refs []models.FigureRef) (agreed, confli
 			agreed, have = rv.currency, true
 			continue
 		}
-		if rv.currency != agreed {
+		// THE comparison, not a `!=` on what each figure prints.
+		//
+		// A figure states the currency its own prose shows, and a run resumed
+		// across the normalisation of CurrencySymbol can hold a restored
+		// figure printing `cad` beside a settled one printing `CAD`. Compared
+		// character for character those are two currencies, so a
+		// recommendation totalling two checked Canadian amounts was reported
+		// as a total across currencies and marked undecidable.
+		//
+		// Compared here rather than rewritten on the way in: what a figure
+		// prints is what its insight published, and normalising that would
+		// edit the page to fix a comparison.
+		if !scoring.SameCurrency(rv.currency, agreed) {
 			return agreed, rv.currency, false
 		}
 	}

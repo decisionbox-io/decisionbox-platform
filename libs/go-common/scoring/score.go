@@ -408,7 +408,7 @@ func RescoreSeverity(prior gomodels.Scoring, in Input) gomodels.Scoring {
 	cfg := in.resolvedConfig()
 
 	weight, weightSource := in.areaWeight(cfg.Severity)
-	magnitude, score, band, driver, reason := rescoreSeverityFrom(prior.SeverityDriver, weight, cfg.Severity, in)
+	magnitude, score, band, driver, reason := rescoreSeverityFrom(prior.SeverityDriver, weight, cfg.Severity)
 
 	out := prior
 	out.MagnitudeScore = magnitude
@@ -441,7 +441,7 @@ func RescoreSeverity(prior gomodels.Scoring, in Input) gomodels.Scoring {
 // A driver that is nil, or one whose kind says nothing was quantified, has no
 // candidate to re-band: the magnitude goes back to the area baseline, which is
 // what it was.
-func rescoreSeverityFrom(prior *gomodels.SeverityDriver, weight float64, cfg SeverityConfig, in Input) (
+func rescoreSeverityFrom(prior *gomodels.SeverityDriver, weight float64, cfg SeverityConfig) (
 	magnitude float64,
 	score float64,
 	band string,
@@ -478,32 +478,22 @@ func rescoreSeverityFrom(prior *gomodels.SeverityDriver, weight float64, cfg Sev
 		home = CurrencySymbol(amount.Currency)
 	}
 
-	// An amount the STORING run dropped can still be recovered from the
-	// evidence it kept, when the caller supplies it.
+	// The STORED driver and nothing else, deliberately.
 	//
-	// The same casing bug that this function now normalises around also ran
-	// at scoring time: a profile stating `cad` against a figure stating
-	// `CAD` excluded the amount, so those documents carry a driver with no
-	// amount at all and there is nothing here to normalise. Replaying only
-	// the driver would then show a new money ladder changing nothing, while
-	// the next run -- which no longer drops the figure -- ranks the same
-	// evidence far higher. A preview that says "nothing moves" about a
-	// configuration that moves plenty is the one failure this cannot have.
+	// An earlier version re-derived candidates from the document's figures
+	// whenever the driver carried no amount, to cover a document whose
+	// storing run dropped one. It cannot: a run admits only the figures its
+	// PUBLISHED prose states and resolves home currency from the steps those
+	// figures cite, neither of which is recoverable from a stored document,
+	// so the re-derivation read the full figure list against a datasource's
+	// currency and banded insights a fresh run would not. A preview that
+	// over-promises is worse than one that reports the driver as it stands.
 	//
-	// So when the driver carries no amount and the caller passed the stored
-	// figures, the candidates are re-derived from them. Additive by
-	// construction: it can only supply a candidate the driver lacks, and
-	// `tiers_before` is read from the stored document rather than from here,
-	// so the record of what the run found is untouched either way.
-	if amount == nil && len(in.Figures) > 0 {
-		if recovered, recoveredShare := qualifyingFigures(in.severityInput(weight)); recovered != nil {
-			amount = recovered
-			home = CurrencySymbol(in.HomeCurrency)
-			if share == nil {
-				share = recoveredShare
-			}
-		}
-	}
+	// Nothing is lost by refusing: no release has ever stored a severity
+	// driver -- this axis does not exist on main -- so a document carrying a
+	// driver with no amount is a document a run genuinely found no amount
+	// for, and replaying the driver alone is exactly what a fresh run would
+	// conclude.
 
 	// THE calculation, the same one a fresh run goes through.
 	//

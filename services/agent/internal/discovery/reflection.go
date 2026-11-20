@@ -1092,8 +1092,15 @@ func amountLadderBasis(cfg scoring.SeverityConfig) string {
 	// and architectures — a hash/maphash or a Go map iteration would not be —
 	// and truncated to 16 hex characters, which is far more than enough to
 	// tell two ladders apart in one project's ledger.
+	// The currency goes in CANONICAL, not as the provider spelled it.
+	//
+	// The scorer reads `USD` and `$` as one currency, so a provider that
+	// changes only the spelling between runs is running the same ladder. Hashed
+	// verbatim, that respelling produced a different basis, the ledger read the
+	// two magnitudes as incomparable, and a finding whose amount crossed an
+	// unchanged cutoff recorded no trend at all.
 	h := sha256.New()
-	h.Write([]byte(cfg.AmountCurrency))
+	h.Write([]byte(scoring.CurrencySymbol(cfg.AmountCurrency)))
 	for _, band := range cfg.AmountBands {
 		h.Write([]byte{0})
 		h.Write([]byte(strconv.FormatFloat(band.At, 'f', -1, 64)))
