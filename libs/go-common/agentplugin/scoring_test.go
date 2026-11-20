@@ -340,3 +340,44 @@ func TestALadderNobodyCanReadInOrderIsDropped(t *testing.T) {
 		t.Errorf("bands = %+v, want a duplicated rung dropped", dup.AmountBands)
 	}
 }
+
+// TestALaddersCurrencyIsPinnedCanonical.
+//
+// The value this seam accepts is the value pinned on the run document, and
+// three separate readers then compare it: the engine, matching the ladder
+// against a document's home currency; the stored sentence, naming the currency
+// a ladder was written for; and the ledger's trend basis, deciding whether two
+// runs measured a magnitude against the same thing. Each of those normalising
+// for itself is how one currency came to be two -- so it is normalised once,
+// here, where a provider's answer arrives.
+func TestALaddersCurrencyIsPinnedCanonical(t *testing.T) {
+	ladder := []gomodels.MagnitudeBand{{At: 1_000_000, Band: gomodels.SeverityBandHigh}}
+
+	for _, tc := range []struct{ stated, want string }{
+		{"USD", "$"},
+		{"usd", "$"},
+		{" $ ", "$"},
+		// A code this engine does not map is passed through, and its casing
+		// is not part of its identity.
+		{"cad", "CAD"},
+		{"CAD", "CAD"},
+		// Nothing stated stays nothing stated: an unstated currency means
+		// "whatever this document is in", which is a different statement from
+		// any currency.
+		{"", ""},
+	} {
+		got := normaliseScoringOverride(ScoringOverride{
+			AmountBands: ladder, AmountCurrency: tc.stated,
+		})
+		if got.AmountCurrency != tc.want {
+			t.Errorf("a provider stating %q pinned %q, want %q", tc.stated, got.AmountCurrency, tc.want)
+		}
+	}
+
+	// And a currency pinned beside no legal ladder is still dropped: the two
+	// rules compose rather than replace each other.
+	empty := normaliseScoringOverride(ScoringOverride{AmountCurrency: "USD"})
+	if empty.AmountCurrency != "" {
+		t.Errorf("currency = %q with no bands, want it dropped with them", empty.AmountCurrency)
+	}
+}
