@@ -140,6 +140,25 @@ type LedgerFinding struct {
 	// findingMagnitudeChanged tests for before trusting a comparison.
 	MagnitudeScore float64 `bson:"magnitude_score,omitempty" json:"magnitude_score,omitempty"`
 
+	// MagnitudeBasis is what produced the magnitude above, so two of them are
+	// only ever compared when they answer the same question.
+	//
+	// The comment above says the magnitude is "the only half that answers did
+	// this finding actually grow", and that stopped being true when money
+	// thresholds arrived: a magnitude banded against a CONFIGURED ladder
+	// moves when the ladder does. Adding a $1M cutoff takes an unchanged $2M
+	// finding from 0.25 to 1.0, and a trend would have been recorded about a
+	// settings change — the exact failure the weighted score was rejected
+	// for, arriving through the half that was supposed to be immune.
+	//
+	// So the basis names the driver, and for an amount the ladder it was
+	// banded against. findingMagnitudeChanged compares magnitudes only when
+	// the bases match and otherwise falls back to the affected-count delta,
+	// which is the path it already took for a sighting with no comparable
+	// magnitude at all. Empty on every row written before this existed, and
+	// two empties match, so old sightings keep comparing exactly as they did.
+	MagnitudeBasis string `bson:"magnitude_basis,omitempty" json:"magnitude_basis,omitempty"`
+
 	AffectedCount int  `bson:"affected_count,omitempty" json:"affected_count,omitempty"`
 	SeenCount     int  `bson:"seen_count" json:"seen_count"`
 	Liked         bool `bson:"liked,omitempty" json:"liked,omitempty"`
@@ -210,6 +229,10 @@ type FindingSighting struct {
 	// of the same name on LedgerFinding for why a trend is measured on this
 	// rather than on the severity word.
 	MagnitudeScore float64 `bson:"magnitude_score,omitempty" json:"magnitude_score,omitempty"`
+	// MagnitudeBasis is what produced this sighting's magnitude — see the
+	// field of the same name on LedgerFinding. Carried per sighting because
+	// the ladder can change BETWEEN runs, which is the whole reason it exists.
+	MagnitudeBasis string `bson:"magnitude_basis,omitempty" json:"magnitude_basis,omitempty"`
 	// InsightID is this run's insight that produced the sighting, so the
 	// sighting itself drills through to the SQL that proved it.
 	InsightID string `bson:"insight_id,omitempty" json:"insight_id,omitempty"`

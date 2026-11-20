@@ -133,7 +133,7 @@ func severityFromCandidates(c severityCandidates, cfg SeverityConfig) (
 	// it.
 	score = round(math.Min(1.0, magnitude*c.weight))
 	band = severityBandFor(score, cfg)
-	return magnitude, score, band, driver, severityReason(band, driver)
+	return magnitude, score, band, driver, severityReason(band, driver, c.homeCurrency, cfg)
 }
 
 // qualifyingFigures picks the largest checked amount in the document's own
@@ -346,7 +346,7 @@ var severityBandLabels = map[string]string{
 // Written here and stored on the document, for the reason the confidence
 // reason is: the dashboard, an API client, the clarifying-questions digest and
 // any summary reader quote one wording rather than each composing its own.
-func severityReason(band string, driver gomodels.SeverityDriver) string {
+func severityReason(band string, driver gomodels.SeverityDriver, homeCurrency string, cfg SeverityConfig) string {
 	label := severityBandLabels[band]
 	if label == "" {
 		// A band this build has no word for, which only a calibration that
@@ -372,16 +372,45 @@ func severityReason(band string, driver gomodels.SeverityDriver) string {
 		return label + " — driven by " + figureWords(driver.Figure) + ", checked against warehouse rows."
 	default:
 		if driver.Amount != nil {
-			// Reachable: an amount that holds, in the home currency, on a
-			// document with no percentage figure and no amount bands
-			// configured. The amount is real and is shown; what is missing is
-			// a cutoff to band it against.
+			// Reachable two ways, and they are different facts about the
+			// deployment, so they are different sentences.
+			//
+			// Saying "no amount bands are configured" about a deployment that
+			// HAS configured them — in another currency — sent a reader to a
+			// settings page that already held a ladder, to add the thing it
+			// said was missing. And this sentence is STORED on the document,
+			// so it outlives the misunderstanding.
+			if len(cfg.AmountBands) > 0 && !amountBandsApply(homeCurrency, cfg) {
+				return label + " — not quantified, so the area baseline applies. " +
+					figureWords(driver.Amount) + " is at stake, but the configured amount thresholds are written in " +
+					ladderCurrencyWords(cfg) + " and this finding is in " + homeCurrencyWords(homeCurrency) +
+					", so they cannot rank it."
+			}
+			// The amount is real and is shown; what is missing is a cutoff to
+			// band it against.
 			return label + " — not quantified, so the area baseline applies. " +
 				figureWords(driver.Amount) + " is at stake but no amount bands are configured to rank it."
 		}
 		return label + " — not quantified: this finding states no checked figure to measure it by, " +
 			"so the area baseline applies."
 	}
+}
+
+// ladderCurrencyWords and homeCurrencyWords name a currency in a sentence, or
+// say plainly that none was stated -- which is a different fact from a
+// mismatch and the one a reader can act on.
+func ladderCurrencyWords(cfg SeverityConfig) string {
+	if cfg.AmountCurrency == "" {
+		return "no particular currency"
+	}
+	return cfg.AmountCurrency
+}
+
+func homeCurrencyWords(home string) string {
+	if home == "" {
+		return "no stated currency"
+	}
+	return home
 }
 
 // figureWords renders a driver figure as prose: the number as the insight's own

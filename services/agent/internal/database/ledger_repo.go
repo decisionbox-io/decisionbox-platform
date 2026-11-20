@@ -486,7 +486,11 @@ type FindingMerge struct {
 	// moved. A merge that wrote the severity word without it would leave the
 	// comparison with nothing to measure on, so every future run would fall
 	// back to the affected-count delta alone.
-	MagnitudeScore    float64
+	MagnitudeScore float64
+	// MagnitudeBasis is what that magnitude was measured against, written
+	// with it because the next run compares the two and has to know whether
+	// they answer the same question — see the field on LedgerFinding.
+	MagnitudeBasis    string
 	AffectedCount     int
 	LastSeen          time.Time
 	SourceDiscoveryID string
@@ -523,6 +527,7 @@ func (r *LedgerFindingRepository) Merge(ctx context.Context, projectID, id strin
 		"evidence":            m.Evidence,
 		"severity":            m.Severity,
 		"magnitude_score":     m.MagnitudeScore,
+		"magnitude_basis":     m.MagnitudeBasis,
 		"affected_count":      m.AffectedCount,
 		"last_seen":           m.LastSeen,
 		"source_discovery_id": m.SourceDiscoveryID,

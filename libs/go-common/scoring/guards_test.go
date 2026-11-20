@@ -165,7 +165,7 @@ func TestSeverityReasonNamesTheAmountTheBaselineCouldNotRank(t *testing.T) {
 			FigureID: "revenue_at_risk", Display: "$2.40M", Value: 2400000,
 			Unit: gomodels.UnitCurrency, Currency: "$", Verdict: "holds",
 		},
-	})
+	}, "", SeverityConfig{})
 	for _, want := range []string{"Medium", "not quantified", "$2.40M", "no amount bands are configured"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("reason = %q, missing %q", got, want)
@@ -176,7 +176,7 @@ func TestSeverityReasonNamesTheAmountTheBaselineCouldNotRank(t *testing.T) {
 	// at all -- a different fact, and not one to dress up with a number.
 	bare := severityReason(gomodels.SeverityBandMedium, gomodels.SeverityDriver{
 		Kind: gomodels.SeverityDriverBaseline,
-	})
+	}, "", SeverityConfig{})
 	if strings.Contains(bare, "at stake") {
 		t.Errorf("reason = %q, should not claim an amount", bare)
 	}
@@ -196,7 +196,7 @@ func TestSeverityReasonStillOpensWithAWordForAnUnknownBand(t *testing.T) {
 		Kind:       gomodels.SeverityDriverShare,
 		Quantified: true,
 		Figure:     &gomodels.SeverityFigure{Display: "41.2%", Value: 41.2, Unit: gomodels.UnitPercent, Verdict: "holds"},
-	})
+	}, "", SeverityConfig{})
 	if got == "" {
 		t.Fatal("reason is empty for an unrecognised band")
 	}
@@ -280,8 +280,67 @@ func TestFigureWordsAlwaysRendersSomething(t *testing.T) {
 		Kind:       gomodels.SeverityDriverShare,
 		Quantified: true,
 		Figure:     &gomodels.SeverityFigure{FigureID: "pct"},
-	})
+	}, "", SeverityConfig{})
 	if strings.Contains(reason, "by ,") || strings.Contains(reason, "  ") {
 		t.Errorf("reason has a hole in it: %q", reason)
 	}
+}
+
+// TestTheStoredSentenceDistinguishesAMissingLadderFromAMismatchedOne.
+//
+// This sentence is STORED on the document and rendered verbatim, so it outlives
+// the moment it was written. Telling a reader that "no amount bands are
+// configured" about a deployment that has configured them — in another
+// currency — sends them to a settings page that already holds a ladder, to add
+// the thing the sentence said was missing.
+func TestTheStoredSentenceDistinguishesAMissingLadderFromAMismatchedOne(t *testing.T) {
+	amount := &gomodels.SeverityFigure{Display: "$2.40M", Unit: gomodels.UnitCurrency, Currency: "$"}
+	driver := gomodels.SeverityDriver{Kind: gomodels.SeverityDriverBaseline, Amount: amount}
+
+	t.Run("nothing configured", func(t *testing.T) {
+		got := severityReason(gomodels.SeverityBandLow, driver, "$", SeverityConfig{})
+		if !strings.Contains(got, "no amount bands are configured") {
+			t.Errorf("reason = %q, want it to say none are configured", got)
+		}
+	})
+
+	t.Run("configured in another currency", func(t *testing.T) {
+		cfg := SeverityConfig{
+			AmountBands:    []MagnitudeBand{{At: 2_000_000, Band: gomodels.SeverityBandHigh}},
+			AmountCurrency: "₺",
+		}
+		got := severityReason(gomodels.SeverityBandLow, driver, "$", cfg)
+		if strings.Contains(got, "no amount bands are configured") {
+			t.Errorf("reason = %q, want it NOT to claim none are configured", got)
+		}
+		// Both currencies named, because the remedy depends on which is wrong.
+		if !strings.Contains(got, "₺") || !strings.Contains(got, "$") {
+			t.Errorf("reason = %q, want both the ladder's currency and the finding's", got)
+		}
+	})
+
+	t.Run("configured, and the finding states no currency", func(t *testing.T) {
+		cfg := SeverityConfig{
+			AmountBands:    []MagnitudeBand{{At: 2_000_000, Band: gomodels.SeverityBandHigh}},
+			AmountCurrency: "$",
+		}
+		got := severityReason(gomodels.SeverityBandLow, driver, "", cfg)
+		if !strings.Contains(got, "no stated currency") {
+			t.Errorf("reason = %q, want it to say the finding states none", got)
+		}
+	})
+
+	t.Run("configured and applicable is not this branch", func(t *testing.T) {
+		// A ladder that DOES apply never reaches the baseline with an amount:
+		// the amount would have banded it. Asserted so the sentence above
+		// cannot start appearing on documents a ladder actually ranked.
+		cfg := SeverityConfig{
+			AmountBands:    []MagnitudeBand{{At: 2_000_000, Band: gomodels.SeverityBandHigh}},
+			AmountCurrency: "$",
+		}
+		got := severityReason(gomodels.SeverityBandLow, driver, "$", cfg)
+		if strings.Contains(got, "cannot rank it") {
+			t.Errorf("reason = %q, want no mismatch claim when the ladder applies", got)
+		}
+	})
 }

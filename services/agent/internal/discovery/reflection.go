@@ -15,6 +15,7 @@ import (
 	goconfig "github.com/decisionbox-io/decisionbox/libs/go-common/config"
 	commonmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/policy"
+	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/database"
 	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -507,7 +508,7 @@ func appendUnique(dst, add []string) []string {
 // deduping (exact + semantic) and trend-marking against prior findings, and
 // indexes new/updated findings into Qdrant when the embedder is wired.
 func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.DiscoveryResult) (consolidationResult, error) {
-	candidates := buildFindingCandidates(result)
+	candidates := buildFindingCandidates(result, amountLadderBasis(o.scoringCfg.Severity))
 	out := consolidationResult{
 		ReSeen:               make(map[string]struct{}),
 		FindingIDByInsightID: make(map[string]string, len(candidates)),
@@ -695,6 +696,7 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 			match.Evidence = cand.Evidence
 			match.Severity = cand.Severity
 			match.MagnitudeScore = cand.MagnitudeScore
+			match.MagnitudeBasis = cand.MagnitudeBasis
 			match.AffectedCount = cand.AffectedCount
 			match.Liked = match.Liked || cand.Liked
 			match.SeenCount++
@@ -715,6 +717,7 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 				AffectedCount:  cand.AffectedCount,
 				Severity:       cand.Severity,
 				MagnitudeScore: cand.MagnitudeScore,
+				MagnitudeBasis: cand.MagnitudeBasis,
 				InsightID:      insightID,
 			}
 			var statusAdded []commonmodels.FindingStatusChange
@@ -793,6 +796,7 @@ func (o *Orchestrator) consolidateFindings(ctx context.Context, result *models.D
 				Evidence:          match.Evidence,
 				Severity:          match.Severity,
 				MagnitudeScore:    match.MagnitudeScore,
+				MagnitudeBasis:    match.MagnitudeBasis,
 				AffectedCount:     match.AffectedCount,
 				LastSeen:          match.LastSeen,
 				SourceDiscoveryID: match.SourceDiscoveryID,
@@ -999,9 +1003,52 @@ func (o *Orchestrator) searchLedgerNeighbour(ctx context.Context, vec []float64,
 	return hits[0].ID
 }
 
+// magnitudesComparable reports whether two magnitudes measured under these
+// bases answer the same question.
+//
+// Identical bases always do. Beyond that, the only basis a SETTING can move is
+// an amount-driven one: a share or baseline magnitude comes from the engine's
+// own calibration, which is what every comparison here rested on before money
+// thresholds existed, and an absent basis belongs to a sighting from a build
+// where amount-banding was not possible at all.
+func magnitudesComparable(prior, cur string) bool {
+	if prior == cur {
+		return true
+	}
+	return !amountDrivenBasis(prior) && !amountDrivenBasis(cur)
+}
+
+func amountDrivenBasis(basis string) bool {
+	return strings.HasPrefix(basis, string(commonmodels.SeverityDriverAmount))
+}
+
+// amountLadderBasis names the money ladder a run was scored with, compactly
+// and stably.
+//
+// Stable because it is compared across runs: the same ladder has to produce
+// the same string, and a different one a different string. The currency is
+// part of it, since the same cutoffs in another currency rank other findings.
+// Empty when no ladder is configured, which is the state every deployment is
+// in until someone sets one — and two empties match, so nothing changes for
+// them.
+func amountLadderBasis(cfg scoring.SeverityConfig) string {
+	if len(cfg.AmountBands) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(cfg.AmountCurrency)
+	for _, band := range cfg.AmountBands {
+		b.WriteString("/")
+		b.WriteString(strconv.FormatFloat(band.At, 'f', -1, 64))
+		b.WriteString(":")
+		b.WriteString(band.Band)
+	}
+	return b.String()
+}
+
 // buildFindingCandidates extracts durable, substance-carrying findings from the
 // run's insights.
-func buildFindingCandidates(result *models.DiscoveryResult) []commonmodels.LedgerFinding {
+func buildFindingCandidates(result *models.DiscoveryResult, magnitudeBasis string) []commonmodels.LedgerFinding {
 	out := make([]commonmodels.LedgerFinding, 0, len(result.Insights))
 	for i := range result.Insights {
 		ins := result.Insights[i]
@@ -1041,6 +1088,15 @@ func buildFindingCandidates(result *models.DiscoveryResult) []commonmodels.Ledge
 		// trusting a comparison.
 		if ins.Scoring != nil && ins.Scoring.SeverityDriver != nil && ins.Scoring.SeverityDriver.Quantified {
 			cand.MagnitudeScore = ins.Scoring.MagnitudeScore
+			// What this magnitude was measured against, so the next run can
+			// tell whether comparing the two answers "did the finding grow"
+			// or "did somebody change a threshold". An amount-driven
+			// magnitude is the only one a configured ladder can move, so the
+			// ladder is named only for that driver.
+			cand.MagnitudeBasis = string(ins.Scoring.SeverityDriver.Kind)
+			if ins.Scoring.SeverityDriver.Kind == commonmodels.SeverityDriverAmount {
+				cand.MagnitudeBasis += "|" + magnitudeBasis
+			}
 		}
 		// The insight's own id, which is also its id in the `insights`
 		// collection and its Qdrant point id — so this one edge reaches the
@@ -1097,7 +1153,26 @@ func buildKeyMetric(ins models.Insight) string {
 // SKIPPED rather than guessed and the affected-count delta decides alone: "no
 // detectable trend" is the honest answer, and a fabricated one is not.
 func findingMagnitudeChanged(prior *commonmodels.LedgerFinding, cur *commonmodels.LedgerFinding, delta float64) bool {
-	if prior.MagnitudeScore != 0 && cur.MagnitudeScore != 0 &&
+	// Compared only when the two magnitudes answer the same question.
+	//
+	// A magnitude banded against a configured money ladder moves when the
+	// LADDER moves, so comparing one measured under a $1M cutoff with one
+	// measured before that cutoff existed reports a trend about a settings
+	// change. Falling through to the affected-count delta is what this
+	// function already does for a sighting with no comparable magnitude; a
+	// magnitude measured against a different ladder is the same situation.
+	//
+	// "Same question" is deliberately NOT "identical basis". A sighting
+	// recorded before this field existed carries none, and refusing to
+	// compare it would have blinded every finding carried across an upgrade
+	// for a run — a cost paid by every deployment, to protect against a
+	// ladder none of them had yet. Such a sighting cannot have been
+	// amount-banded (nothing could configure a ladder then), so it is
+	// comparable with any other magnitude that was not amount-banded either.
+	// Only an amount-driven basis has to match exactly, because only it moves
+	// when a setting does.
+	if magnitudesComparable(prior.MagnitudeBasis, cur.MagnitudeBasis) &&
+		prior.MagnitudeScore != 0 && cur.MagnitudeScore != 0 &&
 		prior.MagnitudeScore != cur.MagnitudeScore {
 		return true
 	}

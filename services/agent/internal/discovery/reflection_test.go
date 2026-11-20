@@ -283,7 +283,7 @@ func TestBuildFindingCandidates_Substance(t *testing.T) {
 			{Name: ""}, // dropped (no name)
 		},
 	}
-	got := buildFindingCandidates(result)
+	got := buildFindingCandidates(result, "")
 	if len(got) != 1 {
 		t.Fatalf("want 1 candidate (empty name dropped), got %d", len(got))
 	}
@@ -819,7 +819,7 @@ func TestBuildFindingCandidates_CarriesInsightID(t *testing.T) {
 			{ID: "  ", AnalysisArea: "fraud", Name: "Card testing", Severity: "critical"}, // blank id
 		},
 	}
-	got := buildFindingCandidates(result)
+	got := buildFindingCandidates(result, "")
 	if len(got) != 2 {
 		t.Fatalf("want 2 candidates, got %d", len(got))
 	}
@@ -2131,10 +2131,10 @@ func TestAnUnquantifiedFindingCarriesNoComparableMagnitude(t *testing.T) {
 
 	prior := buildFindingCandidates(&models.DiscoveryResult{
 		ProjectID: "p1", ID: "d1", Insights: []models.Insight{unquantified},
-	})[0]
+	}, "")[0]
 	current := buildFindingCandidates(&models.DiscoveryResult{
 		ProjectID: "p1", ID: "d2", Insights: []models.Insight{quantified},
-	})[0]
+	}, "")[0]
 
 	if prior.MagnitudeScore != 0 {
 		t.Errorf("an unquantified finding carried magnitude %v into the ledger; the baseline "+
@@ -2152,7 +2152,7 @@ func TestAnUnquantifiedFindingCarriesNoComparableMagnitude(t *testing.T) {
 	// turned the whole signal off.
 	priorQ := buildFindingCandidates(&models.DiscoveryResult{
 		ProjectID: "p1", ID: "d3", Insights: []models.Insight{unquantified},
-	})[0]
+	}, "")[0]
 	priorQ.MagnitudeScore = 0.6
 	if !findingMagnitudeChanged(&priorQ, &current, 0.2) {
 		t.Error("a real magnitude move between two measured sightings was not reported")
@@ -2198,5 +2198,119 @@ func TestTheFirstSightingCarriesTheMagnitudeItMeasured(t *testing.T) {
 	if f.Sightings[0].MagnitudeScore != 1.0 {
 		t.Errorf("the opening sighting stored magnitude %v; the trail has no baseline to "+
 			"measure the next run against", f.Sightings[0].MagnitudeScore)
+	}
+}
+
+// TestAThresholdChangeIsNotAFindingThatGrew.
+//
+// MagnitudeScore was chosen for the trend comparison precisely because it is
+// the half of severity a setting cannot move — its own comment rejects the
+// weighted score for exactly that reason. Money thresholds broke that: a
+// magnitude banded against a CONFIGURED ladder moves when the ladder does, so
+// adding a $1M cutoff took an unchanged $2M finding from 0.25 to 1.0 and the
+// next run recorded a trend about a settings change.
+func TestAThresholdChangeIsNotAFindingThatGrew(t *testing.T) {
+	// The same finding, same amount, same affected count, under two different
+	// ladders.
+	before := commonmodels.LedgerFinding{
+		MagnitudeScore: 0.25,
+		MagnitudeBasis: "amount|" + "$/2000000:high",
+		AffectedCount:  100,
+	}
+	after := commonmodels.LedgerFinding{
+		MagnitudeScore: 1.0,
+		MagnitudeBasis: "amount|" + "$/1000000:high",
+		AffectedCount:  100,
+	}
+	if findingMagnitudeChanged(&before, &after, 0.2) {
+		t.Error("a ladder change was reported as the finding growing")
+	}
+
+	// Under the SAME ladder, a magnitude that moved is still a trend: the
+	// guard must not have turned the comparison off.
+	grewUnderTheSameLadder := after
+	grewUnderTheSameLadder.MagnitudeBasis = before.MagnitudeBasis
+	if !findingMagnitudeChanged(&before, &grewUnderTheSameLadder, 0.2) {
+		t.Error("a magnitude that really moved was not reported")
+	}
+
+	// And a finding whose COUNT moved is still a trend across a ladder
+	// change, because the fallback is the affected-count delta — the path
+	// this function already took for a sighting with no comparable magnitude.
+	countMoved := after
+	countMoved.AffectedCount = 300
+	if !findingMagnitudeChanged(&before, &countMoved, 0.2) {
+		t.Error("a count that really moved was lost to the basis guard")
+	}
+
+	// Two sightings from before this field existed carry no basis, so nothing
+	// changes for a ledger written by an older build.
+	oldPrior := commonmodels.LedgerFinding{MagnitudeScore: 0.25, AffectedCount: 100}
+	oldCur := commonmodels.LedgerFinding{MagnitudeScore: 0.60, AffectedCount: 100}
+	if !findingMagnitudeChanged(&oldPrior, &oldCur, 0.2) {
+		t.Error("two pre-basis sightings stopped comparing")
+	}
+
+	// And a finding carried ACROSS the upgrade still compares: its prior
+	// sighting has no basis and the new one is share-banded, which is the
+	// commonest shape there is. Requiring identical bases blinded every
+	// carried-over finding for a run — a cost paid by every deployment to
+	// protect against a ladder none of them had configured yet.
+	acrossUpgrade := commonmodels.LedgerFinding{
+		MagnitudeScore: 0.60, MagnitudeBasis: "share", AffectedCount: 100,
+	}
+	if !findingMagnitudeChanged(&oldPrior, &acrossUpgrade, 0.2) {
+		t.Error("a finding carried across the upgrade stopped comparing")
+	}
+
+	// But a pre-upgrade sighting against an AMOUNT-banded one is exactly the
+	// false trend: nothing could configure a ladder when the prior was
+	// written, so the move is the ladder appearing.
+	ladderAppeared := commonmodels.LedgerFinding{
+		MagnitudeScore: 1.0, MagnitudeBasis: "amount|$/1000000:high", AffectedCount: 100,
+	}
+	if findingMagnitudeChanged(&oldPrior, &ladderAppeared, 0.2) {
+		t.Error("configuring a ladder for the first time was reported as findings growing")
+	}
+}
+
+// TestABasisIsOnlyTheLadderWhenTheLadderBandedIt.
+//
+// A share-banded or baseline magnitude is not something a money ladder can
+// move, so naming the ladder on those would stop two perfectly comparable
+// magnitudes from being compared the day a threshold was added elsewhere.
+func TestABasisIsOnlyTheLadderWhenTheLadderBandedIt(t *testing.T) {
+	share := &models.DiscoveryResult{Insights: []models.Insight{{
+		Name: "A share-banded finding",
+		Scoring: &models.Scoring{
+			MagnitudeScore: 0.6,
+			SeverityDriver: &commonmodels.SeverityDriver{
+				Kind: commonmodels.SeverityDriverShare, Quantified: true,
+			},
+		},
+	}}}
+	got := buildFindingCandidates(share, "$/2000000:high")
+	if len(got) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(got))
+	}
+	if got[0].MagnitudeBasis != string(commonmodels.SeverityDriverShare) {
+		t.Errorf("basis = %q, want the driver alone for a share-banded magnitude", got[0].MagnitudeBasis)
+	}
+
+	amount := &models.DiscoveryResult{Insights: []models.Insight{{
+		Name: "An amount-banded finding",
+		Scoring: &models.Scoring{
+			MagnitudeScore: 1.0,
+			SeverityDriver: &commonmodels.SeverityDriver{
+				Kind: commonmodels.SeverityDriverAmount, Quantified: true,
+			},
+		},
+	}}}
+	got = buildFindingCandidates(amount, "$/2000000:high")
+	if len(got) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(got))
+	}
+	if got[0].MagnitudeBasis != "amount|$/2000000:high" {
+		t.Errorf("basis = %q, want the driver and the ladder", got[0].MagnitudeBasis)
 	}
 }
