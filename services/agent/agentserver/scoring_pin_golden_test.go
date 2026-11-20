@@ -86,5 +86,5 @@ func TestTheRunPinIsUnchangedForAV3Configuration(t *testing.T) {
 
 // pinGoldenResolve is the resolution a v3 run made: the project alone.
 func pinGoldenResolve(p *models.Project) gomodels.RunScoringConfig {
-	return resolveRunScoringConfig(p)
+	return resolveRunScoringConfig(p, nil)
 }

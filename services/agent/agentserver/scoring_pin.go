@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/libs/go-common/scoring"
+	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -13,7 +15,8 @@ import (
 // sets of weights.
 //
 // Severity is magnitude x the analysis area's weight, and the weight is
-// configuration: a project's category weights, the pack's taxonomy, and each
+// configuration: the pack's taxonomy, any deployment-wide category weights a
+// registered provider supplies, the project's own category weights, and each
 // area's own override. A resume can happen days after the attempt it
 // continues, and a weight changed in between would score the second half of a
 // run against different numbers from the first -- leaving a result with no
@@ -40,7 +43,9 @@ type scoringConfigStore interface {
 // Resolved from the project here, at the one place that knows both the project
 // and the run, and then never again: the repository's write is conditional on
 // the field being absent, so attempt 1 stores this answer and every later
-// attempt gets attempt 1's back.
+// attempt gets attempt 1's back. That includes the deployment-wide weights:
+// the provider is asked on attempt 1 only, so a weight changed between two
+// attempts of one run cannot reach the second.
 //
 // The INPUTS are stored rather than the resolved per-area weights. A later
 // attempt therefore re-derives the weight and the risk flags through the same
@@ -74,12 +79,37 @@ func pinRunScoringConfig(
 		}
 		return run.ScoringConfig, nil
 	}
-	return runRepo.PinScoringConfig(ctx, runID, resolveRunScoringConfig(project))
+	return runRepo.PinScoringConfig(ctx, runID, resolveRunScoringConfig(project, deploymentCategoryWeights(ctx, project)))
+}
+
+// deploymentCategoryWeights asks the registered scoring-configuration provider
+// for the deployment-wide category weights that apply to this project.
+//
+// Best-effort, by the seam's own contract: no provider means none, and a
+// provider that errors or panics costs this run those weights and nothing
+// else. It is logged rather than returned, because a severity weight is a
+// preference and a discovery run is hours of warehouse queries -- and what was
+// actually applied is on the record either way, in the pin this feeds.
+//
+// No timeout of its own. The call that follows this one is the pin, a write
+// to the same database a provider reads from; a bound on this read shorter
+// than that write's would protect nothing.
+func deploymentCategoryWeights(ctx context.Context, project *models.Project) map[string]float64 {
+	if project == nil {
+		return nil
+	}
+	override, err := agentplugin.ResolveScoringConfig(ctx, project.ID)
+	if err != nil {
+		applog.WithError(err).WithField("project_id", project.ID).
+			Warn("Scoring configuration provider failed; this run is weighted by the pack and the project alone")
+		return nil
+	}
+	return override.CategoryWeights
 }
 
 // resolveRunScoringConfig is the project's severity configuration, resolved:
-// the pack's taxonomy and the project's category weights folded into one
-// weight map, plus each area's mapping and override.
+// the pack's taxonomy, the deployment-wide weights and the project's category
+// weights folded into one weight map, plus each area's mapping and override.
 //
 // Pure, and separate from the write, so the resolution is testable without a
 // database and so the rule it follows is one function rather than a sequence
@@ -89,7 +119,7 @@ func pinRunScoringConfig(
 // to an empty configuration. That is still PINNED, deliberately: it records
 // that this run was started with nothing configured, which is what a resume
 // after someone adds a taxonomy has to honour.
-func resolveRunScoringConfig(project *models.Project) gomodels.RunScoringConfig {
+func resolveRunScoringConfig(project *models.Project, deploymentWeights map[string]float64) gomodels.RunScoringConfig {
 	out := gomodels.RunScoringConfig{}
 	if project == nil {
 		return out
@@ -120,7 +150,7 @@ func resolveRunScoringConfig(project *models.Project) gomodels.RunScoringConfig 
 	// Through the engine's own resolution, not a fold written here: the same
 	// function the precedence rules are tested against, so a project weight
 	// cannot win here and lose there.
-	resolved := scoring.ResolveSeverity(scoring.SeverityConfig{}, taxonomy, project.CategoryWeights)
+	resolved := scoring.ResolveSeverity(scoring.SeverityConfig{}, taxonomy, deploymentWeights, project.CategoryWeights)
 	out.CategoryWeights = resolved.CategoryWeights
 
 	return out

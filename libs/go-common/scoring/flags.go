@@ -1,5 +1,7 @@
 package scoring
 
+import "regexp"
+
 // Business-risk categories, and what a configuration may say about them.
 //
 // A risk category answers a question the severity band does not: WHAT KIND of
@@ -26,6 +28,24 @@ const (
 	RiskCategorySecurity    = "security"
 	RiskCategoryDataQuality = "data_quality"
 )
+
+// riskCategoryID is the shape of a risk category id.
+//
+// Underscores, unlike a domain pack slug: the engine's own cross-cutting ids
+// include `data_quality`, and a rule that rejected the ids the engine ships
+// would be a rule no pack could follow.
+//
+// Engine-owned rather than a validator's, because three readers apply it: pack
+// validation, the scoring-configuration seam that drops what a provider
+// supplied in any other shape, and the plugins that write category weights.
+// A category id is also a key in the map pinned on a run document, and this
+// shape is what guarantees every such key can be written there.
+var riskCategoryID = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*[a-z0-9]$`)
+
+// ValidRiskCategoryID reports whether id has the shape of a risk category id.
+func ValidRiskCategoryID(id string) bool {
+	return riskCategoryID.MatchString(id)
+}
 
 // MaxSeverityWeight is the largest weight a configuration may state, and the
 // top of the (0, MaxSeverityWeight] range every stated weight must fall in.

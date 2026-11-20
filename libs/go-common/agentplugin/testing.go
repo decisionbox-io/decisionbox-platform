@@ -22,3 +22,10 @@ func UnregisterContextProviderForTest(name string) bool {
 	}
 	return false
 }
+
+// ResetScoringConfigProviderForTest clears the registered scoring-configuration
+// provider, so a test in another package can register a fake and leave the
+// registry as it found it. Test-only; production code MUST NOT call this.
+func ResetScoringConfigProviderForTest() {
+	resetScoringForTest()
+}

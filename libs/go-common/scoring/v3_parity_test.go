@@ -70,7 +70,7 @@ type v3ScoreCase struct {
 
 func v3ScoreCorpus() []v3ScoreCase {
 	cfg := DefaultConfig()
-	cfg.Severity = ResolveSeverity(cfg.Severity, v3Taxonomy(), v3ProjectWeights())
+	cfg.Severity = ResolveSeverity(cfg.Severity, v3Taxonomy(), nil, v3ProjectWeights())
 
 	share := func(id string, v float64) ([]gomodels.Figure, []gomodels.FigureVerdict) {
 		return []gomodels.Figure{{ID: id, Value: v, Unit: gomodels.UnitPercent}},
@@ -169,5 +169,5 @@ func TestAWeightedConfigurationScoresExactlyAsItDidInV3(t *testing.T) {
 // resolveV3 is the resolution a v3 deployment ran: a pack taxonomy and a
 // project's own weights, nothing else.
 func resolveV3(r v3Resolution) SeverityConfig {
-	return ResolveSeverity(DefaultConfig().Severity, r.taxonomy, r.project)
+	return ResolveSeverity(DefaultConfig().Severity, r.taxonomy, nil, r.project)
 }

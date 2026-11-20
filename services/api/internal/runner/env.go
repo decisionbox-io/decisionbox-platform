@@ -91,6 +91,14 @@ var agentForwardedEnvKeys = []string{
 	// while the API reports Knowledge Sources as enabled — a silent
 	// downgrade rather than a visible failure.
 	"SOURCES_ENABLED",
+	// INSIGHT_SCORING_ENABLED gates the plugin that registers a scoring-
+	// configuration provider (agentplugin.RegisterScoringConfigProvider),
+	// which supplies deployment-wide category weights to a run's scoring pin.
+	// The plugin defaults ON, so what has to survive the trip is an
+	// operator's explicit "false": without forwarding, switching it off on the
+	// API deployment would hide its settings while every spawned agent went on
+	// applying the weights they hold.
+	"INSIGHT_SCORING_ENABLED",
 	// VALIDATION_* knobs for the LLM-native verifier+refuter pipeline.
 	// All consumed by the agent via verifier.LoadConfigFromEnv during
 	// both full-discovery validation and manual --mode=validate-doc runs.
