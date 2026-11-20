@@ -1,7 +1,6 @@
 package scoring
 
 import (
-	"math"
 	"strings"
 
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
@@ -464,37 +463,22 @@ func rescoreSeverityFrom(prior *gomodels.SeverityDriver, weight float64, cfg Sev
 		home = amount.Currency
 	}
 
-	switch {
-	case amount != nil && amountBandsApply(home, cfg):
-		magnitude = magnitudeFor(magnitudeBandFor(amount.Value, cfg.AmountBands), cfg)
-		driver = gomodels.SeverityDriver{
-			Kind:       gomodels.SeverityDriverAmount,
-			Quantified: true,
-			Figure:     amount,
-			Amount:     amount,
-			Share:      share,
-		}
-	case share != nil:
-		magnitude = magnitudeFor(magnitudeBandFor(share.Value, cfg.ShareBands), cfg)
-		driver = gomodels.SeverityDriver{
-			Kind:       gomodels.SeverityDriverShare,
-			Quantified: true,
-			Figure:     share,
-			Amount:     amount,
-		}
-	default:
-		magnitude = cfg.BaselineMagnitude
-		driver = gomodels.SeverityDriver{
-			Kind:       gomodels.SeverityDriverBaseline,
-			Quantified: false,
-			Amount:     amount,
-		}
-	}
-
-	magnitude = round(magnitude)
-	score = round(math.Min(1.0, magnitude*weight))
-	band = severityBandFor(score, cfg)
-	return magnitude, score, band, driver, severityReason(band, driver)
+	// THE calculation, the same one a fresh run goes through.
+	//
+	// Everything above is the part that genuinely differs: a run extracts its
+	// candidates from the figures a step produced, and this extracts them
+	// from the driver that run stored. Everything below used to be a second
+	// copy of the precedence, the driver, the rounding, the clamp and the
+	// band — so a change to either would have ranked the same candidates
+	// differently depending on which path asked, which is the one
+	// disagreement a preview sold as "the numbers the next run produces"
+	// cannot have.
+	return severityFromCandidates(severityCandidates{
+		amount:       amount,
+		share:        share,
+		homeCurrency: home,
+		weight:       weight,
+	}, cfg)
 }
 
 // composeReason is the verdict's own sentence, plus one clause naming what

@@ -3,6 +3,7 @@ package agentplugin
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
@@ -134,7 +135,17 @@ func normaliseScoringOverride(in ScoringOverride) ScoringOverride {
 
 	bands := make([]gomodels.MagnitudeBand, 0, len(in.AmountBands))
 	for _, b := range in.AmountBands {
-		if b.At <= 0 || !validMagnitudeBand(b.Band) {
+		// !(b.At > 0) rather than b.At <= 0, because NaN compares false
+		// against everything.
+		//
+		// A hand-edited BSON threshold of NaN or ±Inf passed a `<= 0` check
+		// and was pinned on the run document -- which BSON round-trips
+		// happily and Go's JSON encoder refuses, so GET /api/v1/runs/{runId}
+		// answered 200 with an empty body and the run became unreadable
+		// through the API. The seam drops what it cannot price, exactly as it
+		// drops an illegal weight, and a run then scores on the pack and
+		// project configuration.
+		if !(b.At > 0) || math.IsInf(b.At, 0) || !validMagnitudeBand(b.Band) {
 			continue
 		}
 		bands = append(bands, b)

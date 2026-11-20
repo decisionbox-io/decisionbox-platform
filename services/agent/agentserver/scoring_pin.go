@@ -3,6 +3,7 @@ package agentserver
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
@@ -79,6 +80,14 @@ func pinRunScoringConfig(
 	return runRepo.PinScoringConfig(ctx, runID, resolveRunScoringConfig(ctx, project))
 }
 
+// scoringLookupTimeout bounds the one provider call this function makes.
+//
+// Generous enough for a document read on a database that is answering, short
+// enough that a database that is not does not hold up a run: the fallback is
+// the configuration the run would have been scored on before this feature
+// existed, so taking it costs a preference and taking too long costs the run.
+const scoringLookupTimeout = 15 * time.Second
+
 // resolveRunScoringConfig is the project's severity configuration, resolved:
 // the pack's taxonomy and the project's category weights folded into one
 // weight map, plus each area's mapping and override.
@@ -139,7 +148,24 @@ func resolveRunScoringConfig(ctx context.Context, project *models.Project) gomod
 	// second. ResolveScoringConfig already returns the zero override on every
 	// failure, so what is pinned in that case is exactly the pack and project
 	// resolution above.
-	override, err := agentplugin.ResolveScoringConfig(ctx, project.ID, warehouseIDOrDefault(project.PrimaryWarehouse()))
+	// Its OWN deadline, short, because this runs before the discovery deadline
+	// exists.
+	//
+	// The caller hands us a background context: the run's own deadline is
+	// created after the configuration is pinned. So a provider that stalls on
+	// a database read -- one that honours cancellation as well as one that
+	// does not -- had nothing to cancel it, and the fallback this whole
+	// function is built around could never be taken. The run would not start
+	// at all, which is the opposite of the trade this code exists to make: a
+	// severity weight is a preference, a discovery run is hours of warehouse
+	// queries and model calls, and losing the first must never cost the
+	// second.
+	//
+	// The ORIGINAL context carries on below, so persisting the fallback is not
+	// cancelled by this deadline passing.
+	lookupCtx, cancelLookup := context.WithTimeout(ctx, scoringLookupTimeout)
+	override, err := agentplugin.ResolveScoringConfig(lookupCtx, project.ID, warehouseIDOrDefault(project.PrimaryWarehouse()))
+	cancelLookup()
 	if err != nil {
 		applog.WithError(err).Warn("Scoring configuration provider failed; scoring this run on the pack and project configuration")
 	}

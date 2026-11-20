@@ -32,3 +32,43 @@ func TestCurrencySymbolNormalisesACodeToWhatAFigurePrints(t *testing.T) {
 		}
 	}
 }
+
+// TestACodeThisMapDoesNotCarryIsStillOneCurrency.
+//
+// The one string the severity axis compares character for character, so the
+// casing a caller happened to write must not survive into it: a profile that
+// said `cad` and a ladder that said `CAD` were two currencies, and the ladder
+// was stored, reported as saved, and ranked nothing.
+func TestACodeThisMapDoesNotCarryIsStillOneCurrency(t *testing.T) {
+	for _, in := range []string{"CAD", "cad", "Cad", " cad "} {
+		if got := CurrencySymbol(in); got != "CAD" {
+			t.Errorf("CurrencySymbol(%q) = %q, want CAD", in, got)
+		}
+	}
+
+	// And the other dollars stay CODES, so they never collide with the "$" a
+	// USD ladder normalises to. This is the pairing that matters: a Canadian
+	// datasource stating CAD is not ranked by a dollar ladder.
+	for _, code := range []string{"CAD", "AUD", "NZD", "SGD", "HKD"} {
+		if got := CurrencySymbol(code); got == "$" {
+			t.Errorf("CurrencySymbol(%q) = %q — it must not collide with USD", code, got)
+		}
+	}
+	if CurrencySymbol("USD") != "$" {
+		t.Errorf("CurrencySymbol(USD) = %q, want $", CurrencySymbol("USD"))
+	}
+
+	// A symbol is not cased letters, so nothing here touches one.
+	for _, sym := range []string{"$", "€", "₺", "R$", "kr"} {
+		if got := CurrencySymbol(sym); got != sym {
+			t.Errorf("CurrencySymbol(%q) = %q, want it unchanged", sym, got)
+		}
+	}
+
+	// Anything longer than a code is whatever the model wrote, untouched: an
+	// invented normalisation of free text would be a worse answer than the
+	// text.
+	if got := CurrencySymbol("us dollars"); got != "us dollars" {
+		t.Errorf("CurrencySymbol(%q) = %q, want it unchanged", "us dollars", got)
+	}
+}

@@ -21,10 +21,17 @@ import "strings"
 // so both are accepted and normalised to one of them.
 //
 // Deliberately short. A code is mapped only where the symbol is unambiguous and in
-// common use for that currency; anything else is passed through as written, because a
+// common use for that currency; anything else is passed through, because a
 // code is a correct, readable answer and an invented symbol is not. That rules out the
 // Nordic kronor, which share "kr"; the renminbi, whose "¥" is the yen's; and the franc,
 // which prints as "CHF" in the places that use it.
+//
+// It also rules out the other dollars. CAD and AUD are not here, so they stay
+// codes and never collide with the USD ladder's "$" -- but a deployment that
+// states the bare symbol "$" for one of them is asserting something no map
+// can undo, because "$" does not identify a currency. A deployment reporting
+// in more than one currency that prints the same symbol has to state the
+// codes; the guide says so, and the engine can only compare what it is told.
 var isoCurrencySymbols = map[string]string{
 	"USD": "$",
 	"EUR": "€",
@@ -56,5 +63,36 @@ func CurrencySymbol(stated string) string {
 	if sym, ok := isoCurrencySymbols[strings.ToUpper(c)]; ok {
 		return sym
 	}
+	// A code this map does not carry is passed through UPPER-CASED, not as
+	// written.
+	//
+	// Returning it as written leaked the caller's casing into the one string
+	// the engine compares character for character: a profile that said `cad`
+	// and a ladder that said `CAD` were two currencies, so the ladder was
+	// stored, reported as saved, and ranked nothing -- the defect class this
+	// whole axis is built to refuse. Only a three-letter ASCII code is
+	// touched, because that is what an ISO code is; a symbol is not cased
+	// letters, and anything else a model wrote stays exactly as it wrote it.
+	if isISOCode(c) {
+		return strings.ToUpper(c)
+	}
 	return c
+}
+
+// isISOCode reports whether this is shaped like an ISO 4217 code: exactly
+// three ASCII letters. Deliberately shape alone -- the point is to normalise
+// the casing of something a reader would recognise as a code, not to decide
+// whether such a currency exists.
+func isISOCode(s string) bool {
+	if len(s) != 3 {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		switch c := s[i]; {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		default:
+			return false
+		}
+	}
+	return true
 }

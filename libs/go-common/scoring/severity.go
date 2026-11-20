@@ -52,9 +52,48 @@ func scoreSeverity(in severityInput, cfg SeverityConfig) (
 	reason string,
 ) {
 	amount, share := qualifyingFigures(in)
+	return severityFromCandidates(severityCandidates{
+		amount:       amount,
+		share:        share,
+		homeCurrency: in.homeCurrency,
+		weight:       in.weight,
+	}, cfg)
+}
+
+// severityCandidates is everything the severity calculation needs: the two
+// figures that may band a magnitude, the currency the document is in, and the
+// weight of its area.
+type severityCandidates struct {
+	amount       *gomodels.SeverityFigure
+	share        *gomodels.SeverityFigure
+	homeCurrency string
+	weight       float64
+}
+
+// severityFromCandidates is THE severity calculation: precedence, magnitude,
+// driver, rounding, clamp, band and sentence.
+//
+// One copy, because two things compute severity and this feature rests on them
+// agreeing. A fresh run extracts its candidates from the figures a step
+// produced; the settings preview extracts them from the driver a previous run
+// stored. Those extractions are genuinely different and stay separate — but
+// everything after them was duplicated, and a change to either copy would have
+// ranked the same candidates differently depending on which path asked. That
+// disagreement is the one failure the preview cannot have: it is sold as "the
+// numbers the next run produces".
+//
+// A parity sweep asserts the two paths agree. This is what makes them agree.
+func severityFromCandidates(c severityCandidates, cfg SeverityConfig) (
+	magnitude float64,
+	score float64,
+	band string,
+	driver gomodels.SeverityDriver,
+	reason string,
+) {
+	amount, share := c.amount, c.share
 
 	switch {
-	case amount != nil && amountBandsApply(in.homeCurrency, cfg):
+	case amount != nil && amountBandsApply(c.homeCurrency, cfg):
 		magnitude = magnitudeFor(magnitudeBandFor(amount.Value, cfg.AmountBands), cfg)
 		driver = gomodels.SeverityDriver{
 			Kind:       gomodels.SeverityDriverAmount,
@@ -92,7 +131,7 @@ func scoreSeverity(in severityInput, cfg SeverityConfig) (
 	// is what every reader that prints it as a percentage relies on. A weight
 	// above 1 on a top-band magnitude is the case that would otherwise escape
 	// it.
-	score = round(math.Min(1.0, magnitude*in.weight))
+	score = round(math.Min(1.0, magnitude*c.weight))
 	band = severityBandFor(score, cfg)
 	return magnitude, score, band, driver, severityReason(band, driver)
 }
