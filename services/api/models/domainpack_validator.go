@@ -298,6 +298,17 @@ func ProjectRiskConfigIssues(prompts *ProjectPrompts, categoryWeights map[string
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
+		// The id is checked too. An id nothing declares is still a legal
+		// standing priority, but one no category could ever have -- `Compliance`,
+		// `a.b` -- is a weight that never applies, and every other writer of
+		// these weights (the pack validator, the scoring-configuration seam)
+		// already refuses that shape. One rule, so no writer can store what
+		// another rejects.
+		if !scoring.ValidRiskCategoryID(id) {
+			issues = append(issues, fmt.Sprintf(
+				"category_weights: %q is not a risk category id (a lowercase slug of letters, digits, hyphens or underscores)", id))
+			continue
+		}
 		if !scoring.ValidSeverityWeight(categoryWeights[id]) {
 			issues = append(issues, fmt.Sprintf("category_weights[%q]: weight %v is outside (0, %g]",
 				id, categoryWeights[id], scoring.MaxSeverityWeight))
