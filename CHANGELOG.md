@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Run discovery area picker offered the domain pack's areas, not the project's own ([#573](https://github.com/decisionbox-io/decisionbox-platform/issues/573)).** A domain pack seeds a project's analysis areas once, at creation. After that the Playbook page is what defines them — it adds areas the pack never had, switches areas off and deletes custom ones — and the agent builds every run's list from the project, skipping anything disabled. The picker had never stopped reading the seed.
+
+  So a custom area saved on the Playbook, badge and all, was simply absent from **Run discovery → Select areas**, and no reload brought it back: the only way to run one was `POST /projects/{id}/discover` with its id by hand. In the other direction the picker offered areas a run cannot execute — one switched off on the Playbook, or a custom one since deleted — and ticking one started a run that analysed nothing and then reported `completed`.
+
+  The picker reads `GET /projects/{id}/prompts` now and lists the entries with `enabled: true`, which is exactly the set a run can execute, in the Playbook's own priority order. `GET /domains/{domain}/categories/{category}/areas` is unchanged and still right for a flow that picks a category before a project exists.
+
+  Alongside it, `POST /projects/{id}/discover` answers **400** when `areas` is given and none of its ids is an enabled area on the project, naming the ids it can run, instead of reserving a run and spawning an agent with nothing to analyse. A request naming one enabled area and one disabled one still runs, as it always has; the agent works through the areas it resolved.
+
 - **A structured answer cut off mid-object was reported as a finished one ([#564](https://github.com/decisionbox-io/decisionbox-platform/issues/564)).** On a wire with no native `response_format` a schema is satisfied by forcing a single tool and folding its input back into the content, and `NormalizeStructuredToolResponse` ended by overwriting the stop reason unconditionally. That is right for the `tool_use` it hides — a hidden call must not leave a reason implying there is a call to execute — but it took `max_tokens` with it.
 
   A model cut off part-way through the object still emits a `tool_use` block, and the Bedrock wire appends the call whether or not its input parsed, so the fold ran and the truncation was erased. The caller could not detect it from the content either, because the fold re-marshals whatever parsed: valid JSON both ways. Measured against a real model — a request capped at 24 output tokens against a six-field required schema returned `stop_reason: "end_turn"` with the content `{}`, which reads as a complete empty answer rather than a truncated one. It now returns `max_tokens`, and a complete reply still returns `end_turn`.

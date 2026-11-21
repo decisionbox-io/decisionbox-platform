@@ -33,6 +33,15 @@ func readyProject(id string) *models.Project {
 		ID:                id,
 		SchemaIndexStatus: models.SchemaIndexStatusReady,
 		LLM:               models.LLMConfig{Provider: "openai", Model: "gpt-4o-mini"},
+		// A playbook with the two areas this file's runs name. A selective run
+		// is refused when none of the ids it asks for is an enabled area on
+		// the project, so a fixture meant to START one needs them.
+		Prompts: &models.ProjectPrompts{
+			AnalysisAreas: map[string]models.AnalysisAreaConfig{
+				"churn":        {Name: "Churn", Enabled: true, Priority: 1},
+				"monetization": {Name: "Monetization", Enabled: true, Priority: 2},
+			},
+		},
 	}
 	p.SeedLLMLayersFromLegacy()
 	return p

@@ -1,4 +1,4 @@
-import { api, ApiError, DEFAULT_WAREHOUSE_ID, Project, resolvePrimaryDatasourceId, _resetReauthGuardForTests, _reauth } from '@/lib/api';
+import { api, ApiError, AnalysisAreaConfig, DEFAULT_WAREHOUSE_ID, Project, ProjectPrompts, enabledAnalysisAreas, resolvePrimaryDatasourceId, _resetReauthGuardForTests, _reauth } from '@/lib/api';
 
 // Mock fetch globally
 const mockFetch = jest.fn();
@@ -403,6 +403,66 @@ describe('api.updatePrompts', () => {
     expect(url).toContain('/api/v1/projects/proj-1/prompts');
     expect(opts.method).toBe('PUT');
     expect(JSON.parse(opts.body)).toMatchObject({ exploration: 'new prompt' });
+  });
+});
+
+// enabledAnalysisAreas is what the Run discovery picker lists (#573). Before
+// this it listed the DOMAIN PACK's areas, which seeds a project's playbook once
+// at creation and then knows nothing about it — so a custom area could not be
+// run from the UI at all, and an area switched off was still offered.
+describe('enabledAnalysisAreas', () => {
+  const area = (over: Partial<AnalysisAreaConfig>): AnalysisAreaConfig => ({
+    name: '', description: '', keywords: [], prompt: '',
+    is_base: false, is_custom: false, priority: 0, enabled: true,
+    ...over,
+  });
+  const prompts = (areas: Record<string, AnalysisAreaConfig>): ProjectPrompts => ({
+    exploration: '', recommendations: '', base_context: '', analysis_areas: areas,
+  });
+
+  it('lists a custom area the domain pack never had', () => {
+    expect(enabledAnalysisAreas(prompts({
+      churn: area({ name: 'Churn', priority: 1 }),
+      cart_abandonment: area({ name: 'Cart Abandonment', is_custom: true, priority: 2 }),
+    }))).toEqual([
+      { id: 'churn', name: 'Churn' },
+      { id: 'cart_abandonment', name: 'Cart Abandonment' },
+    ]);
+  });
+
+  it('omits an area switched off on the playbook', () => {
+    // Offering a disabled area is how a run that analysed nothing got started:
+    // the agent drops it before the id is ever matched.
+    expect(enabledAnalysisAreas(prompts({
+      churn: area({ name: 'Churn', priority: 1 }),
+      levels: area({ name: 'Level Difficulty', priority: 2, enabled: false }),
+    }))).toEqual([{ id: 'churn', name: 'Churn' }]);
+  });
+
+  it('orders by priority, then by id', () => {
+    // Priority is the Playbook page's own order. The id breaks a tie, so two
+    // areas sharing a priority — which a custom area and a seeded one can —
+    // still list the same way on every render.
+    expect(enabledAnalysisAreas(prompts({
+      zeta: area({ name: 'Zeta', priority: 2 }),
+      beta: area({ name: 'Beta', priority: 1 }),
+      alpha: area({ name: 'Alpha', priority: 2 }),
+    })).map((a) => a.id)).toEqual(['beta', 'alpha', 'zeta']);
+  });
+
+  it('falls back to the id when an area has been saved with a blank name', () => {
+    // Name is a free-text field on the Playbook page; blank would render an
+    // unlabelled checkbox.
+    expect(enabledAnalysisAreas(prompts({ churn: area({ name: '' }) })))
+      .toEqual([{ id: 'churn', name: 'churn' }]);
+  });
+
+  it('is empty for a project whose prompts were never seeded', () => {
+    // GET /prompts answers null for such a project, and the endpoint's
+    // declared type does not admit that.
+    expect(enabledAnalysisAreas(null)).toEqual([]);
+    expect(enabledAnalysisAreas({} as ProjectPrompts)).toEqual([]);
+    expect(enabledAnalysisAreas(prompts({}))).toEqual([]);
   });
 });
 

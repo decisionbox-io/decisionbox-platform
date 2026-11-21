@@ -1,6 +1,7 @@
 package models
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -246,6 +247,33 @@ type AnalysisAreaConfig struct {
 	IsCustom    bool     `bson:"is_custom" json:"is_custom"`
 	Priority    int      `bson:"priority" json:"priority"`
 	Enabled     bool     `bson:"enabled" json:"enabled"`
+}
+
+// EnabledAnalysisAreaIDs returns the ids of the analysis areas a discovery run
+// of this project can actually execute, sorted so the list reads the same on
+// every call.
+//
+// A project's areas are seeded from its domain pack once, at creation, and
+// diverge from the pack from then on — that divergence is what the playbook is
+// for. It adds areas the pack never had, switches areas off, and deletes custom
+// ones. The agent builds its run list from exactly this set and skips every
+// area with enabled: false, so this, and not the pack, is what a run can be
+// asked for.
+//
+// Nil-receiver safe: a project created before prompts were seeded has none,
+// and that is an empty list rather than a crash.
+func (pp *ProjectPrompts) EnabledAnalysisAreaIDs() []string {
+	if pp == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(pp.AnalysisAreas))
+	for id, cfg := range pp.AnalysisAreas {
+		if cfg.Enabled {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 type WarehouseConfig struct {

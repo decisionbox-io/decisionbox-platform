@@ -19,7 +19,7 @@ import { RunErrorIndicator } from '@/components/common/RunErrorIndicator';
 import { UpcomingInvestigation } from '@/components/projects/UpcomingInvestigation';
 import {
   api, ApiError, DebugLogEntry, DiscoveryResult, DiscoveryRunStatus, Project, RunStep, SchemaIndexStatus,
-  PROJECT_STATE_READY, resolvePrimaryDatasourceId,
+  PROJECT_STATE_READY, enabledAnalysisAreas, resolvePrimaryDatasourceId,
 } from '@/lib/api';
 
 // pollQuestionsNudge polls for clarifying questions after a run completes and
@@ -132,19 +132,18 @@ export default function ProjectPage() {
 
   useEffect(() => {
     Promise.all([
-      api.getProject(id).then((p) => {
-        setProject(p);
-        // Skip analysis-area lookup when the project has no
-        // domain/category yet (a plugin-managed lifecycle state
-        // may leave them empty). Without this guard the request
-        // hits /api/v1/domains//categories//areas, which the Go
-        // mux 301-redirects to a non-JSON HTML body and explodes
-        // with "Unexpected non-whitespace character after JSON at
-        // position 4".
-        if (!p.domain || !p.category) return;
-        return api.getAnalysisAreas(p.domain, p.category)
-          .then((areas) => setAnalysisAreas((areas || []).map((a) => ({ id: a.id, name: a.name }))));
-      }),
+      api.getProject(id).then(setProject),
+      // The area picker reads the project's OWN playbook, not its domain
+      // pack's areas. The pack seeds them at creation and the two diverge
+      // afterwards, so the pack's list both offers areas this project has
+      // switched off or deleted and hides the custom ones it has added —
+      // which left a custom area runnable only through the API.
+      // enabledAnalysisAreas keeps the entries a run can execute.
+      //
+      // No domain/category guard is needed here any more: this is addressed
+      // by project id, so there is no empty path segment for the Go mux to
+      // 301 into a non-JSON body.
+      api.getPrompts(id).then((p) => setAnalysisAreas(enabledAnalysisAreas(p))),
       api.listDiscoveries(id).then((d) => setDiscoveries(d || [])).catch(() => setDiscoveries([])),
     ])
       .catch((e) => notifications.show({ title: 'Error', message: e.message, color: 'red' }))
