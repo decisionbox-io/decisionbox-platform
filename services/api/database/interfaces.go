@@ -195,6 +195,7 @@ type AskSessionRepo interface {
 	AppendMessage(ctx context.Context, projectID, userID, sessionID string, msg commonmodels.AskSessionMessage) error
 	GetByID(ctx context.Context, projectID, userID, sessionID string) (*commonmodels.AskSession, error)
 	ListByProject(ctx context.Context, projectID, userID string, limit int, seedType, seedID string) ([]*commonmodels.AskSession, error)
+	UpdateTitle(ctx context.Context, projectID, userID, sessionID, title string) error
 	Delete(ctx context.Context, projectID, userID, sessionID string) error
 }
 

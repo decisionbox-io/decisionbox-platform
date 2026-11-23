@@ -333,6 +333,10 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	// the tier gate only has to admit someone who could own a conversation. It
 	// used to be admin, which meant an admin could throw away anyone's
 	// conversation while its owner could not throw away their own.
+	// Rename, like delete: viewer at the route so a user who can only be a
+	// viewer can still manage their own conversation. The handler scopes on
+	// the (project, owner, id) key, so a viewer cannot touch anyone else's.
+	mux.HandleFunc("PATCH /api/v1/projects/{id}/ask/sessions/{sessionId}", withRole(viewer, search.RenameAskSession))
 	mux.HandleFunc("DELETE /api/v1/projects/{id}/ask/sessions/{sessionId}", withRole(viewer, search.DeleteAskSession))
 	mux.HandleFunc("GET /api/v1/projects/{id}/search/history", withRole(viewer, search.ListHistory))
 

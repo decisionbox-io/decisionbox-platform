@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	llmlayer "github.com/decisionbox-io/decisionbox/libs/go-common/llmlayer"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	goauth "github.com/decisionbox-io/decisionbox/libs/go-common/auth"
 	goembedding "github.com/decisionbox-io/decisionbox/libs/go-common/embedding"
@@ -120,6 +122,17 @@ type mockAskSessionRepo struct {
 	created  *commonmodels.AskSession
 	appended []appendCall
 	deleted  []string
+	renamed  []renameCall
+	// renameErr, when set, is returned by UpdateTitle regardless of the
+	// lookup — for exercising the repository-error branch.
+	renameErr error
+}
+
+type renameCall struct {
+	projectID string
+	userID    string
+	sessionID string
+	title     string
 }
 
 type appendCall struct {
@@ -186,6 +199,18 @@ func (m *mockAskSessionRepo) ListByProject(_ context.Context, projectID, userID 
 		}
 	}
 	return out, nil
+}
+func (m *mockAskSessionRepo) UpdateTitle(_ context.Context, projectID, userID, sessionID, title string) error {
+	m.renamed = append(m.renamed, renameCall{projectID, userID, sessionID, title})
+	if m.renameErr != nil {
+		return m.renameErr
+	}
+	if s := m.find(projectID, userID, sessionID); s == nil {
+		return database.ErrAskSessionNotFound
+	} else {
+		s.Title = title
+	}
+	return nil
 }
 func (m *mockAskSessionRepo) Delete(_ context.Context, projectID, userID, sessionID string) error {
 	m.deleted = append(m.deleted, sessionID)
@@ -1370,5 +1395,301 @@ func TestSearchHandler_Search_CarriesTheDuplicateMarks(t *testing.T) {
 		if _, present := byID[cleanID][field]; present {
 			t.Errorf("a canonical result carried %q: %v", field, byID[cleanID][field])
 		}
+	}
+}
+
+// --- RenameAskSession tests ---
+
+// renameRequest builds a PATCH with a JSON body. It takes the raw body rather
+// than a title so the malformed-JSON and oversized-body cases can use the same
+// helper.
+func renameRequest(t *testing.T, sub, projectID, sessionID, body string) (*http.Request, *httptest.ResponseRecorder) {
+	t.Helper()
+	req := httptest.NewRequest("PATCH",
+		"/api/v1/projects/"+projectID+"/ask/sessions/"+sessionID,
+		strings.NewReader(body))
+	if sub != "" {
+		req = asCaller(req, sub)
+	}
+	req.SetPathValue("id", projectID)
+	req.SetPathValue("sessionId", sessionID)
+	return req, httptest.NewRecorder()
+}
+
+func renamedTitle(t *testing.T, w *httptest.ResponseRecorder) (string, string) {
+	t.Helper()
+	var resp struct {
+		Data struct {
+			ID    string `json:"id"`
+			Title string `json:"title"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response is not the enveloped rename shape: %v (body: %s)", err, w.Body.String())
+	}
+	return resp.Data.ID, resp.Data.Title
+}
+
+func TestRenameAskSession_Success(t *testing.T) {
+	repo := ownedSessions()
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	req, w := renameRequest(t, "alice", "p1", "a1", `{"title":"Q3 churn"}`)
+
+	h.RenameAskSession(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	id, title := renamedTitle(t, w)
+	if id != "a1" || title != "Q3 churn" {
+		t.Errorf("response = {%q, %q}, want {a1, Q3 churn}", id, title)
+	}
+	if len(repo.renamed) != 1 {
+		t.Fatalf("UpdateTitle calls = %d, want 1", len(repo.renamed))
+	}
+	// The handler must pass the resolved owner down, not an empty one: the
+	// repository key is the only thing enforcing ownership here.
+	got := repo.renamed[0]
+	if got.projectID != "p1" || got.userID != "alice" || got.sessionID != "a1" || got.title != "Q3 churn" {
+		t.Errorf("UpdateTitle called with %+v, want {p1 alice a1 Q3 churn}", got)
+	}
+}
+
+func TestRenameAskSession_TrimsSurroundingWhitespace(t *testing.T) {
+	repo := ownedSessions()
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	req, w := renameRequest(t, "alice", "p1", "a1", `{"title":"  Q3 churn\n"}`)
+
+	h.RenameAskSession(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if _, title := renamedTitle(t, w); title != "Q3 churn" {
+		t.Errorf("title = %q, want the trimmed form", title)
+	}
+	if repo.renamed[0].title != "Q3 churn" {
+		t.Errorf("stored title = %q, want the trimmed form", repo.renamed[0].title)
+	}
+}
+
+func TestRenameAskSession_EmptyAndWhitespaceTitlesAre400(t *testing.T) {
+	for _, body := range []string{`{"title":""}`, `{"title":"   "}`, `{"title":"\t\n"}`, `{}`} {
+		repo := ownedSessions()
+		h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+		req, w := renameRequest(t, "alice", "p1", "a1", body)
+
+		h.RenameAskSession(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status = %d, want 400", body, w.Code)
+		}
+		// A refused rename must not reach the repository — otherwise a
+		// whitespace title would blank a conversation's name.
+		if len(repo.renamed) != 0 {
+			t.Errorf("body %s: UpdateTitle was called %d times, want 0", body, len(repo.renamed))
+		}
+	}
+}
+
+// TestRenameAskSession_TruncatesByRuneNotByte is the reason the cap is counted
+// in runes: slicing a multi-byte title by bytes would store invalid UTF-8.
+func TestRenameAskSession_TruncatesByRuneNotByte(t *testing.T) {
+	repo := ownedSessions()
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	// Each of these is 3 bytes in UTF-8, so a byte-based cap would split one.
+	long := strings.Repeat("ü", maxSessionTitleRunes+50)
+	req, w := renameRequest(t, "alice", "p1", "a1", `{"title":"`+long+`"}`)
+
+	h.RenameAskSession(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	_, title := renamedTitle(t, w)
+	if runes := []rune(title); len(runes) != maxSessionTitleRunes {
+		t.Errorf("title length = %d runes, want %d", len(runes), maxSessionTitleRunes)
+	}
+	if !utf8.ValidString(title) {
+		t.Errorf("truncated title is not valid UTF-8: %q", title)
+	}
+	// The response echoes what was stored, so the client renders the
+	// truncation instead of drifting from the document.
+	if repo.renamed[0].title != title {
+		t.Errorf("stored title %q differs from the echoed title %q", repo.renamed[0].title, title)
+	}
+}
+
+func TestRenameAskSession_TitleAtExactlyTheCapIsUntouched(t *testing.T) {
+	repo := ownedSessions()
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	exact := strings.Repeat("a", maxSessionTitleRunes)
+	req, w := renameRequest(t, "alice", "p1", "a1", `{"title":"`+exact+`"}`)
+
+	h.RenameAskSession(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if _, title := renamedTitle(t, w); title != exact {
+		t.Errorf("a title at exactly the cap was modified (len %d)", len([]rune(title)))
+	}
+}
+
+// TestRenameAskSession_WrongUser_404 is the ownership case: the wrong tier is a
+// 403, the wrong scope is a 404, and somebody else's conversation is scope.
+func TestRenameAskSession_WrongUser_404(t *testing.T) {
+	repo := ownedSessions()
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	req, w := renameRequest(t, "bob", "p1", "a1", `{"title":"mine now"}`)
+
+	h.RenameAskSession(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 (cross-user isolation)", w.Code)
+	}
+	if got := repo.find("p1", "alice", "a1"); got.Title != "alice one" {
+		t.Errorf("alice's title was changed to %q by bob", got.Title)
+	}
+}
+
+func TestRenameAskSession_WrongProject_404(t *testing.T) {
+	repo := ownedSessions()
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	// a3 is alice's, but in p2 — asking for it under p1 must not resolve.
+	req, w := renameRequest(t, "alice", "p1", "a3", `{"title":"wrong project"}`)
+
+	h.RenameAskSession(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestRenameAskSession_UnknownSession_404(t *testing.T) {
+	h := NewSearchHandler(nil, nil, nil, nil, ownedSessions(), nil, nil)
+	req, w := renameRequest(t, "alice", "p1", "nope", `{"title":"ghost"}`)
+
+	h.RenameAskSession(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+// TestRenameAskSession_OwnerlessSessionIsNotShared mirrors the read path: a
+// legacy anonymous-owned session is shared, but one with an unexplained empty
+// owner is invisible to everyone.
+func TestRenameAskSession_OwnerlessSessionIsNotShared(t *testing.T) {
+	h := NewSearchHandler(nil, nil, nil, nil, ownedSessions(), nil, nil)
+	req, w := renameRequest(t, "alice", "p1", "ownerless", `{"title":"claimed"}`)
+
+	h.RenameAskSession(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for an ownerless session", w.Code)
+	}
+}
+
+func TestRenameAskSession_LegacyAnonymousSessionIsShared(t *testing.T) {
+	h := NewSearchHandler(nil, nil, nil, nil, ownedSessions(), nil, nil)
+	req, w := renameRequest(t, "alice", "p1", "legacy", `{"title":"renamed shared"}`)
+
+	h.RenameAskSession(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 — a pre-auth session stays reachable: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRenameAskSession_Unauthenticated_401(t *testing.T) {
+	repo := ownedSessions()
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	req, w := renameRequest(t, "", "p1", "a1", `{"title":"anon"}`)
+
+	h.RenameAskSession(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
+	}
+	if len(repo.renamed) != 0 {
+		t.Errorf("UpdateTitle was called without a resolvable caller")
+	}
+}
+
+func TestRenameAskSession_MissingSessionID_400(t *testing.T) {
+	h := NewSearchHandler(nil, nil, nil, nil, ownedSessions(), nil, nil)
+	req, w := renameRequest(t, "alice", "p1", "", `{"title":"x"}`)
+
+	h.RenameAskSession(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestRenameAskSession_MalformedJSON_400(t *testing.T) {
+	repo := ownedSessions()
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	req, w := renameRequest(t, "alice", "p1", "a1", `{"title":`)
+
+	h.RenameAskSession(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+	if len(repo.renamed) != 0 {
+		t.Errorf("UpdateTitle was called on a malformed body")
+	}
+}
+
+// TestRenameAskSession_OversizedBody_400 proves the MaxBytesReader cap is
+// wired: without it the server would read an arbitrarily large request for a
+// field that holds a few words.
+func TestRenameAskSession_OversizedBody_400(t *testing.T) {
+	repo := ownedSessions()
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	huge := `{"title":"` + strings.Repeat("a", maxSessionTitleBodyBytes+1024) + `"}`
+	req, w := renameRequest(t, "alice", "p1", "a1", huge)
+
+	h.RenameAskSession(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for a body past the cap", w.Code)
+	}
+	if len(repo.renamed) != 0 {
+		t.Errorf("UpdateTitle was called on an oversized body")
+	}
+}
+
+// TestRenameAskSession_RepoErrorIs500 separates "not found" (404) from a real
+// storage failure (500), so a Mongo outage is not reported to the user as a
+// missing conversation.
+func TestRenameAskSession_RepoErrorIs500(t *testing.T) {
+	repo := ownedSessions()
+	repo.renameErr = errors.New("mongo is down")
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	req, w := renameRequest(t, "alice", "p1", "a1", `{"title":"Q3 churn"}`)
+
+	h.RenameAskSession(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", w.Code)
+	}
+}
+
+// TestRenameAskSession_DeletedDuringRenameIs404 is the race the repository's
+// ErrAskSessionNotFound covers: a concurrent DELETE lands between the client
+// opening the rename and the write. That is a 404, not a 500.
+func TestRenameAskSession_DeletedDuringRenameIs404(t *testing.T) {
+	repo := ownedSessions()
+	repo.renameErr = database.ErrAskSessionNotFound
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	req, w := renameRequest(t, "alice", "p1", "a1", `{"title":"Q3 churn"}`)
+
+	h.RenameAskSession(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
 	}
 }
