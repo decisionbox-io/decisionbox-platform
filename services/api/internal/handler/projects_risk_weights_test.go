@@ -124,6 +124,34 @@ func TestProjectUpdateRefusesAnIllegalWeight(t *testing.T) {
 	}
 }
 
+// TestProjectUpdateRefusesAWeightUnderAnIDNoCategoryCanHave -- an id the pack
+// does not declare is a legal standing priority, but one no category could
+// ever carry is a weight that never applies, and the pack validator and the
+// scoring-configuration seam both refuse that shape already.
+func TestProjectUpdateRefusesAWeightUnderAnIDNoCategoryCanHave(t *testing.T) {
+	for _, id := range []string{"Compliance", "a.b", "$where", "x", ""} {
+		t.Run(fmt.Sprintf("%q", id), func(t *testing.T) {
+			h, repo := projectWeightsHandler(t)
+			p := seedWeightedProject(t, repo, nil)
+
+			w := putProjectWeights(t, h, p.ID, fmt.Sprintf(`{"category_weights":{%q:2}}`, id))
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", w.Code, w.Body.String())
+			}
+			if got := repo.projects[p.ID].CategoryWeights; len(got) != 0 {
+				t.Errorf("the refused weight was persisted: %v", got)
+			}
+		})
+	}
+
+	// And an id no pack declares, in the right shape, is still accepted.
+	h, repo := projectWeightsHandler(t)
+	p := seedWeightedProject(t, repo, nil)
+	if w := putProjectWeights(t, h, p.ID, `{"category_weights":{"fraud_risk":2}}`); w.Code != http.StatusOK {
+		t.Errorf("an undeclared slug id: status = %d; body = %s", w.Code, w.Body.String())
+	}
+}
+
 // TestProjectUpdateRefusesAnInvalidPromptsRiskConfig -- the same route also
 // carries `prompts`, so the area mapping and the override are checked here
 // too. The two halves are validated together, because an area's mapping is

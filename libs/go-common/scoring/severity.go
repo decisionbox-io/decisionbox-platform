@@ -82,13 +82,26 @@ func scoreSeverity(in severityInput, cfg SeverityConfig) (
 	}
 
 	magnitude = round(magnitude)
+	score, band, reason = weigh(magnitude, in.weight, driver, cfg)
+	return magnitude, score, band, driver, reason
+}
+
+// weigh is the weight-dependent half of severity: the magnitude times the
+// area's weight, the band that score falls in, and the sentence for it.
+//
+// Its own function because two entry points need exactly this and nothing
+// more: Score, after it has measured a magnitude, and Reweigh, which takes the
+// magnitude a document already stores and re-applies a different weight to
+// it. One implementation is what makes "re-weighed under the configuration it
+// was scored with" and "scored" the same answer.
+func weigh(magnitude, weight float64, driver gomodels.SeverityDriver, cfg SeverityConfig) (score float64, band, reason string) {
 	// Clamped, because risk_score carries this number and its [0, 1] contract
 	// is what every reader that prints it as a percentage relies on. A weight
 	// above 1 on a top-band magnitude is the case that would otherwise escape
 	// it.
-	score = round(math.Min(1.0, magnitude*in.weight))
+	score = round(math.Min(1.0, magnitude*weight))
 	band = severityBandFor(score, cfg)
-	return magnitude, score, band, driver, severityReason(band, driver)
+	return score, band, severityReason(band, driver)
 }
 
 // qualifyingFigures picks the largest checked amount in the document's own

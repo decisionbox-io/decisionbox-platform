@@ -2,9 +2,11 @@ package agentserver
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 
+	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
 	gomodels "github.com/decisionbox-io/decisionbox/libs/go-common/models"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
@@ -32,7 +34,7 @@ func projectWithRisk() *models.Project {
 
 // TestResolveRunScoringConfigFoldsTheProjectIntoWhatTheEngineReads.
 func TestResolveRunScoringConfigFoldsTheProjectIntoWhatTheEngineReads(t *testing.T) {
-	got := resolveRunScoringConfig(projectWithRisk())
+	got := resolveRunScoringConfig(projectWithRisk(), nil)
 
 	want := map[string]float64{"compliance": 3.0, "revenue_leak": 2.5}
 	if !reflect.DeepEqual(got.CategoryWeights, want) {
@@ -73,7 +75,7 @@ func TestResolveRunScoringConfigOnAnUnconfiguredProject(t *testing.T) {
 		}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := resolveRunScoringConfig(tc.project)
+			got := resolveRunScoringConfig(tc.project, nil)
 			if got.CategoryWeights != nil {
 				t.Errorf("CategoryWeights = %v, want nil", got.CategoryWeights)
 			}
@@ -92,7 +94,7 @@ func TestResolveRunScoringConfigRejectsAnIllegalWeight(t *testing.T) {
 	project.Prompts.RiskTaxonomy[0].Weight = 0
 	project.CategoryWeights = map[string]float64{"revenue_leak": -3}
 
-	got := resolveRunScoringConfig(project)
+	got := resolveRunScoringConfig(project, nil)
 	if _, present := got.CategoryWeights["compliance"]; present {
 		t.Error("a zero-weighted category reached the pin")
 	}
@@ -107,7 +109,7 @@ func TestResolveRunScoringConfigRejectsAnIllegalWeight(t *testing.T) {
 	project.Prompts.AnalysisAreas["billing"] = models.AnalysisAreaConfig{
 		Name: "Billing", RiskCategories: []string{"revenue_leak"}, SeverityWeight: weightOf(0),
 	}
-	pinned := resolveRunScoringConfig(project)
+	pinned := resolveRunScoringConfig(project, nil)
 	if w := pinned.Areas["billing"].SeverityWeight; w == nil || *w != 0 {
 		t.Errorf("billing override = %v, want the stated 0 recorded as stated", w)
 	}
@@ -202,4 +204,119 @@ func TestAResumeReadsThePinAndNeverWritesOne(t *testing.T) {
 			t.Error("a missing run should be an error rather than an unweighted run")
 		}
 	})
+}
+
+// --- Deployment-wide weights from a registered provider --------------------
+
+// countingScoringProvider is a scoring-configuration provider that counts how
+// often it is asked, and can fail either way the seam has to survive.
+type countingScoringProvider struct {
+	weights map[string]float64
+	err     error
+	panics  bool
+	calls   int
+	project string
+}
+
+func (p *countingScoringProvider) ScoringConfig(_ context.Context, projectID string) (agentplugin.ScoringOverride, error) {
+	p.calls++
+	p.project = projectID
+	if p.panics {
+		panic("provider exploded")
+	}
+	return agentplugin.ScoringOverride{CategoryWeights: p.weights}, p.err
+}
+
+func (*countingScoringProvider) Name() string { return "counting" }
+
+func registerScoringProvider(t *testing.T, p agentplugin.ScoringConfigProvider) {
+	t.Helper()
+	agentplugin.ResetScoringConfigProviderForTest()
+	t.Cleanup(agentplugin.ResetScoringConfigProviderForTest)
+	agentplugin.RegisterScoringConfigProvider(p)
+}
+
+// TestTheFirstAttemptPinsTheDeploymentLayerBetweenThePackAndTheProject -- the
+// provider's weights are folded in at attempt 1, under the project's own and
+// over the pack's, and are asked for this project.
+func TestTheFirstAttemptPinsTheDeploymentLayerBetweenThePackAndTheProject(t *testing.T) {
+	project := projectWithRisk() // pack: compliance 3, revenue_leak 2; project: revenue_leak 2.5
+	project.ID = "proj-7"
+	provider := &countingScoringProvider{weights: map[string]float64{
+		"compliance":   1.5, // over the pack's 3
+		"revenue_leak": 0.5, // under the project's 2.5, which wins
+		"security":     2,   // a global id nothing else weights
+	}}
+	registerScoringProvider(t, provider)
+
+	store := &fakeScoringStore{run: &models.DiscoveryRun{}}
+	got, err := pinRunScoringConfig(context.Background(), store, "run-1", project, false)
+	if err != nil {
+		t.Fatalf("pinRunScoringConfig: %v", err)
+	}
+	if provider.calls != 1 || provider.project != "proj-7" {
+		t.Errorf("provider asked %d times about %q, want once about proj-7", provider.calls, provider.project)
+	}
+	want := map[string]float64{"compliance": 1.5, "revenue_leak": 2.5, "security": 2}
+	if got == nil || !reflect.DeepEqual(got.CategoryWeights, want) {
+		t.Errorf("pinned %+v, want category weights %v", got, want)
+	}
+}
+
+// TestAResumeNeverAsksTheProvider -- a weight changed between two attempts of
+// one run must not reach the second: the resume replays the pin and the
+// provider is not consulted at all.
+func TestAResumeNeverAsksTheProvider(t *testing.T) {
+	provider := &countingScoringProvider{weights: map[string]float64{"compliance": 0.1}}
+	registerScoringProvider(t, provider)
+
+	pinned := &gomodels.RunScoringConfig{CategoryWeights: map[string]float64{"compliance": 3}}
+	store := &fakeScoringStore{run: &models.DiscoveryRun{ScoringConfig: pinned}}
+	got, err := pinRunScoringConfig(context.Background(), store, "run-1", projectWithRisk(), true)
+	if err != nil {
+		t.Fatalf("pinRunScoringConfig: %v", err)
+	}
+	if provider.calls != 0 {
+		t.Errorf("the resume asked the provider %d times", provider.calls)
+	}
+	if got == nil || got.CategoryWeights["compliance"] != 3 {
+		t.Errorf("got %+v, want attempt 1's compliance 3", got)
+	}
+}
+
+// TestAFailingProviderCostsTheRunOnlyItsWeights -- an error or a panic pins
+// exactly what the pack and the project resolve to, and the run goes on.
+func TestAFailingProviderCostsTheRunOnlyItsWeights(t *testing.T) {
+	want := resolveRunScoringConfig(projectWithRisk(), nil)
+
+	for name, provider := range map[string]*countingScoringProvider{
+		"an error": {weights: map[string]float64{"compliance": 0.1}, err: errors.New("settings store unreachable")},
+		"a panic":  {panics: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			registerScoringProvider(t, provider)
+			store := &fakeScoringStore{run: &models.DiscoveryRun{}}
+			got, err := pinRunScoringConfig(context.Background(), store, "run-1", projectWithRisk(), false)
+			if err != nil {
+				t.Fatalf("the provider's failure failed the run: %v", err)
+			}
+			if got == nil || !reflect.DeepEqual(*got, want) {
+				t.Errorf("pinned %+v, want the pack and project resolution %+v", got, want)
+			}
+		})
+	}
+}
+
+// TestNoProviderPinsWhatV3Pinned -- with nothing registered the pin is the
+// pack and project resolution, exactly; the golden pins its bytes.
+func TestNoProviderPinsWhatV3Pinned(t *testing.T) {
+	agentplugin.ResetScoringConfigProviderForTest()
+	store := &fakeScoringStore{run: &models.DiscoveryRun{}}
+	got, err := pinRunScoringConfig(context.Background(), store, "run-1", projectWithRisk(), false)
+	if err != nil {
+		t.Fatalf("pinRunScoringConfig: %v", err)
+	}
+	if want := resolveRunScoringConfig(projectWithRisk(), nil); got == nil || !reflect.DeepEqual(*got, want) {
+		t.Errorf("pinned %+v, want %+v", got, want)
+	}
 }

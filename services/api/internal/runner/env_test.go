@@ -51,6 +51,23 @@ func TestForwardedEnv_SourcesEnabled(t *testing.T) {
 	}
 }
 
+// TestForwardedEnv_InsightScoringEnabled pins that an explicit "false" for
+// the scoring-configuration plugin reaches agent containers. The plugin
+// defaults on, so a missing value would mean enabled: the agent would keep
+// applying deployment-wide weights the API side had switched off.
+func TestForwardedEnv_InsightScoringEnabled(t *testing.T) {
+	t.Setenv("INSIGHT_SCORING_ENABLED", "false")
+
+	found := map[string]string{}
+	for _, kv := range collectForwardedEnv(agentForwardedEnvKeys) {
+		found[kv.Key] = kv.Value
+	}
+
+	if got, ok := found["INSIGHT_SCORING_ENABLED"]; !ok || got != "false" {
+		t.Errorf("INSIGHT_SCORING_ENABLED = %q (present %v), want the explicit \"false\" forwarded", got, ok)
+	}
+}
+
 // TestForwardedEnv_CloudPolicyIdentity pins that the cloud policy-checker
 // identity + the governance init gate reach agent Jobs. On cloud tenants the
 // agent runs the cloud-enterprise agent image, whose policy.Checker is the
