@@ -12,6 +12,7 @@ import {
   SectionHeader, SeverityBadge, AreaBadge, Th, EmptyState, SearchInput, Pagination,
 } from '@/components/common/UIComponents';
 import UnreadDot from '@/components/common/UnreadDot';
+import RestatedBadge from '@/components/common/RestatedBadge';
 import {
   InsightValidationBadge, resolveValidationStatus, validationSortRank,
 } from '@/components/validation/InsightValidationBadge';
@@ -24,6 +25,7 @@ import { severityBandOrder } from '@/components/scoring/severityMeta';
 import { RiskFlagChips } from '@/components/scoring/RiskFlagChips';
 import { useReadSet } from '@/lib/readState';
 import { api, Feedback, Insight, Project, SearchResultItem } from '@/lib/api';
+import { collapseByKey, restatedToggleLabel, splitRestated } from '@/lib/restated';
 
 // The severity filter chips, as label/value pairs.
 //
@@ -74,6 +76,7 @@ export default function InsightsListPage() {
   const [page, setPage] = useState(1);
   const pageSize = 20;
   const [semanticResults, setSemanticResults] = useState<SearchResultItem[] | null>(null);
+  const [showRestated, setShowRestated] = useState(false);
   const [searching, setSearching] = useState(false);
   const hasEmbedding = !!project?.embedding?.provider;
   const readSet = useReadSet(id, 'insight');
@@ -83,8 +86,8 @@ export default function InsightsListPage() {
       api.getProject(id).then(p => setProject(p)),
       api.listDiscoveries(id).then(discoveries => {
         const insights: InsightWithContext[] = [];
-        const seen = new Set<string>();
 
+        const collected: InsightWithContext[] = [];
         for (const d of (discoveries || [])) {
           // Load feedback per discovery
           api.listFeedback(d.id).then(fb => {
@@ -94,18 +97,19 @@ export default function InsightsListPage() {
           }).catch(() => {});
 
           for (const insight of (d.insights || [])) {
-            // Deduplicate by name (show latest version)
-            const key = `${insight.analysis_area}:${insight.name}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-
-            insights.push({
+            collected.push({
               ...insight,
               discoveryId: d.id,
               discoveryDate: d.discovery_date,
             });
           }
         }
+        // One row per subject, collapsed AFTER collecting so a canonical row
+        // can win over a restatement that shares its key. Collapsing on the
+        // way in kept whichever came first, and if that was a restatement the
+        // canonical was dropped here and the restatement hidden by the split —
+        // the subject disappeared from the list having been reported twice.
+        insights.push(...collapseByKey(collected, i => `${i.analysis_area}:${i.name}`));
         setAllInsights(insights);
       }),
     ])
@@ -136,22 +140,35 @@ export default function InsightsListPage() {
 
   if (loading) return <Shell><Loader /></Shell>;
 
-  // Filter
-  let filtered = allInsights;
+  // Filters first, then the restatement split — in that order, because a row
+  // is hidden only when the row it restates is one the reader can see in this
+  // list, and a filter can remove exactly that row. Splitting first hid a
+  // Confirmed restatement behind a Rejected original, and then the Confirmed
+  // filter took the original away too: a matching insight, and no results.
+  //
+  // Phase 9 judged these a rewording of an insight already reported; showing
+  // all three wordings asks the reader to notice they are the same. They are
+  // hidden, not dropped: the judgement is a similarity score and it can be
+  // wrong, so one click brings them back — the same contract the API's
+  // include_duplicates offers.
+  let matching = allInsights;
   if (search) {
     const q = search.toLowerCase();
-    filtered = filtered.filter(i =>
+    matching = matching.filter(i =>
       i.name.toLowerCase().includes(q) ||
       i.description?.toLowerCase().includes(q) ||
       i.analysis_area.toLowerCase().includes(q)
     );
   }
   if (severityFilter !== 'All') {
-    filtered = filtered.filter(i => i.severity?.toLowerCase() === severityFilter);
+    matching = matching.filter(i => i.severity?.toLowerCase() === severityFilter.toLowerCase());
   }
   if (validationFilter !== 'All') {
-    filtered = filtered.filter(i => resolveValidationStatus(i.validation) === validationFilter);
+    matching = matching.filter(i => resolveValidationStatus(i.validation) === validationFilter);
   }
+  const { shown: distinctInsights, restated: restatedInsights } = splitRestated(matching);
+
+  let filtered = showRestated ? matching : distinctInsights;
 
   // Sort. Priority is the default: the tier folds the severity band together
   // with whether the claim held up, which is what a reader scanning a
@@ -197,6 +214,22 @@ export default function InsightsListPage() {
     );
   }
 
+  // The semantic results are a reading surface too, and the one most likely to
+  // show a fold: a restatement and the row it restates embed almost
+  // identically, so a query that matches one matches the other and they come
+  // back adjacent. Hidden by the same rule and revealed by the same toggle, or
+  // a search would undo the suppression this page applies everywhere else.
+  //
+  // Split AFTER the validation filter, so a row hidden for restating another
+  // is hidden behind one the reader can actually see in this list.
+  const semanticSplit = shownSemanticResults ? splitRestated(shownSemanticResults) : null;
+  if (semanticSplit && !showRestated) {
+    shownSemanticResults = semanticSplit.shown;
+  }
+  // The toggle governs whichever list is being read, so its count is of rows
+  // revealing will actually produce — not of a list the reader cannot see.
+  const restatedCount = semanticSplit ? semanticSplit.restated.length : restatedInsights.length;
+
   const breadcrumb = [
     { label: 'Projects', href: '/' },
     { label: project?.name || '...', href: `/projects/${id}` },
@@ -225,6 +258,16 @@ export default function InsightsListPage() {
             cursor: 'pointer', fontFamily: 'inherit', transition: 'all 120ms ease',
           }}>{chip.label}</button>
         ))}
+        {restatedCount > 0 && (
+          <button onClick={() => { setShowRestated(v => !v); setPage(1); }} style={{
+            fontSize: 12, padding: '4px 12px',
+            border: '0.5px solid var(--db-border-strong)',
+            borderRadius: 'var(--db-radius)',
+            background: showRestated ? 'var(--db-blue-bg)' : 'var(--db-bg-white)',
+            color: showRestated ? 'var(--db-blue-text)' : 'var(--db-text-secondary)',
+            cursor: 'pointer', fontFamily: 'inherit', transition: 'all 120ms ease',
+          }}>{restatedToggleLabel(restatedCount, showRestated)}</button>
+        )}
         <span style={{ flex: 1 }} />
         <FilterDropdown label="Validation" value={validationFilter}
           onChange={v => { setValidationFilter(v); setPage(1); }}
@@ -272,6 +315,7 @@ export default function InsightsListPage() {
                       style={{ fontSize: 13, fontWeight: 500, color: 'var(--db-text-link)', textDecoration: 'none' }}>
                       {r.name}
                     </Link>
+                    <RestatedBadge doc={r} />
                   </td>
                   <td style={{ padding: '10px 12px' }}>
                     {r.severity && <SeverityBadge severity={r.severity} type="severity" />}
@@ -348,6 +392,7 @@ export default function InsightsListPage() {
                       <UnreadDot unread={!isRead} />
                       <span>{insight.name}</span>
                     </Link>
+                    <RestatedBadge doc={insight} />
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <PriorityCell scoring={insight.evidence_scoring} />

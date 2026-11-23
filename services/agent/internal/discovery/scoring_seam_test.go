@@ -97,7 +97,7 @@ func TestARestoredAreaComesBackScored(t *testing.T) {
 
 	log, insights, _ := restoreArea(
 		models.AnalysisAreaCheckpoint{Step: stored, InsightsValidated: 2},
-		nil, nil,
+		nil, nil, newRestoredIDs(),
 	)
 
 	if len(insights) != 2 {

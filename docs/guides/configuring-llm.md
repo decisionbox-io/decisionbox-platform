@@ -525,6 +525,9 @@ To turn it off, clear **Prompt caching** on the layer in **Settings → Models**
 
 OpenAI-compatible providers (OpenAI, LiteLLM, vLLM and hosted OpenAI-compatible APIs) cache repeated prefixes automatically on the server side; nothing needs to be set.
 
+That difference is visible in the log.
+At run start the agent writes one `Layer LLM resolved` line per layer, whose `prompt_cache` field reads `true` or `false` for a layer whose provider sends cache directives, and `n/a` for one whose provider does not — so the line never reports a setting for a path that has none.
+
 Every LLM call's usage — logged as `LLM call usage` and sent to the usage hook — carries the cached part of the prompt (`cache_read_tokens`, `cache_write_tokens`), hidden reasoning tokens (`reasoning_tokens`), the stop reason, and the discovery **phase** the call belongs to (exploration, analysis, validation, recommendations, questions, reflection), so cost can be attributed per phase.
 `input_tokens` is always the total prompt size, cached part included.
 

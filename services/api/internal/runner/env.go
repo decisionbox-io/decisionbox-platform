@@ -178,6 +178,22 @@ var agentForwardedEnvKeys = []string{
 	"DISCOVERY_LEDGER_MAX_FINDINGS",
 	"DISCOVERY_LEDGER_DEDUP_MINSCORE",
 	"DISCOVERY_LEDGER_TREND_DELTA",
+	// Prompt-composition budgets, read by the agent when it assembles each
+	// prompt. Without forwarding, an operator who tunes them on the API sees
+	// no effect at all on Docker or Kubernetes runs — which is every
+	// production deployment — while a subprocess run would honour them, so
+	// the same configuration would behave differently per runner.
+	"DISCOVERY_PRIOR_CONTEXT_SHARE",
+	"DISCOVERY_CONTEXT_PROVIDER_SHARE",
+	"DISCOVERY_CONTEXT_RETRIEVAL_TIMEOUT",
+	"DISCOVERY_DOCUMENT_DEDUP_MINSCORE",
+	// The mid-run consolidation switch, forwarded for the same reason: it is
+	// read by the agent while it analyses an area, so an operator who turns it
+	// off on the API would see no effect on any containerised run — which is
+	// every production deployment.
+	"DISCOVERY_CONSOLIDATION_ENABLED",
+	"DISCOVERY_CONSOLIDATION_MAX_CLUSTERS",
+	"DISCOVERY_CONSOLIDATION_ADJUDICATION_MINSCORE",
 	// Cloud policy-checker identity. On cloud tenants the agent runs the
 	// cloud-enterprise agent image, whose policy.Checker is
 	// decisionbox-cloud-tenant/policy-plugin (registered only when

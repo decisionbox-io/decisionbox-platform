@@ -174,6 +174,38 @@ type Insight struct {
 	// are never decoded from model output, and they serve it to clients.
 	Confidence float64 `bson:"confidence" json:"-"`
 
+	// DuplicateOf and SimilarityScore mirror the marks Phase 9 writes on the
+	// denormalised copy of this insight, because the dashboard reads the
+	// EMBEDDED copy: the project's insight list, its recommendation list and a
+	// run's own detail page all render these, not the standalone collection, so
+	// a suppression that lives only on the standalone document reaches the API
+	// and none of the screens anybody looks at.
+	//
+	// The same fact in two places, written by one function in one pass — and a
+	// document is marked at most once, by the run that produced it, so the two
+	// copies cannot drift apart afterwards. The alternative was to re-point
+	// three pages at the standalone endpoints, which would also have had to
+	// rebuild their per-run grouping and would not have covered the run detail
+	// page at all, since that page IS the record of one run's output.
+	DuplicateOf     string  `bson:"duplicate_of,omitempty" json:"duplicate_of,omitempty"`
+	// StandsOnAdjudication marks a finding the consolidation adjudicator
+	// decided must not be folded: it asked for the survivor's description to
+	// be rewritten to carry this finding's figure, segment or caveat, and
+	// nothing rewrites a survivor, so folding it would suppress exactly that
+	// detail behind text which does not state it.
+	//
+	// A property of the FINDING rather than of a pair, which is what makes it
+	// hold. The same decision expressed as a protected pair had to be
+	// consulted at every site that writes a mark, with ids that change as
+	// marks are written — and review found three ways past it: a fold
+	// redirected through a third document, the community fallback choosing a
+	// different canonical, and a pause and resume, after which the pairs were
+	// gone because they only ever lived in memory. This travels with the
+	// insight, through the area draft and the checkpoint, so none of those
+	// reach it.
+	StandsOnAdjudication bool `bson:"stands_on_adjudication,omitempty" json:"stands_on_adjudication,omitempty"`
+	SimilarityScore float64 `bson:"similarity_score,omitempty" json:"similarity_score,omitempty"`
+
 	// Flexible domain-specific metrics
 	Metrics    map[string]interface{} `bson:"metrics,omitempty" json:"metrics,omitempty"`
 	Indicators []string               `bson:"indicators,omitempty" json:"indicators,omitempty"`
@@ -373,6 +405,11 @@ type Recommendation struct {
 
 	TargetSegment string `bson:"target_segment" json:"target_segment"`
 	SegmentSize   int    `bson:"segment_size" json:"segment_size"`
+
+	// DuplicateOf and SimilarityScore mirror Phase 9's marks, for the reason
+	// given on Insight: the dashboard renders the embedded copy.
+	DuplicateOf     string  `bson:"duplicate_of,omitempty" json:"duplicate_of,omitempty"`
+	SimilarityScore float64 `bson:"similarity_score,omitempty" json:"similarity_score,omitempty"`
 
 	ExpectedImpact    Impact   `bson:"expected_impact" json:"expected_impact"`
 	Actions           []string `bson:"actions" json:"actions"`
@@ -841,6 +878,72 @@ type FixAttempt struct {
 
 // AnalysisStep captures the complete LLM dialog for a single analysis area.
 // One per analysis area (churn, engagement, levels, etc.).
+// ConsolidationSummary is one area's pre-validation consolidation pass, as the
+// run log records it.
+//
+// Folds are counted by which test PROPOSED them because the two tests find
+// largely different duplicates — measured on one run, the similarity rule
+// proposed 18 pairs and the figure-containment scan 16, and only 3 were the
+// same pair. A drop in one of the two counts is a different failure from a
+// drop in both.
+type ConsolidationSummary struct {
+	// Documents is how many of the run's findings the pass compared: this
+	// area's, plus every earlier area's.
+	Documents int `bson:"documents" json:"documents"`
+	// Clusters is how many sets were put up for adjudication.
+	Clusters int `bson:"clusters" json:"clusters"`
+	// Folded is how many of this area's insights were marked duplicate_of a
+	// canonical, and so cost the validation budget nothing.
+	Folded int `bson:"folded" json:"folded"`
+
+	ByCosine      int `bson:"by_cosine,omitempty" json:"by_cosine,omitempty"`
+	ByContainment int `bson:"by_containment,omitempty" json:"by_containment,omitempty"`
+	ByBoth        int `bson:"by_both,omitempty" json:"by_both,omitempty"`
+
+	// Decider is the provider that adjudicated, or "community" when the
+	// built-in rule did.
+	Decider string `bson:"decider,omitempty" json:"decider,omitempty"`
+
+	// RefusedOtherArea counts folds the adjudicator asked for against a
+	// finding from an area the run had already finished. Those are left
+	// standing: that document's verdict is already paid for and its mark
+	// has nowhere durable to live.
+	RefusedOtherArea int `bson:"refused_other_area,omitempty" json:"refused_other_area,omitempty"`
+	// RefusedRecheck counts folds dropped because the claim did not hold
+	// against the canonical the mark would actually have pointed at.
+	// Non-zero is the chain re-check doing its job, not a fault.
+	RefusedRecheck int `bson:"refused_recheck,omitempty" json:"refused_recheck,omitempty"`
+	// RefusedShape counts verdicts discarded as malformed: an id outside its
+	// own cluster, a canonical that is itself folded, a cycle.
+	RefusedShape int `bson:"refused_shape,omitempty" json:"refused_shape,omitempty"`
+
+	// RefusedUnmergeable counts the verdicts whose folds were left standing
+	// because the verdict asked for the survivor's description to be
+	// rewritten. A rewrite is requested precisely when a folded member
+	// carries a figure or a caveat the survivor does not, and nothing
+	// rewrites a survivor — so folding without it would suppress those
+	// findings behind text that does not state them.
+	RefusedUnmergeable int `bson:"refused_unmergeable,omitempty" json:"refused_unmergeable,omitempty"`
+	// RefusedKept counts folds refused because the adjudicator had already
+	// decided that pair stands, in another cluster of the same pass. Clusters
+	// are overlapping stars, so a fallback verdict for one can propose a pair
+	// a provider verdict for another explicitly preserved.
+	RefusedKept int `bson:"refused_kept,omitempty" json:"refused_kept,omitempty"`
+	// Kept counts the pairs the adjudicator decided are different findings,
+	// recorded so the end-of-run check does not fold them on document order.
+	Kept int `bson:"kept,omitempty" json:"kept,omitempty"`
+	// OverBound counts clusters this area proposed past the adjudication
+	// bound, which were decided by the community rule instead. Non-zero is
+	// either a real finding about the playbook or a bug in the proposal step.
+	OverBound int `bson:"over_bound,omitempty" json:"over_bound,omitempty"`
+	// Reverted is set when the pass could not prove its own marks resolve
+	// cleanly and gave them all back. Always worth an alert: it means the
+	// run fell back to the end-of-run check for this area.
+	Reverted bool `bson:"reverted,omitempty" json:"reverted,omitempty"`
+
+	DurationMs int64 `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`
+}
+
 type AnalysisStep struct {
 	AreaID   string    `bson:"area_id" json:"area_id"`     // "churn", "levels", etc.
 	AreaName string    `bson:"area_name" json:"area_name"` // "Churn Risks", "Level Difficulty"
@@ -888,6 +991,14 @@ type AnalysisStep struct {
 	// from a non-empty response (bounded by ANALYSIS_PARSE_MAX_RETRIES). Zero
 	// on the happy path; omitted when zero.
 	AnalysisParseRetries int `bson:"analysis_parse_retries,omitempty" json:"analysis_parse_retries,omitempty"`
+
+	// Consolidation records what the pre-validation consolidation pass did
+	// for this area. Nil on an area that proposed nothing, and on every area
+	// of a run whose insights do not restate each other — which is the
+	// signal: a fold rate that moves is the one regression this feature can
+	// cause, and it is read off this field rather than reconstructed from a
+	// replay.
+	Consolidation *ConsolidationSummary `bson:"consolidation,omitempty" json:"consolidation,omitempty"`
 
 	// Repair counters (E5). Every one of these is zero on an area whose
 	// insights all agreed with their own evidence, which is the common case, so

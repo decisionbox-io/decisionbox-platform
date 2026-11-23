@@ -220,7 +220,7 @@ func (p *LiteLLMProvider) Validate(ctx context.Context) error {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("litellm: validation failed (status %d): %s", resp.StatusCode, gollm.SanitizeErrorBody(body, 500))
+		return gollm.NewUpstreamError(providerName, resp.StatusCode, "", body)
 	}
 	return nil
 }
@@ -240,10 +240,19 @@ func (p *LiteLLMProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gol
 	// isn't sent an oversized max_tokens (rejected with a 4xx upstream).
 	req.MaxTokens = gollm.ClampMaxTokens(req.MaxTokens, p.maxOutputTokens)
 
-	// A model the catalog knows is not a reasoning model rejects
-	// reasoning_effort outright, so the field is dropped for those rather
-	// than turning a quality setting into a 400. A model the catalog does not
-	// know (a managed gateway's alias) keeps it — see NormalizeReasoningEffort.
+	// reasoning_effort survives only for a model the catalog positively
+	// identifies as a reasoning model. Everything else is dropped: a
+	// catalogued non-reasoning model rejects the field outright, and an
+	// UNKNOWN model is dropped too — the set of targets whose capability
+	// cannot be known is open (a customer-chosen deployment id, a managed
+	// gateway's per-organisation alias), so there is no denial list that
+	// covers it and a guess collects a 400. Omitting it there costs
+	// nothing: the model applies its own default.
+	//
+	// The consequence is worth knowing before relying on this field: an
+	// effort set by a caller does NOT cross an opaque hop. See
+	// NormalizeReasoningEffort, whose doc explains why, including the two
+	// rounds of trying it the other way.
 	req = gollm.NormalizeReasoningEffort(providerName, model, req)
 	body := openaicompat.BuildRequestBody(model, req)
 
@@ -271,14 +280,17 @@ func (p *LiteLLMProvider) Chat(ctx context.Context, req gollm.ChatRequest) (*gol
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
+		// Typed, so a caller can tell the proxy rejecting the request —
+		// a pre-call context-length check, a parameter the model does not
+		// take — from the proxy being down. Both arrive here; only one is
+		// worth retrying. The message is sanitised either way: a proxy
+		// that echoes the Authorization header in its error body must not
+		// leak it into logs or the dashboard.
 		if apiErr := openaicompat.ExtractAPIError(respBody); apiErr != nil {
-			// Sanitize the parsed message too — a proxy that echoes the
-			// Authorization header or key in its error body must not leak
-			// it into logs / the dashboard.
-			return nil, fmt.Errorf("litellm: API error (%d): %s - %s",
-				httpResp.StatusCode, apiErr.Type, gollm.SanitizeErrorBody([]byte(apiErr.Message), 500))
+			return nil, gollm.NewUpstreamError(providerName, httpResp.StatusCode,
+				apiErr.Type, []byte(apiErr.Message))
 		}
-		return nil, fmt.Errorf("litellm: API error (%d): %s", httpResp.StatusCode, gollm.SanitizeErrorBody(respBody, 500))
+		return nil, gollm.NewUpstreamError(providerName, httpResp.StatusCode, "", respBody)
 	}
 
 	resp, err := openaicompat.ParseResponseBody(respBody)

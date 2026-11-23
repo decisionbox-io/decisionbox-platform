@@ -286,12 +286,10 @@ func (p *ClaudeProvider) sendRequest(ctx context.Context, req *claudeRequest) (*
 		case "text":
 			content += c.Text
 		case "tool_use":
-			// Anthropic returns Input as an inline JSON object; unmarshal
-			// into a map so the caller can inspect arguments by key.
-			var input map[string]interface{}
-			if len(c.Input) > 0 {
-				_ = json.Unmarshal(c.Input, &input)
-			}
+			// Anthropic returns Input as an inline JSON object; decode it
+			// into a map so the caller can inspect arguments by key, and
+			// number-preserving so an integer past 2^53 survives.
+			input, _ := gollm.DecodeToolInput(c.Input)
 			toolCalls = append(toolCalls, gollm.ToolCall{
 				ID:    c.ID,
 				Name:  c.Name,

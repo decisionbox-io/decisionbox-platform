@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -151,5 +152,67 @@ func TestDiscoveryResult_FullRun(t *testing.T) {
 	}
 	if result.AreasRequested != nil {
 		t.Error("AreasRequested should be nil for full run")
+	}
+}
+
+// --- area order ---
+
+// areaIDs is the order resolvePrompts handed back, which is the order the run
+// works through the areas.
+func areaIDs(areas []AnalysisArea) []string {
+	out := make([]string, 0, len(areas))
+	for _, a := range areas {
+		out = append(out, a.ID)
+	}
+	return out
+}
+
+// The areas come out of a map, and a Go map is ranged in a randomised order, so
+// the assertion is repeated: a single pass can agree with the wanted order by
+// chance. Before the sort this failed within a handful of iterations.
+//
+// The expected order is by id and nothing else — the priorities below are
+// deliberately at odds with it, to pin that the sort reads no preference
+// between areas.
+func TestResolvePrompts_AreasComeBackInAFixedOrder(t *testing.T) {
+	o := &Orchestrator{
+		projectPrompts: &models.ProjectPrompts{
+			AnalysisAreas: map[string]models.AnalysisAreaConfig{
+				"zebra":  {Name: "Zebra", Prompt: "p", Enabled: true, Priority: 1},
+				"apple":  {Name: "Apple", Prompt: "p", Enabled: true, Priority: 3},
+				"middle": {Name: "Middle", Prompt: "p", Enabled: true},
+				"tail":   {Name: "Tail", Prompt: "p", Enabled: true, Priority: 2},
+			},
+		},
+	}
+	want := []string{"apple", "middle", "tail", "zebra"}
+
+	for i := 0; i < 50; i++ {
+		_, areas := o.resolvePrompts()
+		if got := areaIDs(areas); !reflect.DeepEqual(got, want) {
+			t.Fatalf("iteration %d: area order = %v, want %v", i, got, want)
+		}
+	}
+}
+
+// A disabled area is still absent, and the ones that remain are still ordered.
+func TestResolvePrompts_DisabledAreasAreExcludedAndTheRestStayOrdered(t *testing.T) {
+	o := &Orchestrator{
+		projectPrompts: &models.ProjectPrompts{
+			AnalysisAreas: map[string]models.AnalysisAreaConfig{
+				"aaa": {Name: "First", Prompt: "p", Enabled: true},
+				"bbb": {Name: "Off", Prompt: "p", Enabled: false},
+				"ccc": {Name: "Second", Prompt: "p", Enabled: true},
+			},
+		},
+	}
+	for i := 0; i < 50; i++ {
+		prompts, areas := o.resolvePrompts()
+		if got := areaIDs(areas); !reflect.DeepEqual(got, []string{"aaa", "ccc"}) {
+			t.Fatalf("iteration %d: area order = %v, want the two enabled areas in id order", i, got)
+		}
+		if _, ok := prompts.AnalysisAreas["bbb"]; ok {
+			t.Error("a disabled area must not reach the resolved prompts")
+		}
 	}
 }

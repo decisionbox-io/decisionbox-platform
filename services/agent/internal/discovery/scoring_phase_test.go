@@ -13,7 +13,10 @@ import (
 
 func testScoringCfg() scoring.Config { return scoring.DefaultConfig() }
 
-func verdictOf(status valmodels.Status) *models.InsightValidation {
+// validationWithStatus is a verdict carrying just a combined status, which is
+// all the scorer reads. Not `verdictOf`: that name belongs to the
+// consolidation pass's renderer in this same package.
+func validationWithStatus(status valmodels.Status) *models.InsightValidation {
 	return &models.InsightValidation{Combined: status}
 }
 
@@ -35,7 +38,7 @@ func TestScoreInsightsClearsThenWrites(t *testing.T) {
 			ConfidenceScore: 0.11,
 			EngineVersion:   99,
 		},
-		Validation: verdictOf(valmodels.StatusSupported),
+		Validation: validationWithStatus(valmodels.StatusSupported),
 	}}
 	scoreInsights(insights, scoringContext{cfg: testScoringCfg()})
 
@@ -90,8 +93,8 @@ func TestScoreInsightsTheZeroCase(t *testing.T) {
 // claim from the insights it cites, and the verifier gave it its own verdict.
 func TestScoreRecommendationsUseTheirOwnVerdict(t *testing.T) {
 	recs := []models.Recommendation{
-		{ID: "r1", Title: "confirmed", Confidence: 0.9, Validation: verdictOf(valmodels.StatusConfirmed)},
-		{ID: "r2", Title: "rejected", Confidence: 0.9, Validation: verdictOf(valmodels.StatusRejected)},
+		{ID: "r1", Title: "confirmed", Confidence: 0.9, Validation: validationWithStatus(valmodels.StatusConfirmed)},
+		{ID: "r2", Title: "rejected", Confidence: 0.9, Validation: validationWithStatus(valmodels.StatusRejected)},
 		{ID: "r3", Title: "none", Confidence: 0.9},
 	}
 	scoreRecommendations(recs, nil, testScoringCfg())
@@ -135,7 +138,7 @@ func TestTheScorerClearsTheModelsSeverityAndRiskScore(t *testing.T) {
 		RiskScore:     0.67,
 		AffectedCount: 16695,
 		TargetSegment: "new players",
-		Validation:    verdictOf(valmodels.StatusRejected),
+		Validation:    validationWithStatus(valmodels.StatusRejected),
 		// A stale sub-document from a previous attempt, carrying a severity
 		// half that must not survive either.
 		Scoring: &models.Scoring{
@@ -185,7 +188,7 @@ func TestTheScorerClearsTheModelsSeverityAndRiskScore(t *testing.T) {
 func TestTheScorerClearsAModelAuthoredRecommendationPriority(t *testing.T) {
 	recs := []models.Recommendation{{
 		ID: "r1", Title: "t", Priority: 2, Severity: "critical", SegmentSize: 400,
-		Validation: verdictOf(valmodels.StatusSupported),
+		Validation: validationWithStatus(valmodels.StatusSupported),
 	}}
 	scoreRecommendations(recs, nil, testScoringCfg())
 
@@ -227,7 +230,7 @@ func TestARecommendationInheritsTheWorstSeverityItCites(t *testing.T) {
 	recs := []models.Recommendation{{
 		ID: "r1", Title: "t",
 		RelatedInsightIDs: []string{"mild", "legacy", "severe", "never-existed"},
-		Validation:        verdictOf(valmodels.StatusUnverifiable),
+		Validation:        validationWithStatus(valmodels.StatusUnverifiable),
 	}}
 	scoreRecommendations(recs, insights, testScoringCfg())
 	got := recs[0]
@@ -271,7 +274,7 @@ func TestTheUnresolvedFigureDockReadsThePublishedProse(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ins := tc.ins
-			ins.Validation = verdictOf(valmodels.StatusConfirmed)
+			ins.Validation = validationWithStatus(valmodels.StatusConfirmed)
 			insights := []models.Insight{ins}
 			scoreInsights(insights, scoringContext{cfg: testScoringCfg()})
 
@@ -342,7 +345,7 @@ func TestRecommendationsCarryNoQualityOrQuantifierSignal(t *testing.T) {
 	in := recommendationScoringInput(models.Recommendation{
 		ID: "r1", Title: "t",
 		FigureVerdicts: []gomodels.FigureVerdict{{ID: "f1", Status: gomodels.FigureFails}},
-		Validation:     verdictOf(valmodels.StatusSupported),
+		Validation:     validationWithStatus(valmodels.StatusSupported),
 	}, testScoringCfg())
 
 	if len(in.QualityCaveats) != 0 {
@@ -364,7 +367,7 @@ func TestScoringIsIdempotent(t *testing.T) {
 		ID: "i1", Name: "All {{f1}} buyers",
 		Quality:        []gowarehouse.QualityCaveat{{Kind: gowarehouse.QualityWithheld, Detail: "37 of 412"}},
 		FigureVerdicts: []gomodels.FigureVerdict{{ID: "f1", Status: gomodels.FigureFails}},
-		Validation:     verdictOf(valmodels.StatusSupported),
+		Validation:     validationWithStatus(valmodels.StatusSupported),
 	}
 	once := []models.Insight{ins}
 	scoreInsights(once, scoringContext{cfg: testScoringCfg()})

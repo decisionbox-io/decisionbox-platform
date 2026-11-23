@@ -55,7 +55,12 @@ func (h *RecommendationsHandler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	recs, err := h.repo.ListByProject(r.Context(), projectID, limit, offset, sort)
+	// Marked duplicates are excluded by default. include_duplicates=1|true
+	// brings them back, so a suppression made on a similarity score stays
+	// auditable instead of silently losing rows.
+	filter := database.ListFilter{IncludeDuplicates: queryFlag(r, "include_duplicates")}
+
+	recs, err := h.repo.ListByProjectFiltered(r.Context(), projectID, limit, offset, sort, filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list recommendations")
 		return

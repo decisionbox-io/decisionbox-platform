@@ -268,7 +268,7 @@ func TestInteg_AScoredAreaSurvivesTheCheckpointRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("the area did not come back")
 	}
-	_, restored, _ := restoreArea(cp, nil, nil)
+	_, restored, _ := restoreArea(cp, nil, nil, newRestoredIDs())
 	if len(restored) != 2 {
 		t.Fatalf("restored %d insights, want 2", len(restored))
 	}

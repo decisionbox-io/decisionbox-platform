@@ -32,6 +32,10 @@ const agentModelsSource = "../../agent/internal/models/discovery.go"
 var mirroredInsightOmissions = map[string]string{
 	"sql_metadata": "the SQL an insight was derived from; no API response or dashboard surface reads it " +
 		"(the standalone insight row carries its own copy for the surfaces that do)",
+	"stands_on_adjudication": "an agent-internal mark: the consolidation adjudicator said this finding " +
+		"carries detail no survivor of it states, and the end-of-run duplicate check reads it off the " +
+		"standalone row. Nothing outside the agent reads it; the suppression a reader sees is " +
+		"duplicate_of, which this mirror does carry",
 }
 
 // mirroredRecommendationOmissions is the same table for Recommendation.

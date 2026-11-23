@@ -3,6 +3,7 @@ package bedrock
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -171,5 +172,117 @@ func TestAnthropic_StructuredStringifiedArrayDecoded(t *testing.T) {
 	}
 	if resp.Content != `{"questions":[{"question":"a?"}]}` {
 		t.Fatalf("content = %s, want the array decoded", resp.Content)
+	}
+}
+
+// The provider's own decode must preserve the model's digits. 2^53 + 1 is
+// the smallest integer float64 cannot represent, so it proves the input did
+// not pass through one on the way to the caller.
+func TestAnthropic_ToolInputKeepsLargeIntegers(t *testing.T) {
+	const big = "9007199254740993"
+	body := []byte(`{"content":[{"type":"tool_use","id":"t1","name":"fetch_row","input":{"id":` + big + `}}],` +
+		`"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`)
+	_, p := capturingClient(body)
+
+	resp, err := p.chatAnthropic(context.Background(), gollm.ChatRequest{
+		Model:    p.model,
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+		Tools:    []gollm.ToolDefinition{{Name: "fetch_row", InputSchema: map[string]interface{}{"type": "object"}}},
+	})
+	if err != nil {
+		t.Fatalf("chatAnthropic: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(resp.ToolCalls))
+	}
+	out, err := json.Marshal(resp.ToolCalls[0].Input)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(out), big) {
+		t.Errorf("tool input = %s, want the exact %s", out, big)
+	}
+}
+
+// End to end on this wire: a structured request whose generation was cut
+// off must reach the caller as a cutoff, not as a clean finish. Before
+// this, the fold overwrote the reason and a half-written object was
+// indistinguishable from a complete one.
+func TestAnthropic_StructuredTruncationSurvivesTheFold(t *testing.T) {
+	body := []byte(`{"content":[{"type":"tool_use","id":"t1","name":"pack","input":{"slug":"a"}}],` +
+		`"stop_reason":"max_tokens","usage":{"input_tokens":1,"output_tokens":4096}}`)
+	_, p := capturingClient(body)
+
+	resp, err := p.chatAnthropic(context.Background(), gollm.ChatRequest{
+		Model:    p.model,
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+		ResponseFormat: &gollm.ResponseFormat{
+			Name:   "pack",
+			Schema: map[string]interface{}{"type": "object"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("chatAnthropic: %v", err)
+	}
+	if resp.StopReason != "max_tokens" {
+		t.Errorf("stop reason = %q, want max_tokens — the truncation was erased", resp.StopReason)
+	}
+	// The fold still happened: the synthetic call is hidden and the object
+	// is in the content.
+	if len(resp.ToolCalls) != 0 || !strings.Contains(resp.Content, `"slug"`) {
+		t.Errorf("fold did not happen: content=%q toolCalls=%d", resp.Content, len(resp.ToolCalls))
+	}
+}
+
+// awsRejection stands in for an AWS SDK response error: it carries its own
+// HTTP status, which is how a ValidationException's 400 reaches a caller
+// without this package knowing anything about smithy.
+type awsRejection struct{}
+
+func (awsRejection) Error() string       { return "ValidationException: input is too long" }
+func (awsRejection) HTTPStatusCode() int { return 400 }
+func (awsRejection) ErrorCode() string   { return "ValidationException" }
+
+// A rejected request and a broken backend both arrive here as an error.
+// Carrying the status is what lets a caller — a managed gateway, say —
+// answer 4xx for one and 5xx for the other instead of retrying both.
+func TestAnthropic_UpstreamRejectionCarriesItsStatus(t *testing.T) {
+	inner := &mockBedrockClient{invokeErr: awsRejection{}}
+	p := newMockBedrockProvider(inner)
+
+	_, err := p.chatAnthropic(context.Background(), gollm.ChatRequest{
+		Model:    p.model,
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if got := gollm.UpstreamStatus(err); got != 400 {
+		t.Errorf("UpstreamStatus = %d, want 400", got)
+	}
+	if !gollm.UpstreamClientFault(err) {
+		t.Error("a ValidationException must read as the request being rejected")
+	}
+}
+
+// A transport failure has no upstream status, and must not be dressed up as
+// one: unknown has to stay unknown or a network blip becomes "your request
+// was invalid".
+func TestAnthropic_TransportFailureHasNoStatus(t *testing.T) {
+	inner := &mockBedrockClient{invokeErr: errors.New("dial tcp: i/o timeout")}
+	p := newMockBedrockProvider(inner)
+
+	_, err := p.chatAnthropic(context.Background(), gollm.ChatRequest{
+		Model:    p.model,
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if got := gollm.UpstreamStatus(err); got != 0 {
+		t.Errorf("UpstreamStatus = %d, want 0", got)
+	}
+	if gollm.UpstreamClientFault(err) {
+		t.Error("a transport failure is not the caller's fault")
 	}
 }

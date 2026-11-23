@@ -7,8 +7,8 @@ import (
 
 func TestLayersCoverTheWholeProductAndNothingElse(t *testing.T) {
 	ls := Layers()
-	if len(ls) != 17 {
-		t.Fatalf("Layers() returned %d descriptors, want 17 — a layer was added or removed without updating the test (and check whether ConfigVersion should bump: adding one must not)", len(ls))
+	if len(ls) != 18 {
+		t.Fatalf("Layers() returned %d descriptors, want 18 — a layer was added or removed without updating the test (and check whether ConfigVersion should bump: adding one must not)", len(ls))
 	}
 
 	want := map[string]string{
@@ -20,6 +20,7 @@ func TestLayersCoverTheWholeProductAndNothingElse(t *testing.T) {
 		LayerAsk:                GroupMain,
 		LayerQuestions:          GroupSmall,
 		LayerReflection:         GroupSmall,
+		LayerConsolidation:      GroupSmall,
 		LayerSQLRepair:          GroupSmall,
 		LayerAskRouter:          GroupSmall,
 		LayerAskSuggestions:     GroupSmall,

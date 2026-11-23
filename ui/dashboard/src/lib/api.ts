@@ -690,6 +690,15 @@ export interface Insight {
   // existed, which is what marks `confidence` above as legacy.
   evidence_scoring?: Scoring;
   discovered_at: string;
+  // Set when Phase 9 judged this insight a restatement of another: the id it
+  // restates, and the similarity that decided it. Absent on everything written
+  // before the mark existed, and on everything judged distinct — so absence
+  // means "not a restatement", never "unknown".
+  //
+  // Mirrored onto this embedded copy because these pages read it rather than
+  // the standalone collection the API filters.
+  duplicate_of?: string;
+  similarity_score?: number;
 }
 
 // --- Derived scoring -------------------------------------------------------
@@ -858,6 +867,7 @@ export type ValidationStatus =
   | "unverifiable"
   | "validation_disabled"
   | "skipped_budget_cap"
+  | "skipped_duplicate"
   // Legacy values:
   | "adjusted"
   | "unverified"
@@ -942,6 +952,10 @@ export interface Recommendation {
   severity?: string;
   validation?: InsightValidation;
   evidence_scoring?: Scoring;
+
+  // See Insight.duplicate_of.
+  duplicate_of?: string;
+  similarity_score?: number;
 }
 
 export interface Summary {
@@ -1099,6 +1113,39 @@ export interface AnalysisAreaConfig {
   // "no override" — the field is cleared into undefined rather than 0, which
   // is not a legal weight.
   severity_weight?: number;
+}
+
+/**
+ * enabledAnalysisAreas turns a project's playbook into the areas a discovery
+ * run can be asked for.
+ *
+ * It reads the PROJECT's own areas (`GET /projects/{id}/prompts`), not its
+ * domain pack's (`GET /domains/{d}/categories/{c}/areas`). The pack seeds these
+ * once, at project creation, and the two diverge from then on — that divergence
+ * is what the playbook is for. It is where a custom area is added, an area is
+ * switched off and a custom one is deleted, none of which the pack knows about.
+ *
+ * Only the enabled entries, because that is exactly the set a run can execute:
+ * the agent builds its list from this same place and drops everything switched
+ * off, so an area offered here that is off would start a run that analyses
+ * nothing.
+ *
+ * Sorted by priority, then id — the Playbook page's own order, with the id as a
+ * tiebreaker so areas sharing a priority (a seeded pack area and a custom one
+ * can collide) still list the same way every time.
+ *
+ * `prompts` is nullable because the endpoint answers `null` for a project whose
+ * prompts were never seeded.
+ */
+export function enabledAnalysisAreas(prompts: ProjectPrompts | null): { id: string; name: string }[] {
+  const areas = prompts?.analysis_areas;
+  if (!areas) return [];
+  return Object.entries(areas)
+    .filter(([, a]) => a.enabled)
+    .sort(([idA, a], [idB, b]) => a.priority - b.priority || idA.localeCompare(idB))
+    // An area's name is a free-text field on the Playbook page and can be
+    // saved blank; the id is what keeps the checkbox from rendering unlabelled.
+    .map(([id, a]) => ({ id, name: a.name || id }));
 }
 
 export interface ProviderMeta {
@@ -1600,8 +1647,17 @@ export interface LedgerCoverage {
 export interface ConvergencePoint {
   run_id: string;
   new_findings: number;
+  /** The size of the ACTIVE LEDGER after the run, not what the run produced. */
   total_findings: number;
+  /** new_findings / total_findings: how fast the ledger is still GROWING. Not
+   *  the share of this run's own output that was new — a run adding ten new
+   *  findings to a hundred-finding ledger scores 0.09 having repeated nothing. */
   marginal_ratio: number;
+  /** How many distinct findings the run itself surfaced: created plus carried
+   *  ones seen again. With new_findings this gives the run's own novelty, which
+   *  is the repetition rate. Absent on runs recorded before it was measured —
+   *  so zero means "not measured", never "this run found nothing". */
+  run_findings?: number;
   date: string;
 }
 
@@ -1677,8 +1733,14 @@ export interface GraphRun {
   areas?: string[];
   warehouse_id?: string;
   new_findings: number;
+  /** The size of the active ledger after the run, not what the run produced. */
   total_findings: number;
+  /** A ledger GROWTH rate (new_findings / total_findings), not a repetition
+   *  rate. See run_findings for the latter. */
   marginal_ratio: number;
+  /** How many distinct findings the run itself surfaced. Absent on older runs,
+   *  where zero means "not measured". */
+  run_findings?: number;
   /** How many of this run's findings never reached the ledger. Zero on every
    *  healthy run; non-zero means the counts above understate it. */
   unrecorded_findings?: number;
@@ -1916,6 +1978,13 @@ export interface SearchResultItem {
   project_id?: string;
   project_name?: string;
   validation?: InsightValidation;
+  // The duplicate check's marks, carried because search is a reading surface
+  // like any other list: a restatement and the row it restates embed almost
+  // identically, so one query returns BOTH, adjacent. Without these the
+  // search results would show as two findings the pair every other list
+  // folds into one. Absent on a canonical row and on a source_chunk.
+  duplicate_of?: string;
+  similarity_score?: number;
 }
 
 export interface SearchResponse {

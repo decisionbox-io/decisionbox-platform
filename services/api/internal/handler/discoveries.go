@@ -301,6 +301,51 @@ func gateProjectForRun(p *models.Project) error {
 	return nil
 }
 
+// checkRequestedAreas refuses a selective run whose requested area ids name
+// nothing this project can execute.
+//
+// A run's areas come from the project's own prompts.analysis_areas, not from
+// its domain pack: the agent builds its list from there, drops every area
+// switched off, and then narrows what is left to the requested ids. So a
+// request naming only ids the project does not have enabled — an area switched
+// off on the playbook, a custom area since deleted, a pack area this project
+// never had — leaves the analysis phase iterating an empty list. The run
+// reserves a concurrency slot, spawns an agent, costs a metered credit and
+// reaches "completed" having analysed nothing, which reads as a result rather
+// than as a rejected request.
+//
+// Refused only when NOTHING matches. A request naming one enabled area and one
+// disabled one still has work to do, and the agent runs the part that matched;
+// rejecting that would be a stricter contract than the endpoint has ever had.
+//
+// An empty request is not selective — it means every enabled area — so it
+// passes untouched.
+//
+// Returns a *discoverytrigger.InvalidParamsError (HTTP 400) naming what the
+// project can run, or nil.
+func checkRequestedAreas(p *models.Project, requested []string) error {
+	if len(requested) == 0 {
+		return nil
+	}
+	enabled := p.Prompts.EnabledAnalysisAreaIDs()
+	runnable := make(map[string]struct{}, len(enabled))
+	for _, id := range enabled {
+		runnable[id] = struct{}{}
+	}
+	for _, id := range requested {
+		if _, ok := runnable[id]; ok {
+			return nil
+		}
+	}
+	if len(enabled) == 0 {
+		return &discoverytrigger.InvalidParamsError{Message: "this project has no analysis area enabled, so a selective run has nothing to analyse — enable one on its playbook (PUT /api/v1/projects/" + p.ID + "/prompts) first"}
+	}
+	// The ids the project offers, rather than the ids that were asked for: the
+	// caller already knows what it sent, and this is the list it needs to pick
+	// from. It is bounded by the project's own playbook.
+	return &discoverytrigger.InvalidParamsError{Message: "none of the requested analysis areas is enabled on this project; it can run: " + strings.Join(enabled, ", ") + " — or omit \"areas\" to run them all"}
+}
+
 // StartRun performs a discovery-run trigger: lifecycle/schema-index
 // gating, run-record reservation, plan-policy enforcement, and agent
 // spawn. It is the single implementation shared by the HTTP endpoint
@@ -356,6 +401,13 @@ func (h *DiscoveriesHandler) StartRun(ctx context.Context, opts discoverytrigger
 	// surface there and nothing for a user to define.
 	if !managedai.Enabled() && !p.LLMConfigured() {
 		return discoverytrigger.Result{}, &discoverytrigger.ConflictError{Message: "this project's LLM models have not been configured — open project settings at /projects/" + opts.ProjectID + "/settings#models, review the provider and model for each layer, and save"}
+	}
+
+	// Request-parameter validation starts here, after every precondition on
+	// the project itself: a project that cannot run at all should be told that
+	// rather than be told its area list is wrong.
+	if err := checkRequestedAreas(p, opts.Areas); err != nil {
+		return discoverytrigger.Result{}, err
 	}
 
 	// An effort level (cloud's customer-facing intensity) resolves to a

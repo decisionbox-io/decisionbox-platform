@@ -24,6 +24,44 @@ type ContextProviderOpts struct {
 	// MinScore is the minimum similarity threshold for retrieval-style
 	// providers. Providers without a notion of similarity ignore it.
 	MinScore float64
+	// TokenBudget caps the prompt tokens THIS provider's section may occupy,
+	// sized by the caller from the model window and the measured prompt. It is
+	// per-provider, not a pool: providers do not take from one another, which
+	// is the point. Limit alone could not express that — one number shared by
+	// every provider means a provider built to scale with the window competes
+	// for slots with one that needs a handful, and loses.
+	//
+	// A pointer because the two things a plain int conflates are opposites.
+	// nil means the caller computes no budget at all: a provider must then
+	// behave exactly as it did before this field existed and bound itself by
+	// Limit, because a caller that cannot size a budget has not asked for
+	// silence. A non-nil ZERO means there is no room, and a provider that
+	// honours budgets must render nothing — which is the value an int could not
+	// express, and the reason a budget of one rendered nothing while a budget
+	// of zero rendered the whole legacy top-N.
+	//
+	// Read it through Budget() rather than dereferencing.
+	//
+	// The caller leaves headroom for the providers that ignore this, so a
+	// provider that honours it must not exceed it.
+	TokenBudget *int
+	// ExcludeIDs are items the caller already carries elsewhere in the same
+	// prompt. A provider that can identify its items by id should skip them;
+	// one that cannot ignores this.
+	//
+	// It exists because showing an item twice spends two budgets and, worse,
+	// models the repetition in the context of a prompt that is asking the model
+	// not to repeat itself.
+	ExcludeIDs []string
+}
+
+// Budget reports the per-provider token budget and whether the caller supplied
+// one. A provider that cannot honour a budget ignores both.
+func (o ContextProviderOpts) Budget() (tokens int, supplied bool) {
+	if o.TokenBudget == nil {
+		return 0, false
+	}
+	return *o.TokenBudget, true
 }
 
 // ContextProvider returns a markdown section to inject into agent prompts

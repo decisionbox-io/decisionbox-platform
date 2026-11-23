@@ -102,6 +102,15 @@ type searchResultItem struct {
 	// knowledge source chunks). See searchValidationSummary for why this
 	// is not the full verifier/refuter payload.
 	Validation *searchValidationSummary `json:"validation,omitempty"`
+	// DuplicateOf and SimilarityScore are the duplicate check's marks,
+	// carried for the same reason Validation is: search is a reading
+	// surface. A restatement and the row it restates embed almost
+	// identically, so one query returns BOTH, adjacent — and without these
+	// the list that hides restatements everywhere else shows this pair as
+	// two findings. Empty on a canonical document and on result types the
+	// check does not mark.
+	DuplicateOf     string  `json:"duplicate_of,omitempty"`
+	SimilarityScore float64 `json:"similarity_score,omitempty"`
 }
 
 // searchValidationSummary is the trimmed validation verdict returned on
@@ -275,6 +284,8 @@ func (h *SearchHandler) enrichResults(ctx context.Context, results []vectorstore
 				item.DiscoveredAt = ins.DiscoveredAt.Format(time.RFC3339)
 				item.ProjectID = ins.ProjectID
 				item.Validation = validationSummary(ins.Validation)
+				item.DuplicateOf = ins.DuplicateOf
+				item.SimilarityScore = ins.SimilarityScore
 			}
 		case "recommendation":
 			if rec, err := h.recRepo.GetByID(ctx, sr.ID); err == nil {
@@ -283,6 +294,8 @@ func (h *SearchHandler) enrichResults(ctx context.Context, results []vectorstore
 				item.DiscoveryID = rec.DiscoveryID
 				item.ProjectID = rec.ProjectID
 				item.Validation = validationSummary(rec.Validation)
+				item.DuplicateOf = rec.DuplicateOf
+				item.SimilarityScore = rec.SimilarityScore
 			}
 		}
 

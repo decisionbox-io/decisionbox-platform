@@ -156,3 +156,34 @@ func TestMustGetEnv(t *testing.T) {
 	}()
 	MustGetEnv("TEST_MUST_MISSING")
 }
+
+func TestGetEnvAsFloat(t *testing.T) {
+	cases := []struct {
+		name     string
+		value    string
+		set      bool
+		def      float64
+		expected float64
+	}{
+		{name: "plain fraction", value: "0.25", set: true, def: 0.5, expected: 0.25},
+		{name: "integer form", value: "2", set: true, def: 0.5, expected: 2},
+		{name: "negative", value: "-1.5", set: true, def: 0.5, expected: -1.5},
+		{name: "surrounded by whitespace", value: " 0.4 ", set: true, def: 0.5, expected: 0.4},
+		{name: "unparseable falls back", value: "notanumber", set: true, def: 0.5, expected: 0.5},
+		{name: "empty falls back", value: "", set: true, def: 0.5, expected: 0.5},
+		{name: "unset falls back", set: false, def: 0.5, expected: 0.5},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			const key = "TEST_FLOAT"
+			os.Unsetenv(key)
+			if tt.set {
+				os.Setenv(key, tt.value)
+				defer os.Unsetenv(key)
+			}
+			if got := GetEnvAsFloat(key, tt.def); got != tt.expected {
+				t.Errorf("GetEnvAsFloat(%q) = %v, want %v", tt.value, got, tt.expected)
+			}
+		})
+	}
+}

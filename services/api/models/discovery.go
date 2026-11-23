@@ -118,6 +118,15 @@ type Insight struct {
 	// The json name matches the agent's and both standalone copies, so the
 	// dashboard reads one wire name across every endpoint it gets these from.
 	Scoring *gomodels.Scoring `bson:"scoring,omitempty" json:"evidence_scoring,omitempty"`
+
+	// DuplicateOf and SimilarityScore are Phase 9's marks, mirrored onto the
+	// embedded copy so the dashboard can hide a restatement. They have to be
+	// HERE as well as on the agent's own struct: the discovery endpoints decode
+	// BSON into this type, so a field the agent writes and this type does not
+	// declare is dropped silently on the way out — the mark would reach the
+	// database and never reach a screen.
+	DuplicateOf     string  `bson:"duplicate_of,omitempty" json:"duplicate_of,omitempty"`
+	SimilarityScore float64 `bson:"similarity_score,omitempty" json:"similarity_score,omitempty"`
 }
 
 type Recommendation struct {
@@ -128,7 +137,7 @@ type Recommendation struct {
 	// DescriptionMd is the Markdown rendition of Description, rendered
 	// formatted in the dashboard. Description stays plain text. Omitted on
 	// unformatted/legacy recommendations.
-	DescriptionMd     string   `bson:"description_md,omitempty" json:"description_md,omitempty"`
+	DescriptionMd string `bson:"description_md,omitempty" json:"description_md,omitempty"`
 	// Priority is the derived priority, projected from the tier onto the
 	// 1 (highest) to 5 (lowest) integer this field has always carried. Zero
 	// on a legacy document and on one whose citations resolved to nothing
@@ -165,6 +174,10 @@ type Recommendation struct {
 	// Scoring is the derived grade, from this recommendation's own verdict.
 	// Mirrored and named for the reasons the insight's is; nil is legacy.
 	Scoring *gomodels.Scoring `bson:"scoring,omitempty" json:"evidence_scoring,omitempty"`
+
+	// See Insight.DuplicateOf: declared here too, or the API drops it.
+	DuplicateOf     string  `bson:"duplicate_of,omitempty" json:"duplicate_of,omitempty"`
+	SimilarityScore float64 `bson:"similarity_score,omitempty" json:"similarity_score,omitempty"`
 }
 
 type Impact struct {
@@ -247,6 +260,50 @@ type AnalysisStep struct {
 	// could not be read as a number. Mirrored for the reason stated above, which this
 	// field is the newest example of.
 	FiguresValueUnreadable int `bson:"figures_value_unreadable,omitempty" json:"figures_value_unreadable,omitempty"`
+
+	// Consolidation is the pre-validation consolidation pass for this area.
+	// Mirrored for exactly the reason every counter above it is — and it is
+	// the first case where the counters sit one struct deeper, which the class
+	// test below could not see until it was taught to. Nil on an area that
+	// proposed nothing.
+	Consolidation *ConsolidationSummary `bson:"consolidation,omitempty" json:"consolidation,omitempty"`
+}
+
+// ConsolidationSummary mirrors the agent's struct: what the pre-validation
+// consolidation pass did for one analysis area.
+//
+// Folds are counted by which test proposed them because the two tests find
+// largely different duplicates, so a drop in one count is a different failure
+// from a drop in both. Reverted is the one worth an alert: it means the pass
+// could not prove its own marks resolve cleanly and gave them all back.
+type ConsolidationSummary struct {
+	Documents int `bson:"documents" json:"documents"`
+	Clusters  int `bson:"clusters" json:"clusters"`
+	Folded    int `bson:"folded" json:"folded"`
+
+	ByCosine      int `bson:"by_cosine,omitempty" json:"by_cosine,omitempty"`
+	ByContainment int `bson:"by_containment,omitempty" json:"by_containment,omitempty"`
+	ByBoth        int `bson:"by_both,omitempty" json:"by_both,omitempty"`
+
+	Decider string `bson:"decider,omitempty" json:"decider,omitempty"`
+
+	RefusedOtherArea int `bson:"refused_other_area,omitempty" json:"refused_other_area,omitempty"`
+	RefusedRecheck   int `bson:"refused_recheck,omitempty" json:"refused_recheck,omitempty"`
+	RefusedShape     int `bson:"refused_shape,omitempty" json:"refused_shape,omitempty"`
+
+	// RefusedUnmergeable counts the verdicts whose folds were left standing
+	// because the verdict asked for a rewrite of the survivor, which nothing
+	// applies. Older runs recorded a different reason under this name — a
+	// rewrite that could not be applied — so a stored value may predate the
+	// change; both mean "the folds were given back rather than applied
+	// without the detail they needed".
+	RefusedUnmergeable int  `bson:"refused_unmergeable,omitempty" json:"refused_unmergeable,omitempty"`
+	RefusedKept        int  `bson:"refused_kept,omitempty" json:"refused_kept,omitempty"`
+	Kept               int  `bson:"kept,omitempty" json:"kept,omitempty"`
+	OverBound          int  `bson:"over_bound,omitempty" json:"over_bound,omitempty"`
+	Reverted           bool `bson:"reverted,omitempty" json:"reverted,omitempty"`
+
+	DurationMs int64 `bson:"duration_ms,omitempty" json:"duration_ms,omitempty"`
 }
 
 // SelectedStep mirrors the agent's struct: which exploration step

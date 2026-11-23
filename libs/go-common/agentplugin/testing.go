@@ -29,3 +29,9 @@ func UnregisterContextProviderForTest(name string) bool {
 func ResetScoringConfigProviderForTest() {
 	resetScoringForTest()
 }
+
+// ResetConsolidationForTest clears the registered ConsolidationProvider.
+// Test-only; production code MUST NOT call this.
+func ResetConsolidationForTest() {
+	resetConsolidationForTest()
+}

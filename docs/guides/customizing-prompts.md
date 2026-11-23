@@ -107,7 +107,7 @@ curl -X PUT http://localhost:8080/api/v1/projects/{id}/prompts \
   }'
 ```
 
-Custom areas are merged with domain pack areas at runtime.
+Custom areas are merged with domain pack areas at runtime, and the dashboard's **Run discovery → Select areas** list offers them alongside the pack's own.
 
 ## Weighting an Area's Risk
 
@@ -152,6 +152,7 @@ curl -X PUT http://localhost:8080/api/v1/projects/{id}/prompts \
 ```
 
 Disabled areas are skipped during discovery runs but preserved in the project config.
+They are not offered in **Run discovery → Select areas**, and a run that asks for nothing but disabled areas is refused with `400` rather than started (see [`POST /projects/{id}/discover`](../reference/api.md#post-apiv1projectsiddiscover)).
 
 ## Template Variables
 

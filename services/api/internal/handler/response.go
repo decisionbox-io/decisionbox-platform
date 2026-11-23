@@ -89,3 +89,19 @@ const (
 	// upstream error and try again.
 	ErrCodeLLMSynthesisFailed = "llm_synthesis_failed"
 )
+
+// queryFlag reads an opt-in boolean query parameter: present and "1" or
+// "true" is on, anything else — including absent, empty, and a value nobody
+// meant — is off.
+//
+// Deliberately not strconv.ParseBool with a 400 on failure, matching the
+// convention the other handlers in this package already use for flags. These
+// parameters widen a response rather than change what it means, so the safe
+// reading of a malformed one is the default, not a rejected request.
+func queryFlag(r *http.Request, name string) bool {
+	switch r.URL.Query().Get(name) {
+	case "1", "true":
+		return true
+	}
+	return false
+}

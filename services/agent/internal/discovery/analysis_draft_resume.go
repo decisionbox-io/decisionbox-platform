@@ -119,7 +119,9 @@ func (o *Orchestrator) checkpointAreaDraft(ctx context.Context, step models.Anal
 		RunID:              o.runID,
 		Attempt:            o.resume.attemptNumber(),
 		ExplorationAttempt: o.explorationSummaryAttempt,
-		Step:               step,
+		// Stored by the stable id, for the reason the completed-area
+		// checkpoint is. See withCheckpointStableMarks.
+		Step: withCheckpointStableMarks(step, o.checkpointIDByLive),
 	})
 	if err != nil {
 		if errors.Is(err, database.ErrSupersededAttempt) {

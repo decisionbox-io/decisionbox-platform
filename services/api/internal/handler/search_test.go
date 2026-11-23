@@ -1263,3 +1263,112 @@ func TestAsk_NoResolvableCaller_401(t *testing.T) {
 		})
 	}
 }
+
+// TestSearchHandler_Search_CarriesTheDuplicateMarks. A restatement and the row
+// it restates embed almost identically, so a query matching one matches the
+// other and both come back in the same response, adjacent. Every other list in
+// the dashboard folds that pair into one row; search can only do the same if
+// the marks reach the client, and this is exactly the field that was declared
+// on the agent's model and not on the API's, which made the whole suppression
+// inert until it was found in review.
+func TestSearchHandler_Search_CarriesTheDuplicateMarks(t *testing.T) {
+	const (
+		insightID = "33333333-3333-4333-8333-333333333333"
+		recID     = "44444444-4444-4444-8444-444444444444"
+		cleanID   = "55555555-5555-4555-8555-555555555555"
+	)
+
+	projectRepo := &mockProjectRepoForSearch{
+		project: &models.Project{
+			ID:   "proj-1",
+			Name: "Test Project",
+			Embedding: goembedding.ProjectConfig{
+				Provider: "test-embedding",
+				Model:    "test-model",
+			},
+			LLMConfigVersion: llmlayer.ConfigVersion,
+		},
+	}
+	insightRepo := &mockInsightRepo{
+		insights: []*commonmodels.StandaloneInsight{
+			{
+				ID: insightID, ProjectID: "proj-1", DiscoveryID: "disc-2",
+				Name: "Card testing spike", DiscoveredAt: time.Now(),
+				DuplicateOf: "ins-canonical", SimilarityScore: 0.93,
+			},
+			{
+				ID: cleanID, ProjectID: "proj-1", DiscoveryID: "disc-2",
+				Name: "Something new", DiscoveredAt: time.Now(),
+			},
+		},
+	}
+	recRepo := &mockRecommendationRepo{
+		recs: []*commonmodels.StandaloneRecommendation{{
+			ID: recID, ProjectID: "proj-1", DiscoveryID: "disc-2",
+			Title: "Win back the lapsed",
+			// Recommendations are marked by the same pass and were the half
+			// whose marks the API dropped for longer, because nothing read
+			// them: the list page resolves them now.
+			DuplicateOf: "rec-canonical", SimilarityScore: 0.9,
+		}},
+	}
+	vs := &mockVectorStoreForSearch{
+		results: []vectorstore.SearchResult{
+			{ID: insightID, Score: 0.99, Payload: map[string]interface{}{"type": "insight"}},
+			{ID: recID, Score: 0.95, Payload: map[string]interface{}{"type": "recommendation"}},
+			{ID: cleanID, Score: 0.90, Payload: map[string]interface{}{"type": "insight"}},
+		},
+	}
+
+	h := NewSearchHandler(projectRepo, insightRepo, recRepo,
+		&mockSearchHistoryRepo{}, &mockAskSessionRepo{}, &mockSecretProviderForSearch{}, vs)
+
+	body, _ := json.Marshal(searchRequest{Query: "card testing", Limit: 10})
+	req := httptest.NewRequest("POST", "/api/v1/projects/proj-1/search", bytes.NewReader(body))
+	req.SetPathValue("id", "proj-1")
+	w := httptest.NewRecorder()
+	h.Search(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp APIResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	results := resp.Data.(map[string]interface{})["results"].([]interface{})
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	byID := map[string]map[string]interface{}{}
+	for _, r := range results {
+		item := r.(map[string]interface{})
+		byID[item["id"].(string)] = item
+	}
+
+	for _, want := range []struct {
+		id, duplicateOf string
+		score           float64
+	}{
+		{insightID, "ins-canonical", 0.93},
+		{recID, "rec-canonical", 0.9},
+	} {
+		item := byID[want.id]
+		if item["duplicate_of"] != want.duplicateOf {
+			t.Errorf("%s: duplicate_of = %v, want %q — the client cannot fold what it is not told about",
+				want.id, item["duplicate_of"], want.duplicateOf)
+		}
+		if got, _ := item["similarity_score"].(float64); got != want.score {
+			t.Errorf("%s: similarity_score = %v, want %v — the badge shows the score so a reader can disagree with it",
+				want.id, item["similarity_score"], want.score)
+		}
+	}
+
+	// A canonical row carries neither field, so the client's "is this a
+	// restatement" check stays a presence check rather than a value check.
+	for _, field := range []string{"duplicate_of", "similarity_score"} {
+		if _, present := byID[cleanID][field]; present {
+			t.Errorf("a canonical result carried %q: %v", field, byID[cleanID][field])
+		}
+	}
+}

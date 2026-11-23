@@ -2293,3 +2293,39 @@ func formatLookupValue(v interface{}) string {
 	}
 	return s
 }
+
+// ExplorationIntendedOutput is the output ceiling the exploration phase will
+// ask a model for, before it is clamped against a measured input.
+//
+// Exported because the prompt budgets need it. They were reserving the MODEL's
+// output cap for every layer, and exploration does not ask for that: on the
+// non-reasoning path it asks for the catalogued cap bounded by
+// EXPLORATION_MAX_OUTPUT_TOKENS, which defaults to 4,096. A 32K-window model
+// with a 16K cap therefore had 16K reserved against a 4K request, which left no
+// headroom for composed context and skipped every provider — a quality loss
+// with nothing to explain it.
+//
+// One function so the reserve and the request cannot drift: duplicating the
+// ceiling in the discovery package is how they would.
+func ExplorationIntendedOutput(provider, model string, outputCap int, reasoningEffective bool) int {
+	ceiling := gollm.GetMaxOutputTokens(provider, model)
+	envCeiling := config.GetEnvAsInt(explorationMaxOutputTokensEnv, defaultExplorationMaxOutputTokens)
+
+	if reasoningEffective {
+		// The reasoning path asks for the reasoning default, or the operator's
+		// explicitly raised ceiling when that is higher.
+		ceiling = reasoningExplorationOutputTokens
+		if envCeiling > ceiling {
+			ceiling = envCeiling
+		}
+	} else if envCeiling > 0 && ceiling > envCeiling {
+		ceiling = envCeiling
+	}
+	if outputCap > 0 && ceiling > outputCap {
+		ceiling = outputCap
+	}
+	if ceiling < 0 {
+		return 0
+	}
+	return ceiling
+}

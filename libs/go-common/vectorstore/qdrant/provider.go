@@ -38,6 +38,20 @@ type qdrantClient interface {
 	Close() error
 }
 
+// duplicateSearchLimit is how many ranked candidates a duplicate search
+// returns.
+//
+// It was one — the single best match — which is wrong because a suppressed
+// duplicate stays indexed. A document restated N times leaves N-1 hidden rows
+// in the collection, each of them a near-perfect match for the next
+// restatement and each able to outrank the canonical it was folded into. With
+// one result the caller could only refuse the fold, so the feature decayed as
+// the collection filled: the more duplicates a project had, the fewer it could
+// find. Ten lets the caller walk down to the first VISIBLE match — six
+// restatements of one finding is what real data showed, so ten has room —
+// while bounding what one document's check costs.
+const duplicateSearchLimit = 10
+
 // Provider implements vectorstore.Provider using Qdrant.
 type Provider struct {
 	client qdrantClient
@@ -239,9 +253,9 @@ func (p *Provider) FindDuplicates(ctx context.Context, vector []float64, project
 	name := collectionName(len(vector))
 	scoreThreshold := float32(threshold)
 
-	// Excluded in the FILTER rather than by discarding matches afterwards:
-	// the query asks for a single best match, so a post-filter would turn an
-	// excluded hit into no hit at all instead of the next genuine duplicate.
+	// Excluded in the FILTER rather than by discarding matches afterwards: a
+	// post-filter would spend ranked slots on hits the caller has already said
+	// it does not want, instead of returning the next genuine duplicate.
 	mustNot := make([]*pb.Condition, 0, len(excludeDiscoveryIDs))
 	for _, id := range excludeDiscoveryIDs {
 		if id == "" {
@@ -258,7 +272,7 @@ func (p *Provider) FindDuplicates(ctx context.Context, vector []float64, project
 		MustNot: mustNot,
 	}
 
-	dupLimit := uint64(1)
+	dupLimit := uint64(duplicateSearchLimit)
 	scored, err := p.client.Query(ctx, &pb.QueryPoints{
 		CollectionName: name,
 		Query:          pb.NewQueryDense(float64sToFloat32s(vector)),
@@ -450,6 +464,22 @@ func buildFilter(opts vectorstore.SearchOpts) *pb.Filter {
 		mustNot = append(mustNot, pb.NewMatch("source_type", st))
 	}
 
+	// Status exclusions, server-side for the same reason: a point filtered out
+	// afterwards has already taken a slot in the top-K.
+	for _, st := range opts.ExcludeStatuses {
+		if st == "" {
+			continue
+		}
+		mustNot = append(mustNot, pb.NewMatch("status", st))
+	}
+
+	// Id exclusions, in one has-id condition rather than one per id: the caller
+	// passes everything a prompt already carries, which on a large ledger is
+	// hundreds of ids.
+	if ids := pointIDs(opts.ExcludeIDs); len(ids) > 0 {
+		mustNot = append(mustNot, pb.NewHasID(ids...))
+	}
+
 	if len(must) == 0 && len(should) == 0 && len(mustNot) == 0 {
 		return nil
 	}
@@ -459,6 +489,24 @@ func buildFilter(opts vectorstore.SearchOpts) *pb.Filter {
 		Should:  should,
 		MustNot: mustNot,
 	}
+}
+
+// pointIDs converts ids to Qdrant point ids, dropping the blank ones — a blank
+// id excludes nothing and must not reach a has-id condition, where it reads as
+// a real exclusion that silently matches no point.
+//
+// Blankness is judged after trimming, but the id is passed through as given: a
+// whitespace-only id is a caller's mistake, while altering an id that has
+// content would turn one mistake into a different one.
+func pointIDs(ids []string) []*pb.PointId {
+	out := make([]*pb.PointId, 0, len(ids))
+	for _, id := range ids {
+		if strings.TrimSpace(id) == "" {
+			continue
+		}
+		out = append(out, pb.NewID(id))
+	}
+	return out
 }
 
 // float64sToFloat32s converts a float64 slice to float32 for Qdrant.

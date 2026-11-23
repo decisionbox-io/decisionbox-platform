@@ -86,7 +86,7 @@ func TestAnInsightIsScoredAgainstItsOwnAreasConfiguration(t *testing.T) {
 		publishedInsight("i3", "engagement", share("f1")),
 	}
 	for i := range insights {
-		insights[i].Validation = verdictOf(valmodels.StatusConfirmed)
+		insights[i].Validation = validationWithStatus(valmodels.StatusConfirmed)
 	}
 	sc.currencies = plan
 	sc.stepByID = map[int]*models.ExplorationStep{3: {Step: 3, WarehouseID: "default"}}
@@ -150,14 +150,14 @@ func TestARecommendationCarriesTheFlagsOfTheInsightItAddresses(t *testing.T) {
 		publishedInsight("i2", "engagement", pairOf(holdingFigure("f1", 7.5, models.UnitPercent, "", 3))),
 	}
 	for i := range insights {
-		insights[i].Validation = verdictOf(valmodels.StatusConfirmed)
+		insights[i].Validation = validationWithStatus(valmodels.StatusConfirmed)
 	}
 	scoreInsights(insights, sc)
 
 	recs := []models.Recommendation{{
 		ID: "r1", Title: "Fix consent capture",
 		RelatedInsightIDs: []string{"i2", "i1"},
-		Validation:        verdictOf(valmodels.StatusSupported),
+		Validation:        validationWithStatus(valmodels.StatusSupported),
 	}}
 	scoreRecommendations(recs, insights, cfg)
 

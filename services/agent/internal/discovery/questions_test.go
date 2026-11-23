@@ -622,7 +622,7 @@ func TestQuestionsSchema_Shape(t *testing.T) {
 func TestTheDigestCarriesWhatAFindingIsWorth(t *testing.T) {
 	severe := models.Insight{
 		ID: "i1", Name: "Revenue leak", Description: "d",
-		Validation: verdictOf(valmodels.StatusUnverifiable),
+		Validation: validationWithStatus(valmodels.StatusUnverifiable),
 		Scoring: &models.Scoring{
 			ConfidenceBand: models.ConfidenceBandUnverifiable,
 			SeverityBand:   models.SeverityBandHigh,
@@ -633,7 +633,7 @@ func TestTheDigestCarriesWhatAFindingIsWorth(t *testing.T) {
 	legacy := models.Insight{
 		ID: "i2", Name: "Old finding", Description: "d",
 		Severity:   "critical",
-		Validation: verdictOf(valmodels.StatusUnverifiable),
+		Validation: validationWithStatus(valmodels.StatusUnverifiable),
 	}
 
 	items := buildUncertaintyDigest([]models.Insight{severe, legacy}, nil, nil, 0.5)

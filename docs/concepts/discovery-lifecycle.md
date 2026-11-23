@@ -11,12 +11,13 @@ A discovery run is the core operation of DecisionBox. The agent autonomously exp
 | 2. Load schemas | List tables, read schemas from cache | 5-30s |
 | 3. Exploration | AI writes + executes SQL queries | 2-30 min |
 | 4. Analysis | Generate insights per analysis area | 1-5 min |
+| 4.4. Consolidation | Mark the area's restatements of findings this run already has, before validation pays for them | <10s |
 | 4.5. Insight validation | LLM verifier + refuter check insights against row evidence | 1-5 min |
 | 5. Recommendations | Generate actionable advice from supported insights | 1-3 min |
 | 5.5. Recommendation validation | Same verifier + refuter check recommendations | 1-3 min |
 | 6. Update project context | Write rolling context for the next run | <1s |
 | 7. Save | Write results to MongoDB | ~1s |
-| 9. Embed + index | Denormalize insights + recommendations to Qdrant for dashboard search (non-fatal) | 5-30s |
+| 9. Embed + index | Denormalize insights + recommendations to Qdrant for dashboard search, and check for duplicates against earlier runs (non-fatal) | 5-30s |
 
 Total time depends on exploration steps, LLM speed, and warehouse query time. A typical 100-step run with Claude Sonnet takes 5-15 minutes.
 
@@ -256,6 +257,7 @@ No synthetic "you were resumed" message is injected. The replayed transcript *is
 - **A resumed run holds no plan reservation.** The run's charge is keyed on its run id and a resume re-enters that id, so resume is free rather than re-priced. The consequence is that a resumed run is invisible to anything enforcing concurrency through reservations: resume-versus-resume is serialised, and so is a competing run that is already visible, but a deployment whose per-project concurrency is governed by the reservation can still start a fresh run alongside a resumed one. That is accepted for now and revisited with the operator-Pause increment.
 - **Analysis resumes per area, and a failed area is retried rather than restored.** A resumed run restores the areas a previous attempt completed and analyses the rest. Three things follow. An area that failed is re-run, which is deliberate (see above). An area is restored only when the run is skipping exploration — if it has to re-explore, every area is analysed again, because the step numbers its insights cite are about to stop meaning what they meant. And a checkpoint for an area this run is not running, because the project's domain pack changed between attempts or the resume used a narrower area selection, is simply never read.
 - **A run never deduplicates against its own earlier attempts.** The duplicate check runs before the new vectors are upserted and before the superseded attempts are retired, so a predecessor's indexed findings are still there while it runs — and a restored area's insights carry identical text, so they match it outright. The check therefore excludes every discovery *this run* produced, not just the one being written, or the live result would be stamped a duplicate of a row that is deleted moments later. Other runs stay in scope, which is what the check is for. A run with a single attempt excludes exactly what it always did.
+- **Consolidation marks are settled once, after the whole analysis loop.** A restore remints every insight id, so a mark carried over verbatim names a row the attempt does not hold — which renders the finding as suppressed behind a canonical nobody can reach. Settling it per area was wrong for a reason worth recording: the run's analysis areas come out of a MAP, so their order is not stable between attempts, and an area that folded into another can restore BEFORE it. One pass at the end, with every restore's mapping in hand, re-points what it can and clears only what the run genuinely does not hold — together with the `skipped_duplicate` verdict that existed only because of the mark. Phase 9 does not re-decide a mark the consolidation phase made, and will not fold a document another finding already points at: that mark is already written, and re-pointing its dependant at an earlier run's row is not possible there, because that row's vector is not in hand to re-verify against.
 - **Deleting a project takes its analysis checkpoints with it**, alongside the exploration ones — an area checkpoint holds that area's whole prompt, response and validation evidence, so leaving it to the retention TTL would keep a deleted project's reasoning on disk.
 - **Analysis checkpoints alone do not make a run resumable.** Resumability is still decided by the exploration prefix, and that is not an oversight: skipping to analysis means analysing the *replayed* steps, so a run whose exploration rows have expired would analyse nothing and bill the operator for an empty discovery. If the exploration rows go, the area rows become unreachable and age out on their own TTL.
 - **The novelty counters reset.** A cube-reaching resumed run has to re-establish its judged steps. Since that rule can only ever lengthen a run, resume can never end one early. They are not restored from the checkpoints because they cannot be: a novelty judgement is a neighbour search against the index *as it stood at that step*, so re-judging a replayed step against an index that already holds the whole prefix would score it against steps that had not run yet. If a resume cannot drop the previous attempt's vector collection, the index is stood down for that attempt rather than reasoned over: the points that survive the failed drop are steps the replay discarded, and the novelty rule would read them as earlier work and could end the run early — the one thing this rule must never do. Analysis ranking still uses the collection, deliberately: a search error there skips the area entirely, while a stale point can at worst skew a score, because hits are filtered against the run's own step list and the content always comes from it.
@@ -352,6 +354,52 @@ Agent parses insights, assigns IDs (e.g., "churn-1", "churn-2")
 **Markdown descriptions:** The platform instructs the LLM to author each `description` as a small GitHub-Flavored Markdown subset (a bold one-line takeaway, short paragraphs, lists, small sub-headings, simple tables), following a takeaway-first anatomy where the finding supports it. At parse time the agent splits this into two fields: `description` keeps the plain-text reduction (the raw form read by API consumers, previews, and embeddings) and `description_md` keeps the Markdown rendition rendered on the detail view. Plain descriptions leave `description_md` empty.
 
 **If analysis fails** (e.g., LLM timeout), the error is recorded in `analysis_log` and the area is skipped. If ALL areas fail, the run is marked as `run_type: "failed"`. If some fail, it's `run_type: "partial"`. The errors are surfaced in the dashboard as a red banner.
+
+## Phase 4.4: Consolidation
+
+The analysis areas are prompted independently and know nothing of what the others just said, so two of them reporting the same claim in different words is the commonest shape a run's output takes once a project has any history: measured over four consecutive runs of one project, the share of a run's findings that restate an earlier finding *of the same run* is ~7% with no prior findings and 43–48% once there are any.
+
+That matters because validation has a fixed budget. `validateInsights` charges one run-wide counter against `VALIDATION_MAX_INSIGHTS_PER_RUN` while Phase 4.5 runs *inside* the area loop, so the first areas spend it and every area after them is stamped `skipped_budget_cap` — and a capped insight is also dropped from recommendation generation, because that status is neither `validation_disabled` nor in the eligibility set. The end-of-run duplicate check (Phase 9) finds the restatements at 97% progress, by which time both decisions have been made.
+
+So each area is consolidated before it is validated.
+
+```
+Area's insights analysed, repaired, figures settled
+  ↓
+Propose clusters — the area's own insights against each other AND against
+every earlier area of this run — on cosine similarity over the embedded
+text, at DISCOVERY_CONSOLIDATION_ADJUDICATION_MINSCORE (0.80), which sits
+BELOW the fold floor so the pairs a threshold cannot settle are the ones
+the adjudicator is asked about
+  ↓
+Adjudicate each cluster
+    - a registered ConsolidationProvider decides, when one is installed
+    - otherwise the community rule: earliest member canonical, folded on
+      the cosine pair — the same decision Phase 9 would have made
+  ↓
+Write duplicate_of + similarity_score on the area's own insights
+  ↓
+Resolve every mark in the run transitively and re-verify; give the pass's
+own marks back if any of it cannot be proved
+```
+
+**The survivor's own text is never rewritten.** An adjudicator may offer a merged description that folds the restatement's detail into the survivor; it is not applied. Whether a rewritten paragraph still states a particular finding's claim is a question about particular figures, and nothing left in the pass can answer it — a rewrite that turned a folded finding's 33.3% into 38.3% scored well above the fold floor, so similarity accepted it, published the changed figure and suppressed the finding that held the right one. So a verdict that asks for one does not get its folds either: a rewrite is requested precisely when the finding being folded carries a figure or a caveat the survivor does not, and folding without it would suppress exactly that. Both findings stay visible, and the pair is recorded as adjudicated so the end-of-run check does not fold it instead. Every other verdict folds as before, with the survivor's own words untouched.
+
+**It marks; it never deletes.** A consolidated finding is still persisted, still embedded, still indexed, still rendered and still expandable behind its canonical — the same non-destructive contract Phase 9's check keeps. What changes is that validation skips it with `skipped_duplicate` and **no charge against the cap**, and recommendation generation excludes it on the mark rather than on its verdict.
+
+**Why two floors, and not a second test.** The commonest duplicate here is a finding whose entire headline is one ROW of another's table: the surrounding prose differs, so cosine scores it 0.71–0.87 and a 0.88 rule never sees it. That used to be found by a second proposal test — a string scan that pulled the figures out of one headline and asked whether all of them appeared in another's body. The scan read numerals with no idea what they measured, and review found six sentences where it took a quantity for a date or a date for a quantity; because containment asks whether *every* figure of the claim is in the body, each misread removed a constraint and let two different measurements read as one. That judgement is the model's now, and a lower proposal floor is what carries the pairs to it: on two field runs the three folds the scan was earning its place for scored 0.814, 0.831 and 0.858, which `0.80` reaches at 16–17 adjudications a run.
+
+**The pass needs the embedding provider.** Similarity is the only way a pair is proposed, so a finding with no vector is proposed in no pair. An embedding outage costs a run its consolidation rather than its findings — it degrades to a no-op, not to a guess, and the adjudicator is not called.
+
+**Clusters are stars over direct relations, not connected components.** Neither test is transitive. Clustering by transitive closure over the containment relation — A contains B, B contains C, therefore one cluster — proposed suppressing 23 of 55 insights on real run output where the direct relations yield 9. Each cluster is one seed plus the documents directly related to it, and every fold is then re-verified against the canonical the mark will actually point at.
+
+**Only the area being consolidated is marked.** A finding from an area the run has already finished is a legitimate canonical — usually the right one — but never the member that gets suppressed: its verdict is already paid for, its checkpoint is written, and a resume remints its ids. When the adjudicator prefers the later phrasing both findings stand, and the pair is remembered so Phase 9 does not then fold it in the direction the adjudicator rejected.
+
+**Resume.** The marks go into the area draft that is written on the very next line, so a resumed attempt restores them rather than re-deriving them and never calls the provider twice. A restore remints every insight id, so the marks are settled once after the whole analysis loop — not per area, because the run's analysis areas come out of a map and their order is not stable between attempts, so an area that folded into another can restore before it. A mark the run genuinely cannot resolve is cleared, along with the `skipped_duplicate` verdict that existed only because of it.
+
+**One mark a resume cannot always keep.** A mark into an earlier area is STORED by the id that area's own checkpoint holds, so a third attempt can follow it. The case that still loses the fold is narrow and takes two failures: an area whose completed-checkpoint write fails leaves only its draft, a later area's checkpoint then records a fold against that draft's id, and a third attempt remints the first area under a new id with no stored alias from the draft's. `settleRunMarks` clears such a mark rather than leaving it broken, so the finding is visible and unvalidated — which is what an insight that was never checked is, and what it would have been before this phase existed.
+
+`DISCOVERY_CONSOLIDATION_ENABLED` (default on) turns the phase off; the similarity floors are thresholds rather than switches, so neither can express "do not consolidate at all". `DISCOVERY_CONSOLIDATION_ADJUDICATION_MINSCORE` (default 0.80) sets which pairs are eligible to be adjudicated — raising `DISCOVERY_DOCUMENT_DEDUP_MINSCORE` instead changes what the community rule suppresses on its own, which is a different thing. Raising the adjudication floor is not a reliable way to cut calls: clusters are stars over the surviving relations, so removing a pair can split one star into two. `DISCOVERY_CONSOLIDATION_MAX_CLUSTERS` is the hard limit. `DISCOVERY_CONSOLIDATION_MAX_CLUSTERS` (default 60, non-positive for no bound) caps how many clusters one area sends to an adjudicator — each call's prompt is bounded by the layer's input window, but the number of calls grows with the cluster count, and four measured runs proposed about thirty candidate pairs per *run*. Clusters past the bound are not dropped: they get the community rule.
 
 ## Phase 4.5: Insight validation (LLM-native)
 

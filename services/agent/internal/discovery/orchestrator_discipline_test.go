@@ -92,6 +92,7 @@ func TestBuildAnalysisAreaPrompt_SubstitutesAndAppendsDiscipline(t *testing.T) {
 		7,
 		"[{\"step\":1}]",
 		"events_prod",
+		"",
 	)
 	wants := []string{
 		"BASE_CONTEXT_BODY",
@@ -140,7 +141,7 @@ func TestBuildAnalysisAreaPrompt_CustomAreaWithArbitraryBodyStillCarriesRules(t 
 		"Multi\nline\nbody\nwith\nnewlines",
 	}
 	for _, body := range customBodies {
-		got := o.buildAnalysisAreaPrompt("BASE", body, "ds", 0, "[]", "ds")
+		got := o.buildAnalysisAreaPrompt("BASE", body, "ds", 0, "[]", "ds", "")
 		if !strings.Contains(got, discipline.AnalysisRules()) {
 			t.Errorf("custom-area body %q dropped the discipline rules", firstLineOfBaseContextTest(body))
 		}
@@ -159,7 +160,7 @@ func TestBuildAnalysisAreaPrompt_TotalQueriesZero(t *testing.T) {
 	// should return an empty insights array, but the rules document
 	// the constraint).
 	o := newDisciplineOrch()
-	got := o.buildAnalysisAreaPrompt("BASE", "Template {{TOTAL_QUERIES}}", "ds", 0, "[]", "ds")
+	got := o.buildAnalysisAreaPrompt("BASE", "Template {{TOTAL_QUERIES}}", "ds", 0, "[]", "ds", "")
 	if !strings.Contains(got, "Template 0") {
 		t.Errorf("zero totalQueries not substituted into prompt")
 	}
@@ -257,7 +258,7 @@ func TestAllPromptBuildersAppendTheCorrectRuleBlock(t *testing.T) {
 		},
 		{
 			"analysis area",
-			o.buildAnalysisAreaPrompt("BASE", "area", "ds", 1, "[]", "ds"),
+			o.buildAnalysisAreaPrompt("BASE", "area", "ds", 1, "[]", "ds", ""),
 			discipline.AnalysisRules(),
 			[]string{discipline.BaseContextRules(), discipline.RecommendationsRules()},
 		},

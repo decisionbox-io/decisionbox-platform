@@ -352,7 +352,11 @@ Returns a JSON Schema object defining the profile fields (basic_info, gameplay, 
 
 ### GET /api/v1/domains/{domain}/categories/{category}/areas
 
-Get analysis areas for a domain/category.
+Get the analysis areas a **domain pack** declares for a category.
+
+These seed a project's own areas once, at project creation, and the two diverge from then on — a project adds custom areas, switches areas off and deletes custom ones.
+So this endpoint answers "what would a project in this category start with", which is what a flow that picks a category *before* the project exists needs.
+For a project that already exists, read its own areas from [`GET /projects/{id}/prompts`](#get-apiv1projectsidprompts); those, and not these, are what a discovery run can be asked for.
 
 ```bash
 curl http://localhost:8080/api/v1/domains/gaming/categories/match3/areas
@@ -640,6 +644,9 @@ curl "http://localhost:8080/api/v1/projects/507f.../schema-editor/edits?datasour
 
 Get the project's editable prompts. These are copies of the domain pack defaults, customizable per-project.
 
+`analysis_areas` is the project's own set of areas, and it is what a discovery run executes: the agent builds its list from here and skips every entry with `enabled: false`.
+The dashboard's **Run discovery → Select areas** picker and the `areas` field of [`POST /projects/{id}/discover`](#post-apiv1projectsiddiscover) both read these ids, so a custom area added here is runnable and a disabled one is not.
+
 ```bash
 curl http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/prompts
 ```
@@ -706,7 +713,7 @@ Request body (all fields optional):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `areas` | `string[]` | *(all)* | Selective discovery — run only these analysis areas. Empty/omitted = all areas. |
+| `areas` | `string[]` | *(all)* | Selective discovery — run only these analysis areas. Empty/omitted = every **enabled** area. The ids are the project's own (`GET /projects/{id}/prompts` → `analysis_areas`), so a custom area is as runnable as a pack one; an area with `enabled: false` is not. |
 | `max_steps` | `int` | `100` | Maximum exploration steps. |
 | `min_steps` | `int` | `floor(0.6 * max_steps)` | Floor on exploration steps before the agent will accept a `done` signal from the LLM. `0` disables the floor. Recommended for reasoning models (Qwen3, DeepSeek-R1, GPT-OSS) that tend to terminate exploration too early. Must be in `[0, max_steps]` — values outside that range return `400`. |
 
@@ -746,6 +753,10 @@ curl -X POST http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/disc
 
 Returns `409 Conflict` if a discovery is already running for this project.
 Returns `400 Bad Request` if `min_steps` is negative or exceeds `max_steps`.
+
+Returns `400 Bad Request` when `areas` is given and **none** of its ids is an enabled analysis area on the project, naming the ids the project can run.
+Such a run would analyse nothing — the agent drops disabled areas before it matches the requested ids — and then report `completed`, which reads as a result rather than a rejected request.
+A request that names one enabled area and one disabled one still runs; the agent works through the areas it resolved.
 
 ### GET /api/v1/projects/{id}/discoveries
 
@@ -965,6 +976,60 @@ curl -X DELETE http://localhost:8080/api/v1/runs/507f1f77bcf86cd799439012
 ```
 
 ---
+
+## Insights & Recommendations
+
+The denormalised, per-document views of what discovery produced, across every run of a project.
+Each document carries the same id as its copy inside the discovery result, so a link from one reaches the other.
+
+**Marked duplicates are excluded by default.** Phase 9 compares each new insight and recommendation against earlier runs' documents and against the run's own others, and stamps `duplicate_of` plus `similarity_score` on the later one when they are the same thing said twice.
+Those documents are real content and are still indexed for search; they are simply not listed or counted alongside the row they restate.
+Pass `include_duplicates=1` to see them, with the score that hid them — a suppression made on a similarity score is a judgement that can be wrong, and the rows stay auditable rather than disappearing.
+The floor is `DISCOVERY_DOCUMENT_DEDUP_MINSCORE`.
+
+### GET /api/v1/projects/{id}/insights
+
+List a project's insights, newest first.
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `limit` | `50` | Page size. A negative value is `400`. |
+| `offset` | `0` | Rows to skip. A negative value is `400`. |
+| `include_duplicates` | `false` | `1` or `true` also returns documents marked as duplicates. Any other value, including an absent one, is read as false — the parameter widens a response rather than changing what it means, so a value nobody meant is not worth a `400`. |
+
+```bash
+curl "http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/insights?limit=20&include_duplicates=1"
+```
+
+```json
+{
+  "data": [
+    {
+      "id": "9f1c0a52-6c2e-4a1f-9a17-2b7e5d3c8a04",
+      "project_id": "507f1f77bcf86cd799439011",
+      "discovery_id": "507f1f77bcf86cd799439013",
+      "analysis_area": "inventory",
+      "name": "Dead stock concentrated in two sellers",
+      "severity": "high",
+      "affected_count": 42,
+      "duplicate_of": "3a7b1e90-55cd-4f20-8e11-c6d9440a1b77",
+      "similarity_score": 0.93
+    }
+  ]
+}
+```
+
+### GET /api/v1/projects/{id}/insights/{insightId}
+
+Get one insight. Returns `404` when it belongs to another project — and serves a marked duplicate normally, since asking for a document by id is already explicit.
+
+### GET /api/v1/projects/{id}/recommendations
+
+List a project's recommendations, newest first. Same three parameters as the insight listing, with the same defaults.
+
+### GET /api/v1/projects/{id}/recommendations/{recId}
+
+Get one recommendation. Same rules as a single insight.
 
 ## Feedback
 

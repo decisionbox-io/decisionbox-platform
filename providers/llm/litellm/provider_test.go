@@ -3,6 +3,7 @@ package litellm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -218,5 +219,113 @@ func TestLiteLLMProvider_SupportsStructuredOutput(t *testing.T) {
 	meta, _ := gollm.GetProviderMeta("litellm")
 	if !meta.SupportsStructuredOutput {
 		t.Error("litellm should advertise SupportsStructuredOutput (response_format forwarded to backend)")
+	}
+}
+
+// A proxy rejecting the request — a pre-call context-length check, a
+// parameter the model does not take — and a proxy being down both arrive at
+// a caller as an error. Carrying the status is what lets one be answered
+// with a 4xx and the other retried.
+func TestChat_UpstreamRejectionCarriesItsStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"This model's maximum context length is 147456 tokens","type":"invalid_request_error"}}`))
+	}))
+	defer srv.Close()
+
+	p := NewLiteLLMProvider("sk-virtual", "deepseek-v3.1", srv.URL, srv.Client())
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if got := gollm.UpstreamStatus(err); got != http.StatusBadRequest {
+		t.Errorf("UpstreamStatus = %d, want 400", got)
+	}
+	if !gollm.UpstreamClientFault(err) {
+		t.Error("a 400 from the proxy must read as the request being rejected")
+	}
+	var ue *gollm.UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatal("not an UpstreamError")
+	}
+	if ue.Code != "invalid_request_error" {
+		t.Errorf("Code = %q, want the upstream's own classification", ue.Code)
+	}
+}
+
+// A 429 is the one 4xx that means "ask again later", so it must not be
+// reported as the caller's mistake.
+func TestChat_RateLimitIsNotAClientFault(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))
+	}))
+	defer srv.Close()
+
+	p := NewLiteLLMProvider("sk-virtual", "deepseek-v3.1", srv.URL, srv.Client())
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if got := gollm.UpstreamStatus(err); got != http.StatusTooManyRequests {
+		t.Errorf("UpstreamStatus = %d, want 429", got)
+	}
+	if gollm.UpstreamClientFault(err) {
+		t.Error("a 429 must not read as the caller's fault")
+	}
+}
+
+// A server that echoes the key in its error body must not put it into a
+// caller's logs through the typed error.
+func TestChat_UpstreamErrorDoesNotCarryTheCredential(t *testing.T) {
+	const secret = "sk-must-not-leak-0123456789"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid key ` + secret + `","type":"authentication_error"}}`))
+	}))
+	defer srv.Close()
+
+	p := NewLiteLLMProvider(secret, "deepseek-v3.1", srv.URL, srv.Client())
+	_, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages: []gollm.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Errorf("the credential survived into %q", err.Error())
+	}
+}
+
+// Pins the behaviour the call-site comment describes, end to end on the
+// wire. This provider registers no catalog and dispatches any model name,
+// so EVERY model it serves is one the catalog cannot identify — which makes
+// it the provider where "an unknown model's reasoning_effort is dropped"
+// is the rule rather than the exception, and the one whose comment
+// previously claimed the opposite.
+//
+// The point of asserting it here rather than only on the helper: a reader
+// deciding whether to rely on reasoning_effort through this provider wants
+// to know what reaches the proxy, not what a helper returns.
+func TestChat_ReasoningEffortIsOmittedForAnUncataloguedModel(t *testing.T) {
+	var body []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"model":"qwen3.5-27b","choices":[{"message":{"role":"assistant","content":"ok"},` +
+			`"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer srv.Close()
+
+	p := NewLiteLLMProvider("sk-virtual", "qwen3.5-27b", srv.URL, srv.Client())
+	if _, err := p.Chat(context.Background(), gollm.ChatRequest{
+		Messages:        []gollm.Message{{Role: "user", Content: "hi"}},
+		ReasoningEffort: gollm.ReasoningEffortHigh,
+	}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	if strings.Contains(string(body), "reasoning_effort") {
+		t.Errorf("reasoning_effort reached the proxy for an uncatalogued model: %s", body)
 	}
 }

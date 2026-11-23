@@ -68,6 +68,27 @@ func GetEnvAsBool(key string, defaultValue bool) bool {
 	return b
 }
 
+// GetEnvAsFloat reads an environment variable as a float64. An unset or
+// unparseable value yields defaultValue, like the helpers around it: a typo in
+// a tuning knob must not take a service down.
+//
+// The value is trimmed before parsing, which the integer and boolean helpers do
+// not do. That is deliberate rather than inconsistent: these are fractions set
+// by hand in values files and .env lines, and a trailing space turning a
+// configured 0.4 back into the default is a silent misconfiguration with no
+// error anywhere to point at.
+func GetEnvAsFloat(key string, defaultValue float64) float64 {
+	val := strings.TrimSpace(GetEnv(key))
+	if val == "" {
+		return defaultValue
+	}
+	f, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return defaultValue
+	}
+	return f
+}
+
 // GetEnvAsDuration reads an environment variable as a time.Duration.
 func GetEnvAsDuration(key string, defaultValue time.Duration) time.Duration {
 	val := GetEnv(key)

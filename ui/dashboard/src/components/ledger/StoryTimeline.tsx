@@ -6,7 +6,7 @@ import {
   IconBulb, IconExternalLink, IconFlag3, IconGitPullRequest, IconRepeat,
   IconRoute, IconTargetArrow,
 } from '@tabler/icons-react';
-import { GraphRecommendation, GraphTask, LedgerGraph } from '@/lib/api';
+import { GraphRecommendation, GraphRun, GraphTask, LedgerGraph } from '@/lib/api';
 import {
   GraphIndex, RunSighting, RunStory, buildStories, humanise,
   recommendationLink, sightingEvidenceLink,
@@ -24,6 +24,47 @@ import {
 // number sits next to the run it describes instead of in a list of its own.
 
 const MAX_NAMED = 3;
+
+/** The share of what a run surfaced that was new.
+ *
+ *  `marginal_ratio` is NOT that number: it divides a run's new findings by the
+ *  whole active ledger, so it measures how fast the ledger is growing. A run
+ *  that adds ten entirely new findings to a hundred-finding ledger scores 0.09
+ *  there having repeated nothing, and this bar was reading it as "9% new" while
+ *  the tooltip said "10 of 110 findings were new in this run" — a sentence about
+ *  a run that produced ten. `run_findings` is what the run itself surfaced, so
+ *  new over that is the repetition rate.
+ *
+ *  Older runs carry no `run_findings`; there the growth ratio is all there is,
+ *  and the label below says which number it is rather than mislabelling it. */
+export /** Whether this run measured its own novelty at all.
+ *
+ *  `unrecorded_findings` means some of the run's findings never reached the
+ *  ledger, so `new_findings` undercounts while `run_findings` still looks
+ *  positive — two failed writes and one recognised prior finding read as
+ *  "0 of 1: everything was already known", the opposite of what happened. The
+ *  Go side rejects that measurement outright; the UI has to agree with it or
+ *  the page states a rate the API declines to. */
+function hasMeasuredNovelty(run: GraphRun): boolean {
+  return !!run.run_findings && run.run_findings > 0 && !(run.unrecorded_findings ?? 0);
+}
+
+export function runNoveltyFraction(run: GraphRun): number {
+  if (hasMeasuredNovelty(run)) {
+    return Math.min(1, Math.max(0, run.new_findings / (run.run_findings as number)));
+  }
+  return Math.min(1, Math.max(0, run.marginal_ratio ?? 0));
+}
+
+export function runNoveltyLabel(run: GraphRun): string {
+  if (hasMeasuredNovelty(run)) {
+    return `${run.new_findings} of the ${run.run_findings} findings this run surfaced were new — the ledger now holds ${run.total_findings}`;
+  }
+  if ((run.unrecorded_findings ?? 0) > 0) {
+    return `${run.new_findings} new findings recorded, against a ledger of ${run.total_findings} — ${run.unrecorded_findings} of this run's findings never reached the ledger, so its repeat rate is unknown`;
+  }
+  return `${run.new_findings} new findings, against a ledger of ${run.total_findings} — this run did not record how many it surfaced, so its repeat rate is unknown`;
+}
 
 function severityColor(severity?: string): string {
   switch (severity) {
@@ -238,17 +279,14 @@ export default function StoryTimeline({
                     </Badge>
                   )}
                 </Group>
-                <Tooltip
-                  label={`${story.run.new_findings} of ${story.run.total_findings} findings were new in this run`}
-                  openDelay={200}
-                >
+                <Tooltip label={runNoveltyLabel(story.run)} openDelay={200}>
                   <Group gap={6} wrap="nowrap" style={{ width: 150, flexShrink: 0 }}>
                     <Progress
-                      value={Math.round((story.run.marginal_ratio ?? 0) * 100)}
+                      value={Math.round(runNoveltyFraction(story.run) * 100)}
                       size="sm" radius="sm" style={{ flex: 1 }}
                     />
                     <Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
-                      {Math.round((story.run.marginal_ratio ?? 0) * 100)}% new
+                      {Math.round(runNoveltyFraction(story.run) * 100)}% new
                     </Text>
                   </Group>
                 </Tooltip>

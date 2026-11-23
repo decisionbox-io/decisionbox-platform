@@ -42,7 +42,7 @@ func TestAnalysisStepMirrorsEveryAgentCounter(t *testing.T) {
 		t.Fatalf("could not find the agent's AnalysisStep in %s", agentDiscoverySource)
 	}
 
-	// An int field with a bson tag is a counter. Strings, slices and structs are the
+	// An int field with a bson tag is a counter. Strings and slices are the
 	// payload this mirror is allowed to leave out.
 	field := regexp.MustCompile("(?m)^\\s*(\\w+)\\s+int\\s+`bson:\"([a-z0-9_]+)")
 	var want []string
@@ -51,6 +51,18 @@ func TestAnalysisStepMirrorsEveryAgentCounter(t *testing.T) {
 	}
 	if len(want) == 0 {
 		t.Fatal("found no int counters in the agent's AnalysisStep; the regex has stopped matching")
+	}
+
+	// A POINTER TO A STRUCT is a block of counters one level down, and until
+	// the first one appeared this guard could not see them: the rule above
+	// reads top-level ints, so a whole nested summary could be persisted by
+	// the agent and dropped by this mirror with every test still green —
+	// which is the same failure the guard exists for, one struct deeper.
+	// Requiring the FIELD is enough: a mirror that declares it has to declare
+	// a type to decode it into, and the compiler takes it from there.
+	nested := regexp.MustCompile("(?m)^\\s*(\\w+)\\s+\\*\\w+\\s+`bson:\"([a-z0-9_]+)")
+	for _, m := range nested.FindAllSubmatch(block[1], -1) {
+		want = append(want, string(m[2]))
 	}
 
 	have := map[string]bool{}

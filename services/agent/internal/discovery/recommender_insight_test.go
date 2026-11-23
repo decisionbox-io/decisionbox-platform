@@ -36,6 +36,22 @@ var recommenderDroppedInsightFields = map[string]string{
 	"sql_metadata":   "the recommender does not reason over SQL",
 	"discovered_at":  "a timestamp",
 
+	// Phase 9 writes these, and Phase 9 runs AFTER the recommender — so at the
+	// moment this prompt is built they are empty on every insight, and sending
+	// them would put a field in the prompt that is always blank. Worth knowing
+	// if the phase order ever changes: feeding the recommender three wordings
+	// of one finding does bias it toward that subject, and the marks are what
+	// would let it be told.
+	"duplicate_of":     "written by Phase 9, which runs after this prompt is built",
+	"similarity_score": "written by Phase 9, which runs after this prompt is built",
+
+	// Bookkeeping for the consolidation pass: it records that an adjudicator
+	// said this finding must not be folded, so no later fold writer hides it.
+	// The recommender is handed the findings that survived, and what the pass
+	// refused to do to one of them says nothing about the recommendation it
+	// supports.
+	"stands_on_adjudication": "consolidation bookkeeping; says nothing about the finding's own claim",
+
 	// The figures themselves ARE sent -- the contract tells the recommender to
 	// reference them by id. These three are derived from them, and each one
 	// carries the pre-correction number or text, which is the whole reason they

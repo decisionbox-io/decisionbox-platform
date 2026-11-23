@@ -259,8 +259,11 @@ func TestListLLMLayers(t *testing.T) {
 	if got.DefaultLayerKey != llmlayer.DefaultLayer {
 		t.Errorf("default_layer_key = %q, want %q", got.DefaultLayerKey, llmlayer.DefaultLayer)
 	}
-	if len(got.Layers) != 17 {
-		t.Fatalf("layers = %d, want 17", len(got.Layers))
+	// Against the vocabulary rather than a literal: the handler's contract is
+	// that it returns every layer llmlayer defines and filters none, and
+	// llmlayer's own test is what gates adding one.
+	if len(got.Layers) != len(llmlayer.Layers()) {
+		t.Fatalf("layers = %d, want %d — the handler dropped or added one", len(got.Layers), len(llmlayer.Layers()))
 	}
 	// The rule has to reach the UI as data, or the model picker cannot warn
 	// before a save that the API will reject.

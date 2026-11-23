@@ -852,3 +852,85 @@ func TestDiscoveryPhasesFor_TheSourcesEntitlementCountsAsAGate(t *testing.T) {
 		}
 	})
 }
+
+// --- what the resolved-layer log line says about prompt caching ---
+
+// The log line used to read the config value straight through
+// gollm.PromptCacheEnabled, which reports "on" for any value but "false",
+// absence included. Every layer on an openai / litellm / ollama provider
+// therefore logged prompt_cache=true although those providers contain no
+// prompt-cache code — a faithful-looking record of a setting nothing reads.
+func TestPromptCacheLogValueReportsWhatTheProviderImplements(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+		cfg      gollm.ProviderConfig
+		want     string
+	}{
+		// The four Anthropic-wire providers read the key in their
+		// constructors, so the resolved setting is worth reporting.
+		{"claude, nothing configured: caching is on by default", "claude", nil, "true"},
+		{"bedrock, empty config", "bedrock", gollm.ProviderConfig{}, "true"},
+		{"bedrock, on", "bedrock", gollm.ProviderConfig{gollm.PromptCacheKey: "true"}, "true"},
+		{"bedrock, off", "bedrock", gollm.ProviderConfig{gollm.PromptCacheKey: "false"}, "false"},
+		// Same trim and case-fold the providers apply, so the line cannot
+		// disagree with the provider it describes.
+		{"vertex-ai, off in the shape a stored config may carry", "vertex-ai", gollm.ProviderConfig{gollm.PromptCacheKey: " FALSE "}, "false"},
+		{"azure-foundry, off", "azure-foundry", gollm.ProviderConfig{gollm.PromptCacheKey: "false"}, "false"},
+		// These three have no prompt-cache code. The key reaches nothing, so
+		// there is no setting to report whatever the config carries — and the
+		// merged layer config always carries it, because the API pins the
+		// resolved toggle into every row.
+		{"openai, nothing configured", "openai", nil, promptCacheNotApplicable},
+		{"openai, config says on", "openai", gollm.ProviderConfig{gollm.PromptCacheKey: "true"}, promptCacheNotApplicable},
+		{"litellm, config says off", "litellm", gollm.ProviderConfig{gollm.PromptCacheKey: "false"}, promptCacheNotApplicable},
+		{"ollama, nothing configured", "ollama", nil, promptCacheNotApplicable},
+		// A slug this agent image has no provider for — a project configured
+		// by a newer API than the image running the job. Nothing is known
+		// about it, so it claims nothing.
+		{"unregistered provider", "not-a-provider", gollm.ProviderConfig{gollm.PromptCacheKey: "true"}, promptCacheNotApplicable},
+		{"empty provider slug", "", nil, promptCacheNotApplicable},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := promptCacheLogValue(c.provider, c.cfg); got != c.want {
+				t.Errorf("promptCacheLogValue(%q, %v) = %q, want %q", c.provider, c.cfg, got, c.want)
+			}
+		})
+	}
+}
+
+// And for every registered provider, not only the seven named above: the line
+// reports n/a exactly when the provider declares no prompt_cache field. A new
+// provider needs no edit here, and one that gains or loses prompt caching
+// moves the log line with it rather than leaving a list behind to drift.
+func TestPromptCacheLogValueTracksEveryRegisteredProvider(t *testing.T) {
+	metas := gollm.RegisteredProvidersMeta()
+	if len(metas) == 0 {
+		t.Fatal("no LLM providers registered; this test would assert nothing")
+	}
+	implementing := 0
+	for _, m := range metas {
+		declares := slices.ContainsFunc(m.ConfigFields, func(f gollm.ConfigField) bool {
+			return f.Key == gollm.PromptCacheKey
+		})
+		got := promptCacheLogValue(m.ID, nil)
+		switch {
+		case declares:
+			implementing++
+			if got != "true" {
+				t.Errorf("provider %q declares %q, so the line must report the resolved setting; got %q",
+					m.ID, gollm.PromptCacheKey, got)
+			}
+		case got != promptCacheNotApplicable:
+			t.Errorf("provider %q declares no %q field, so it has no prompt-cache setting; the line reported %q",
+				m.ID, gollm.PromptCacheKey, got)
+		}
+	}
+	// The agent server blank-imports all four Anthropic-wire providers, so a
+	// run of this package that found none would mean the registry was not
+	// linked in and the loop above proved nothing.
+	if implementing == 0 {
+		t.Error("no registered provider implements prompt caching; the positive half of this test ran on nothing")
+	}
+}

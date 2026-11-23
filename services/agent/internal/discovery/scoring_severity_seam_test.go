@@ -145,7 +145,7 @@ func TestTheScorerBandsOnTheInsightsOwnCheckedFigures(t *testing.T) {
 	ins := publishedInsight("i1", "revenue",
 		pairOf(amount, amountVerdict), pairOf(share, shareVerdict), pairOf(refuted, refutedVerdict))
 	insights := []models.Insight{ins}
-	insights[0].Validation = verdictOf(valmodels.StatusConfirmed)
+	insights[0].Validation = validationWithStatus(valmodels.StatusConfirmed)
 
 	scoreInsights(insights, sc)
 	got := insights[0]
@@ -191,7 +191,7 @@ func TestAnUndeclaredFigureCannotDriveSeverity(t *testing.T) {
 	ins := publishedInsight("i1", "revenue", pairOf(published, publishedVerdict))
 	ins.Figures = append(ins.Figures, unused)
 	ins.FigureVerdicts = append(ins.FigureVerdicts, unusedVerdict)
-	ins.Validation = verdictOf(valmodels.StatusConfirmed)
+	ins.Validation = validationWithStatus(valmodels.StatusConfirmed)
 
 	insights := []models.Insight{ins}
 	scoreInsights(insights, sc)
@@ -226,7 +226,7 @@ func TestAnAmountFromAnotherDatasourceDoesNotReachTheEngine(t *testing.T) {
 	euro, euroVerdict := holdingFigure("f2", 900_000, models.UnitCurrency, "€", 7)
 
 	ins := publishedInsight("i1", "revenue", pairOf(lira, liraVerdict), pairOf(euro, euroVerdict))
-	ins.Validation = verdictOf(valmodels.StatusConfirmed)
+	ins.Validation = validationWithStatus(valmodels.StatusConfirmed)
 	insights := []models.Insight{ins}
 
 	scoreInsights(insights, sc)
@@ -276,7 +276,7 @@ func TestARemovedSentenceDoesNotDiscardASurvivingAmount(t *testing.T) {
 	// figure and its holding verdict stay.
 	ins.Indicators = nil
 	ins.Repair = &models.InsightRepair{Rounds: 1, Outcome: models.RepairClaimDropped}
-	ins.Validation = verdictOf(valmodels.StatusConfirmed)
+	ins.Validation = validationWithStatus(valmodels.StatusConfirmed)
 
 	insights := []models.Insight{ins}
 	scoreInsights(insights, sc)
@@ -306,7 +306,7 @@ func TestARevalidatedInsightKeepsItsSeverityAndMovesItsPriority(t *testing.T) {
 	// Through the renderer, so the figure is one the prose actually states --
 	// which is what the severity axis requires.
 	ins := publishedInsight("i1", "revenue", pairOf(share, shareVerdict))
-	ins.Validation = verdictOf(valmodels.StatusUnverifiable)
+	ins.Validation = validationWithStatus(valmodels.StatusUnverifiable)
 	insights := []models.Insight{ins}
 	scoreInsights(insights, scoringContext{
 		cfg: testScoringCfg(), currencies: plan, stepByID: stepByID, writer: &usWriter,
@@ -321,7 +321,7 @@ func TestARevalidatedInsightKeepsItsSeverityAndMovesItsPriority(t *testing.T) {
 	// passed to the re-score path -- it has one stored document in hand and no
 	// datasource context -- which is exactly why the severity half has to come
 	// from the stored sub-document rather than be re-derived.
-	target.Validation = verdictOf(valmodels.StatusConfirmed)
+	target.Validation = validationWithStatus(valmodels.StatusConfirmed)
 	rescoreTargetInsight(&target, testScoringCfg())
 
 	if target.Severity != before.SeverityBand {
@@ -367,7 +367,7 @@ func TestARevalidatedLegacyInsightKeepsItsSeverityWord(t *testing.T) {
 		ID: "i1", AnalysisArea: "revenue", Name: "n",
 		Severity:   "critical",
 		RiskScore:  0.9,
-		Validation: verdictOf(valmodels.StatusSupported),
+		Validation: validationWithStatus(valmodels.StatusSupported),
 	}
 	rescoreTargetInsight(&legacy, testScoringCfg())
 
@@ -394,7 +394,7 @@ func TestARevalidatedLegacyInsightKeepsItsSeverityWord(t *testing.T) {
 func TestARevalidatedLegacyRecommendationKeepsItsPriorityInteger(t *testing.T) {
 	legacy := models.Recommendation{
 		ID: "r1", Title: "t", Priority: 2, Severity: "critical",
-		Validation: verdictOf(valmodels.StatusSupported),
+		Validation: validationWithStatus(valmodels.StatusSupported),
 	}
 	rescoreTargetRecommendation(&legacy, testScoringCfg())
 
@@ -461,7 +461,7 @@ func TestARepairedAwayFigureCannotDriveSeverity(t *testing.T) {
 			Figures:        figures,
 			FigureVerdicts: verdicts,
 			FigureTemplate: template,
-			Validation:     verdictOf(valmodels.StatusConfirmed),
+			Validation:     validationWithStatus(valmodels.StatusConfirmed),
 		}}
 		scoreInsights(insights, sc)
 		got := insights[0]
@@ -488,7 +488,7 @@ func TestARepairedAwayFigureCannotDriveSeverity(t *testing.T) {
 				Rounds: 1, Outcome: models.RepairClaimDropped,
 				Dropped: []string{"The top bucket holds 80.00% of orders"},
 			},
-			Validation: verdictOf(valmodels.StatusConfirmed),
+			Validation: validationWithStatus(valmodels.StatusConfirmed),
 		}}
 		scoreInsights(insights, sc)
 		got := insights[0]
@@ -549,7 +549,7 @@ func TestARefutedAmountCannotVetoACheckedOne(t *testing.T) {
 	one := []models.Insight{ins}
 	usWriter.renderInsightFigures(one)
 	ins = one[0]
-	ins.Validation = verdictOf(valmodels.StatusConfirmed)
+	ins.Validation = validationWithStatus(valmodels.StatusConfirmed)
 
 	insights := []models.Insight{ins}
 	scoreInsights(insights, sc)

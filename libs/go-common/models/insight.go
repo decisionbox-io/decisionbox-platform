@@ -66,6 +66,28 @@ type StandaloneInsight struct {
 
 	// Deduplication
 	DuplicateOf     string  `bson:"duplicate_of,omitempty" json:"duplicate_of,omitempty"`
+	// StandsOnAdjudication marks a finding the consolidation adjudicator
+	// decided must not be folded: it asked for the survivor's description to
+	// be rewritten to carry this finding's figure, segment or caveat, and
+	// nothing rewrites a survivor — so folding it would suppress exactly that
+	// detail behind text which does not state it.
+	//
+	// A property of the FINDING rather than of a pair, which is what makes it
+	// hold. The same decision expressed as a protected pair had to be
+	// consulted at every site that writes a mark, with ids that change as
+	// marks are written: review reproduced three ways past it — a fold
+	// redirected through a third document, the community fallback choosing a
+	// different canonical, and a pause and resume, after which the pairs were
+	// gone because they only ever lived in memory. This travels with the
+	// insight, through the area draft and the checkpoint, so none of those
+	// reach it.
+	//
+	// The cost is that such a finding is not folded into anything for the rest
+	// of the run, where the pair rule would have left it foldable into some
+	// other survivor. That is a duplicate left visible, which the end-of-run
+	// check can still collapse; the error it replaces is a finding hidden
+	// behind text that misstates it.
+	StandsOnAdjudication bool `bson:"stands_on_adjudication,omitempty" json:"stands_on_adjudication,omitempty"`
 	SimilarityScore float64 `bson:"similarity_score,omitempty" json:"similarity_score,omitempty"`
 
 	DiscoveredAt time.Time `bson:"discovered_at" json:"discovered_at"`
@@ -80,6 +102,24 @@ type InsightSQLMetadata struct {
 
 // BuildEmbeddingText returns the text to embed for semantic search.
 func (i *StandaloneInsight) BuildEmbeddingText() string {
+	return InsightEmbeddingText(i.Name, i.Description, i.AnalysisArea, i.Severity, i.TargetSegment)
+}
+
+// InsightEmbeddingText renders what an insight is, as the duplicate check and
+// the semantic index see it.
+//
+// A free function over the five fields rather than a method, because the
+// in-flight insight the agent carries mid-run and the denormalised
+// StandaloneInsight persisted at the end of a run are different types holding
+// the same five values — and a duplicate check that runs on one of them while
+// the index is built from the other has to be comparing the same derivation.
+// Two Sprintfs of the same shape in two packages is exactly how the two come
+// to disagree about whether two documents are the same document: the same
+// discipline magnitudeOf exists for on the quantitative side.
+//
+// Changing this format changes every stored embedding's meaning, so a change
+// here is a re-index, not an edit.
+func InsightEmbeddingText(name, description, area, severity, segment string) string {
 	return fmt.Sprintf("%s. %s. Area: %s. Severity: %s. Segment: %s.",
-		i.Name, i.Description, i.AnalysisArea, i.Severity, i.TargetSegment)
+		name, description, area, severity, segment)
 }

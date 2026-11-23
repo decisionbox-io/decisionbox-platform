@@ -3,6 +3,7 @@ package agentserver
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	gollm "github.com/decisionbox-io/decisionbox/libs/go-common/llm"
@@ -310,11 +311,33 @@ func buildLayerSet(ctx context.Context, in layerSetInput) (*layerSet, error) {
 			"window":       l.Window,
 			"output_cap":   l.OutputCap,
 			"reasoning":    l.Reasoning,
-			"prompt_cache": gollm.PromptCacheEnabled(l.Config),
+			"prompt_cache": promptCacheLogValue(l.Provider, l.Config),
 		}).Info("Layer LLM resolved")
 	}
 
 	return set, nil
+}
+
+// promptCacheNotApplicable is what the resolved-layer log line reports for a
+// provider that has no prompt-cache setting to report.
+const promptCacheNotApplicable = "n/a"
+
+// promptCacheLogValue renders one layer's prompt-cache setting for the
+// resolved-layer log line: the resolved on/off where the provider implements
+// the directive, and promptCacheNotApplicable where it does not.
+//
+// The gate is the point. PromptCacheEnabled on its own reports on for any
+// config value but "false", absence included, so logging it unconditionally
+// printed prompt_cache=true for openai, litellm and ollama — providers that
+// contain no prompt-cache code, where nothing reads the key. That is a
+// faithful-looking record of a setting that does not exist on the path, and it
+// has already sent one investigation looking for cache directives that were
+// never sent.
+func promptCacheLogValue(provider string, cfg gollm.ProviderConfig) string {
+	if !gollm.PromptCacheImplemented(provider) {
+		return promptCacheNotApplicable
+	}
+	return strconv.FormatBool(gollm.PromptCacheEnabled(cfg))
 }
 
 // layerPhase is the usage-log phase a layer's calls are attributed to.
