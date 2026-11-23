@@ -944,6 +944,7 @@ func assertSortIsIndexed(t *testing.T, sort string) {
 		t.Errorf("the %q sort is served by some other index than the one declared for it.\nWinning plan: %s",
 			sort, stages)
 	}
+}
 
 // TestInteg_DuplicateSuppression is the real-MongoDB half of hiding documents
 // already marked as duplicates, and it has to be a real Mongo: the whole
