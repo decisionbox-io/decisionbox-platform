@@ -1,0 +1,180 @@
+package wellknown
+
+import (
+	"encoding/json"
+	"sync"
+	"testing"
+)
+
+func TestGet_NothingRegistered(t *testing.T) {
+	ResetForTest()
+
+	cfg, ok := Get()
+	if ok {
+		t.Fatalf("Get() ok = true with nothing registered, want false")
+	}
+	// The zero Config must be inert: a caller that ignores ok and reads the
+	// value anyway has to see an empty auth type, never a half-built OIDC
+	// block it might advertise.
+	if cfg.Auth.Type != "" {
+		t.Errorf("zero Config Auth.Type = %q, want empty", cfg.Auth.Type)
+	}
+	if cfg.Auth.OIDC != nil {
+		t.Errorf("zero Config Auth.OIDC = %+v, want nil", cfg.Auth.OIDC)
+	}
+	if cfg.Branding != nil {
+		t.Errorf("zero Config Branding = %s, want nil", cfg.Branding)
+	}
+}
+
+func TestRegister_RoundTrips(t *testing.T) {
+	ResetForTest()
+
+	want := Config{
+		Auth: Auth{
+			Type: AuthTypeOIDC,
+			OIDC: &OIDC{
+				Issuer:         "https://id.example/realms/decisionbox",
+				MobileClientID: "decisionbox-mobile",
+				Scopes:         []string{"openid", "profile", "email", "roles"},
+				Audience:       "decisionbox-api",
+			},
+		},
+		Branding: json.RawMessage(`{"name":"Acme"}`),
+	}
+	Register(want)
+
+	got, ok := Get()
+	if !ok {
+		t.Fatalf("Get() ok = false after Register, want true")
+	}
+	if got.Auth.Type != AuthTypeOIDC {
+		t.Errorf("Auth.Type = %q, want %q", got.Auth.Type, AuthTypeOIDC)
+	}
+	if got.Auth.OIDC == nil {
+		t.Fatalf("Auth.OIDC = nil, want the registered block")
+	}
+	if got.Auth.OIDC.Issuer != want.Auth.OIDC.Issuer {
+		t.Errorf("Issuer = %q, want %q", got.Auth.OIDC.Issuer, want.Auth.OIDC.Issuer)
+	}
+	if got.Auth.OIDC.MobileClientID != want.Auth.OIDC.MobileClientID {
+		t.Errorf("MobileClientID = %q, want %q", got.Auth.OIDC.MobileClientID, want.Auth.OIDC.MobileClientID)
+	}
+	if got.Auth.OIDC.Audience != want.Auth.OIDC.Audience {
+		t.Errorf("Audience = %q, want %q", got.Auth.OIDC.Audience, want.Auth.OIDC.Audience)
+	}
+	if len(got.Auth.OIDC.Scopes) != 4 {
+		t.Errorf("Scopes = %v, want 4 entries", got.Auth.OIDC.Scopes)
+	}
+	if string(got.Branding) != `{"name":"Acme"}` {
+		t.Errorf("Branding = %s, want the registered blob verbatim", got.Branding)
+	}
+}
+
+func TestRegister_OIDCWithEmptyMobileClientIsStillOIDC(t *testing.T) {
+	ResetForTest()
+
+	// The invariant is about the MODE, not about the mobile client: a
+	// deployment that enables auth but never provisioned a mobile client
+	// must still advertise "oidc", or a client would attempt anonymous
+	// access against an API that enforces auth.
+	Register(Config{Auth: Auth{
+		Type: AuthTypeOIDC,
+		OIDC: &OIDC{Issuer: "https://id.example", MobileClientID: ""},
+	}})
+
+	got, ok := Get()
+	if !ok || got.Auth.Type != AuthTypeOIDC {
+		t.Fatalf("Auth.Type = %q (ok=%v), want %q", got.Auth.Type, ok, AuthTypeOIDC)
+	}
+	if got.Auth.OIDC == nil || got.Auth.OIDC.MobileClientID != "" {
+		t.Errorf("OIDC = %+v, want a non-nil block with an empty mobile client id", got.Auth.OIDC)
+	}
+}
+
+func TestRegister_LastWriterWins(t *testing.T) {
+	ResetForTest()
+
+	Register(Config{Auth: Auth{Type: AuthTypeNone}})
+	Register(Config{Auth: Auth{
+		Type: AuthTypeOIDC,
+		OIDC: &OIDC{Issuer: "https://second.example"},
+	}})
+
+	got, _ := Get()
+	if got.Auth.Type != AuthTypeOIDC {
+		t.Errorf("Auth.Type = %q, want the second registration (%q)", got.Auth.Type, AuthTypeOIDC)
+	}
+	if got.Auth.OIDC == nil || got.Auth.OIDC.Issuer != "https://second.example" {
+		t.Errorf("OIDC = %+v, want the second registration's issuer", got.Auth.OIDC)
+	}
+}
+
+func TestRegister_StoresACopy(t *testing.T) {
+	ResetForTest()
+
+	cfg := Config{Auth: Auth{Type: AuthTypeOIDC, OIDC: &OIDC{Issuer: "https://id.example"}}}
+	Register(cfg)
+	// Mutating the caller's struct after registering must not reach the
+	// registry: Register takes a copy precisely so a build that reuses its
+	// config value cannot retroactively change what the endpoint serves.
+	cfg.Auth.Type = AuthTypeNone
+
+	if got, _ := Get(); got.Auth.Type != AuthTypeOIDC {
+		t.Errorf("Auth.Type = %q after mutating the caller's copy, want %q", got.Auth.Type, AuthTypeOIDC)
+	}
+}
+
+func TestGet_ReturnsACopy(t *testing.T) {
+	ResetForTest()
+
+	Register(Config{Auth: Auth{Type: AuthTypeOIDC, OIDC: &OIDC{Issuer: "https://id.example"}}})
+
+	first, _ := Get()
+	first.Auth.Type = AuthTypeNone
+
+	if second, _ := Get(); second.Auth.Type != AuthTypeOIDC {
+		t.Errorf("Auth.Type = %q after a caller mutated an earlier Get, want %q", second.Auth.Type, AuthTypeOIDC)
+	}
+}
+
+func TestResetForTest_Clears(t *testing.T) {
+	ResetForTest()
+
+	Register(Config{Auth: Auth{Type: AuthTypeOIDC, OIDC: &OIDC{Issuer: "https://id.example"}}})
+	if _, ok := Get(); !ok {
+		t.Fatalf("Get() ok = false after Register, want true")
+	}
+
+	ResetForTest()
+	if _, ok := Get(); ok {
+		t.Errorf("Get() ok = true after ResetForTest, want false")
+	}
+}
+
+// TestConcurrentRegisterAndGet is the -race guard. Registration happens at
+// init() in production, but the endpoint reads it on every request, and the
+// read path must be safe against a build (or a test) that registers late.
+func TestConcurrentRegisterAndGet(t *testing.T) {
+	ResetForTest()
+
+	const goroutines = 8
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 2)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			Register(Config{Auth: Auth{
+				Type: AuthTypeOIDC,
+				OIDC: &OIDC{Issuer: "https://id.example", Scopes: []string{"openid"}},
+			}})
+		}()
+		go func() {
+			defer wg.Done()
+			if cfg, ok := Get(); ok && cfg.Auth.Type != AuthTypeOIDC {
+				t.Errorf("Auth.Type = %q, want %q", cfg.Auth.Type, AuthTypeOIDC)
+			}
+		}()
+	}
+	wg.Wait()
+}
