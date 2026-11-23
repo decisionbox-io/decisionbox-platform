@@ -379,11 +379,24 @@ func NewWithRouteGroups(db *database.DB, healthHandler *health.Handler, secretPr
 	// first request.
 	mountRouteGroups(mux, routeGroups)
 
-	// Combine: health (no auth) + app (with auth + RBAC)
+	// Combine: health + discovery (no auth) + app (with auth + RBAC)
 	root := http.NewServeMux()
 	root.Handle("/health", healthMux)
 	root.Handle("/health/", healthMux)
 	root.Handle("/api/v1/health", healthMux)
+	// Client discovery: unauthenticated, mounted on root BEFORE the
+	// auth-wrapped catch-all so a client can read the deployment's API
+	// version, feature set and auth mode before it has credentials.
+	//
+	// Mounted via an exact-path sub-mux (like healthMux) rather than
+	// straight onto root, so the path is fully owned for every method: GET
+	// is served, and any other method gets a 405 from the sub-mux instead
+	// of falling through "/" into the auth chain — where an unauthenticated
+	// POST would answer 401 and tell a client the endpoint needs a login it
+	// does not need.
+	discoveryMux := http.NewServeMux()
+	discoveryMux.HandleFunc("GET /.well-known/decisionbox", handler.WellKnown)
+	root.Handle("/.well-known/decisionbox", discoveryMux)
 	// Advanced-RBAC (#321) middleware chain, applied after the auth provider
 	// attaches the principal:
 	//   1. ResolvePermissionsMiddleware — resolve roles → permissions + append
@@ -572,7 +585,9 @@ func askWithOverride(fallback http.HandlerFunc) http.HandlerFunc {
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		// PATCH is in the list for the ask-session rename route below; without
+		// it a browser preflight refuses the request before it is ever sent.
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 		if r.Method == "OPTIONS" {

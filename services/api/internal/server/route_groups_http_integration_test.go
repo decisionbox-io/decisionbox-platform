@@ -15,8 +15,8 @@ import (
 	"github.com/decisionbox-io/decisionbox/libs/go-common/health"
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
 	gosecrets "github.com/decisionbox-io/decisionbox/libs/go-common/secrets"
-	"github.com/decisionbox-io/decisionbox/services/api/database"
 	mongoSecrets "github.com/decisionbox-io/decisionbox/providers/secrets/mongodb"
+	"github.com/decisionbox-io/decisionbox/services/api/database"
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"
 )
 
@@ -26,7 +26,9 @@ import (
 // tests pin individual functions; this one pins the wiring — registry
 // to server.NewWithRouteGroups to a real HTTP request.
 
-var routeGroupsTestDB *database.DB
+// integTestDB is the Mongo-backed handle shared by every integration test in
+// this package; TestMain below owns the container's lifetime.
+var integTestDB *database.DB
 
 func TestMain(m *testing.M) {
 	ctx := context.Background()
@@ -48,8 +50,8 @@ func TestMain(m *testing.M) {
 	}
 	defer func() { _ = client.Disconnect(ctx) }()
 
-	routeGroupsTestDB = database.New(client)
-	if err := database.InitDatabase(ctx, routeGroupsTestDB); err != nil {
+	integTestDB = database.New(client)
+	if err := database.InitDatabase(ctx, integTestDB); err != nil {
 		fmt.Fprintf(os.Stderr, "InitDatabase failed: %v\n", err)
 		os.Exit(1)
 	}
@@ -67,7 +69,7 @@ func TestInteg_RouteGroups_MountedThroughFullServerPipeline(t *testing.T) {
 
 	// Boot a minimal server with the route group attached. NoAuth means
 	// every route runs as admin, so we don't need to assemble a token.
-	secretProvider, err := mongoSecrets.NewMongoProvider(routeGroupsTestDB.Collection("secrets"), "test", "")
+	secretProvider, err := mongoSecrets.NewMongoProvider(integTestDB.Collection("secrets"), "test", "")
 	if err != nil {
 		t.Fatalf("secret provider: %v", err)
 	}
@@ -75,10 +77,10 @@ func TestInteg_RouteGroups_MountedThroughFullServerPipeline(t *testing.T) {
 	var _ gosecrets.Provider = secretProvider
 
 	authProvider := auth.NewNoAuthProvider()
-	healthHandler := health.NewHandler(database.NewMongoHealthChecker(routeGroupsTestDB))
+	healthHandler := health.NewHandler(database.NewMongoHealthChecker(integTestDB))
 
 	handler := NewWithRouteGroups(
-		routeGroupsTestDB,
+		integTestDB,
 		healthHandler,
 		secretProvider,
 		authProvider,
