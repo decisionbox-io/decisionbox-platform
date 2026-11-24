@@ -33,6 +33,10 @@ type MutationInput struct {
 	TurnID    string
 	CallerSub string
 	Args      map[string]any
+	// Query re-reads a result this turn observed, for a tool that needs more of
+	// it than the turn's bounded preview carries. Bound by the loop, which owns
+	// the warehouse connections. See mutation_query.go.
+	Query MutationQuery
 }
 
 // MutationOutput is a mutation tool's result: an optional approvable proposal id
@@ -135,7 +139,7 @@ func mutationDefs(tools []MutationTool) []gollm.ToolDefinition {
 // execMutation runs one mutation tool call and records a (non-grounding) tool
 // event carrying any proposal id it produced. A failure is surfaced to the model
 // as a tool error so it can retry or explain, never crashing the turn.
-func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationTool, tc gollm.ToolCall) string {
+func (r *runner) execMutation(ctx context.Context, rt *ProjectRuntime, st *turnState, mt MutationTool, tc gollm.ToolCall) string {
 	// Hand the executor its OWN copy of the args: a plugin that normalizes/defaults
 	// them in place must not mutate the model's input, so the persisted event keeps
 	// the pristine args the model emitted (replay/audit) and tc.Input is untouched.
@@ -147,6 +151,7 @@ func (r *runner) execMutation(ctx context.Context, st *turnState, mt MutationToo
 		TurnID:    st.req.TurnID,
 		CallerSub: st.req.CallerSub,
 		Args:      cloneArgs(tc.Input),
+		Query:     r.mutationQuery(rt, st),
 	})
 	ev.LatencyMS = time.Since(start).Milliseconds()
 	if err != nil {

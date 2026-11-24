@@ -777,7 +777,7 @@ func (r *runner) runWithTools(ctx context.Context, rt *ProjectRuntime, st *turnS
 					results = append(results, gollm.ToolResult{CallID: tc.ID, Content: "Call " + tc.Name + " on its own step — not alongside any other tool call (query, search, lookup, another write, or answer). First observe the results you want to record, then call it alone.", IsError: true})
 					continue
 				}
-				obs := r.execMutation(ctx, st, mt, tc)
+				obs := r.execMutation(ctx, rt, st, mt, tc)
 				if ctx.Err() != nil {
 					r.finishTimeout(ctx, st)
 					return

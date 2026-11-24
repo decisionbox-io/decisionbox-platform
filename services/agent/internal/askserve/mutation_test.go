@@ -523,7 +523,7 @@ func TestExecMutation_ArgMutationIsolatedFromInputAndEvent(t *testing.T) {
 	tc := gollm.ToolCall{ID: "1", Name: "save_note", Input: map[string]any{"title": "T", "body": "B"}}
 	st := &turnState{req: TurnRequest{TurnID: "t", ProjectID: "p"}}
 	st.deferWrite(tc)
-	r.execMutation(context.Background(), st, mt, tc)
+	r.execMutation(context.Background(), bareRuntime(), st, mt, tc)
 
 	if st.hasPendingWrite() {
 		t.Fatal("a completed write must clear its pending entry")
@@ -617,7 +617,7 @@ func TestExecMutation_FailureIsNotGrounding(t *testing.T) {
 		return MutationOutput{}, errors.New("mongo down")
 	}}
 	st := &turnState{req: TurnRequest{TurnID: "t", ProjectID: "p"}}
-	obs := r.execMutation(context.Background(), st, mt, gollm.ToolCall{ID: "1", Name: "save_note", Input: map[string]any{"title": "T"}})
+	obs := r.execMutation(context.Background(), bareRuntime(), st, mt, gollm.ToolCall{ID: "1", Name: "save_note", Input: map[string]any{"title": "T"}})
 	if !strings.Contains(obs, "failed") {
 		t.Fatalf("failure should report failed, got %q", obs)
 	}
@@ -635,7 +635,7 @@ func TestExecMutation_SuccessUnlocksAnswerButDoesNotGround(t *testing.T) {
 		return MutationOutput{ProposalID: "p9"}, nil
 	}}
 	st := &turnState{req: TurnRequest{TurnID: "t", ProjectID: "p"}}
-	r.execMutation(context.Background(), st, mt, gollm.ToolCall{ID: "1", Name: "save_note", Input: map[string]any{}})
+	r.execMutation(context.Background(), bareRuntime(), st, mt, gollm.ToolCall{ID: "1", Name: "save_note", Input: map[string]any{}})
 	if st.mutationsDone != 1 {
 		t.Fatalf("mutationsDone = %d, want 1", st.mutationsDone)
 	}
@@ -743,7 +743,7 @@ func TestExecMutation_ToolSuppliedAckWinsOnAnUngroundedFinish(t *testing.T) {
 			return MutationOutput{Output: map[string]any{"report_id": "r1"}, Ack: "Your report is ready."}, nil
 		},
 	}
-	r.execMutation(context.Background(), st, mt, gollm.ToolCall{ID: "t1", Name: "generate_report"})
+	r.execMutation(context.Background(), bareRuntime(), st, mt, gollm.ToolCall{ID: "t1", Name: "generate_report"})
 
 	if st.mutationAck != "Your report is ready." {
 		t.Fatalf("the tool's acknowledgement was not kept, got %q", st.mutationAck)
@@ -780,7 +780,7 @@ func TestExecMutation_NoProposalCompletesButIsNotSaved(t *testing.T) {
 	tc := gollm.ToolCall{ID: "1", Name: "save_note", Input: map[string]any{}}
 	st := &turnState{req: TurnRequest{TurnID: "t", ProjectID: "p"}}
 	st.deferWrite(tc) // this write was deferred earlier
-	obs := r.execMutation(context.Background(), st, mt, tc)
+	obs := r.execMutation(context.Background(), bareRuntime(), st, mt, tc)
 
 	if st.mutationsDone != 1 || !st.canAnswer() {
 		t.Fatalf("a completed no-op mutation should let the turn finish (done=%d canAnswer=%v)", st.mutationsDone, st.canAnswer())
@@ -852,3 +852,9 @@ func TestBuildSystemPromptForTools_MutationCapabilityLine(t *testing.T) {
 		t.Fatalf("a reserved-named mutation tool must not be described in the prompt:\n%s", out3)
 	}
 }
+
+// bareRuntime is a project runtime with no datasources, for the execMutation
+// tests that exercise the write plumbing rather than the re-read it binds. A
+// tool that did call through would be told the datasource is not configured,
+// which is the right answer for a runtime that has none.
+func bareRuntime() *ProjectRuntime { return NewProjectRuntime(ProjectRuntimeOptions{}) }

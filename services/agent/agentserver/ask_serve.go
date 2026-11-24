@@ -431,6 +431,7 @@ func buildMutationTools(db *mongo.Database) []askserve.MutationTool {
 					CallerSub: in.CallerSub,
 					Args:      in.Args,
 					Mongo:     db,
+					Query:     adaptMutationQuery(in.Query),
 				})
 				if err != nil {
 					return askserve.MutationOutput{}, err
@@ -440,6 +441,29 @@ func buildMutationTools(db *mongo.Database) []askserve.MutationTool {
 		})
 	}
 	return out
+}
+
+// adaptMutationQuery bridges the loop's re-read to the registry's shape. The
+// two are declared separately so askserve does not depend on the plugin
+// registry, exactly as MutationTool and askmutation.Tool already are.
+//
+// A nil in stays nil out: a tool must be able to see that no re-read was bound
+// rather than call through to a func that panics.
+func adaptMutationQuery(q askserve.MutationQuery) gomutation.QueryFunc {
+	if q == nil {
+		return nil
+	}
+	return func(ctx context.Context, req gomutation.QueryRequest) (*gomutation.QueryResult, error) {
+		res, err := q(ctx, askserve.MutationQueryRequest{
+			DatasourceID: req.DatasourceID,
+			SQL:          req.SQL,
+			MaxRows:      req.MaxRows,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &gomutation.QueryResult{Columns: res.Columns, Rows: res.Rows, RowCount: res.RowCount}, nil
+	}
 }
 
 // sourcesKnowledgeAdapter adapts the go-common knowledge-sources provider to the
