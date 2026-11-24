@@ -25,7 +25,7 @@ import (
 //
 // A dataset that cannot be read is skipped rather than failing the whole
 // listing, but it is NAMED in unlisted_datasets so the caller knows the
-// catalogue is incomplete. Only an all-datasets failure is an error. The names are qualified with the same
+// catalogue is incomplete — see enumerateTables. The names are qualified with the same
 // RefQualifier the indexer/discovery use, so a scope saved from this list
 // matches the schema_key form the index and the run-time filters key on.
 //
@@ -86,64 +86,18 @@ func runListTables(cfg *config.Config, projectID, warehouseID string) error {
 	// schema_key the index and scope filters use.
 	qualifier, hasQualifier := provider.(gowarehouse.RefQualifier)
 
-	datasets := wh.GetDatasets()
-	seen := make(map[string]struct{})
-	tables := make([]string, 0)
-	listed := 0
-	// unlisted names the datasets that could not be read. A skipped dataset is
-	// reported alongside the names that DID list, because a caller choosing
-	// which tables to index has to tell "this dataset has no tables" from "we
-	// could not read this dataset" — silently omitting it offers an incomplete
-	// catalogue as a complete one.
-	unlisted := make([]string, 0)
-	var lastErr error
-	for _, dataset := range datasets {
-		names, err := provider.ListTablesInDataset(whCtx, dataset)
-		if err != nil {
-			// One bad dataset shouldn't blank the whole picker — skip it and
-			// keep listing the others (mirrors discovery's per-dataset skip).
-			lastErr = err
-			unlisted = append(unlisted, dataset)
-			continue
+	qualify := func(dataset, name string) string {
+		if hasQualifier {
+			return qualifier.QualifiedName(dataset, name)
 		}
-		// Apply any registered ListTables filters (the same hook the index pass
-		// uses at schema_discovery.go), so a governance/policy allow-deny list is
-		// honoured by the picker too — the operator can't scope to a table the
-		// deployment forbids. The user-editable discovery-scope filter is a
-		// no-op here (its repo isn't wired in --list-tables mode, so it passes
-		// through) — deliberately, so the picker still shows the full set to
-		// choose a scope from. A filter error skips the dataset like a list error.
-		filtered, ferr := agentplugin.ApplyListTablesFilters(whCtx, projectID, dataset, names)
-		if ferr != nil {
-			lastErr = ferr
-			unlisted = append(unlisted, dataset)
-			continue
-		}
-		names = filtered
-		listed++
-		for _, name := range names {
-			qualified := dataset + "." + name
-			if hasQualifier {
-				qualified = qualifier.QualifiedName(dataset, name)
-			}
-			if _, dup := seen[qualified]; dup {
-				continue
-			}
-			seen[qualified] = struct{}{}
-			tables = append(tables, qualified)
-		}
+		return dataset + "." + name
 	}
-	// If the warehouse has datasets but NONE could be listed (bad credentials,
-	// unreachable warehouse, or the deadline hit while listing the only one),
-	// surface the failure instead of a misleading success with zero tables — the
-	// API relays it so the picker shows an error rather than a silent empty list.
-	// A warehouse that genuinely has no datasets configured returns an empty list
-	// (no error).
-	if listed == 0 && len(datasets) > 0 {
-		return fmt.Errorf("list tables: all %d dataset(s) failed to list; last error: %w", len(datasets), lastErr)
+
+	tables, unlisted, err := enumerateTables(whCtx, projectID, wh.GetDatasets(),
+		provider.ListTablesInDataset, agentplugin.ApplyListTablesFilters, qualify)
+	if err != nil {
+		return err
 	}
-	sort.Strings(tables)
-	sort.Strings(unlisted)
 
 	// unlisted_datasets is always present (empty when every dataset listed), so a
 	// caller can tell a complete enumeration from one this agent is too old to
@@ -159,4 +113,70 @@ func runListTables(cfg *config.Config, projectID, warehouseID string) error {
 	}
 	fmt.Println(string(out))
 	return nil
+}
+
+// enumerateTables lists each dataset through list, applies the registered
+// ListTables filters, and returns the qualified names sorted and deduped,
+// alongside the datasets that could not be read.
+//
+// A dataset that fails to list — or whose filter errors — is SKIPPED rather
+// than failing the whole enumeration: one unreadable schema shouldn't blank a
+// picker the other schemas can fill. But it is named in unlisted, because a
+// caller choosing which tables to index has to be able to tell "this dataset
+// has no tables" from "we could not read this dataset"; a silent omission
+// offers an incomplete catalogue as a complete one.
+//
+// Only an all-datasets failure is an error, so an unreachable warehouse or a
+// bad credential reads as the failure it is rather than a success with zero
+// tables. A warehouse with no datasets configured is an empty success.
+//
+// filter is agentplugin.ApplyListTablesFilters in production — passed in rather
+// than called directly so this is testable without mutating a process-global
+// registry that has no un-register.
+//
+// Those filters are the same hook the index pass uses (see schema_discovery.go),
+// so a governance/policy allow-deny list is honoured here too — the operator
+// can't pick a table the deployment forbids. The user-editable table-scope
+// filter is a no-op in this mode (its repo isn't wired when the agent runs
+// --list-tables, so it passes through), deliberately: the picker has to show
+// the full set to choose a scope FROM.
+func enumerateTables(
+	ctx context.Context,
+	projectID string,
+	datasets []string,
+	list func(ctx context.Context, dataset string) ([]string, error),
+	filter func(ctx context.Context, projectID, dataset string, in []string) ([]string, error),
+	qualify func(dataset, name string) string,
+) (tables, unlisted []string, err error) {
+	seen := make(map[string]struct{})
+	tables = make([]string, 0)
+	unlisted = make([]string, 0)
+	listed := 0
+	var lastErr error
+	for _, dataset := range datasets {
+		names, lerr := list(ctx, dataset)
+		if lerr == nil {
+			names, lerr = filter(ctx, projectID, dataset, names)
+		}
+		if lerr != nil {
+			lastErr = lerr
+			unlisted = append(unlisted, dataset)
+			continue
+		}
+		listed++
+		for _, name := range names {
+			qualified := qualify(dataset, name)
+			if _, dup := seen[qualified]; dup {
+				continue
+			}
+			seen[qualified] = struct{}{}
+			tables = append(tables, qualified)
+		}
+	}
+	if listed == 0 && len(datasets) > 0 {
+		return nil, nil, fmt.Errorf("list tables: all %d dataset(s) failed to list; last error: %w", len(datasets), lastErr)
+	}
+	sort.Strings(tables)
+	sort.Strings(unlisted)
+	return tables, unlisted, nil
 }
