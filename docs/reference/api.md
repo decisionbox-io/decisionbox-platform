@@ -514,6 +514,39 @@ curl "http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/schema-inde
 
 A `failed` run carries the same shape with `"status": "failed"` and an `"error"` string.
 
+### GET /api/v1/projects/{id}/schema-cache/tables
+
+List a data source's qualified table names, one entry per table.
+The exact form is provider-dependent — `<dataset>.<table>` for BigQuery, `<schema>.<table>` for Postgres / Snowflake / Databricks, `dbo.orders` for MSSQL.
+Requires `viewer`.
+
+Query parameters (both optional):
+
+- `warehouse_id` — the data source to list (empty resolves to the primary). An id that is not on the project answers `404`.
+- `source` — which catalogue to answer from:
+  - `index` (the default) — the names the agent has indexed for that data source, falling back to a live names-only enumeration of the warehouse while that cache is empty (i.e. before the first index). An unwired cache repository, or a failed live enumeration, answers with an empty list.
+  - `warehouse` — always the live enumeration, so the response is the warehouse's whole catalogue regardless of what is indexed. A caller choosing which tables to index needs this: a registered [`ListTables` filter](../concepts/plugin-hooks.md) narrows the set that gets indexed, which makes the index a subset of the warehouse, and an index-sourced list could then only ever offer the tables already indexed. A failed enumeration answers `503` rather than falling back to the indexed names.
+
+  Any other value answers `400`.
+
+The live enumeration lists names only — no schema pull, no table descriptions, no embeddings — and runs the agent's `--list-tables` mode against the warehouse under `LIST_TABLES_TIMEOUT_SECONDS` (see [Configuration](configuration.md)).
+Results are cached per data-source configuration for a short TTL and concurrent callers share one run, so repeated polls do not each spawn an agent.
+A deployment with no agent runner has no live enumeration: `source=warehouse` answers `503` there.
+
+```bash
+curl "http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/schema-cache/tables?source=warehouse"
+```
+
+```json
+{
+  "data": {
+    "tables": ["public.customers", "public.orders", "public.payments"]
+  }
+}
+```
+
+An empty result is `[]`, never `null`.
+
 ---
 
 ## Schema editor

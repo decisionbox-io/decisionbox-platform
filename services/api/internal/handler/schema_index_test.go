@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1849,5 +1850,269 @@ func TestSchemaIndex_ListRuns_LatestMode_DropsRemovedDatasources(t *testing.T) {
 	h2.ListRuns(w2, newReq("GET", "/schema-index/runs", p.ID, ""))
 	if got := decodeRuns(t, w2); len(got) != 2 {
 		t.Fatalf("full history should be unfiltered, got %d runs", len(got))
+	}
+}
+
+// --- ListCachedTables ?source=warehouse ---
+//
+// The scope picker asks for the warehouse's catalogue rather than the indexed
+// one. The scope is applied when the index is built, so on a scoped project the
+// two sets are identical and an index-sourced picker can only ever offer the
+// tables already in scope — narrowing a scope works, widening it is impossible.
+
+func TestSchemaIndex_ListCachedTables_SourceWarehouse_IgnoresNonEmptyCache(t *testing.T) {
+	// The regression: a scoped re-index leaves the cache holding only the
+	// in-scope table, and the default source would serve exactly that. With
+	// source=warehouse the picker sees the whole warehouse, excluded tables
+	// included, so the scope can be widened.
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
+		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{tables: []string{"public.orders"}} // the saved allow-scope
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+	lister := &fakeTableLister{tables: []string{"public.orders", "public.customers", "public.payments"}}
+	h.SetTableLister(lister)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if !lister.called {
+		t.Error("source=warehouse must enumerate live even when the schema cache has rows")
+	}
+	got := decodeListCachedTables(t, w)
+	if len(got) != 3 {
+		t.Fatalf("tables = %v, want the full warehouse catalogue (3 entries)", got)
+	}
+	for _, want := range []string{"public.orders", "public.customers", "public.payments"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("tables = %v, missing %s", got, want)
+		}
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_SourceIndex_ExplicitKeepsCache(t *testing.T) {
+	// source=index is the documented spelling of the default: the indexed set,
+	// no live enumeration while the cache has rows.
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
+		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{tables: []string{"public.orders"}}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+	lister := &fakeTableLister{tables: []string{"public.should_not_appear"}}
+	h.SetTableLister(lister)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=index", p.ID, ""))
+	if lister.called {
+		t.Error("source=index must not enumerate live when the schema cache has rows")
+	}
+	if got := decodeListCachedTables(t, w); len(got) != 1 || got[0] != "public.orders" {
+		t.Errorf("tables = %v, want the indexed set [public.orders]", got)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_SourceUnknown_400(t *testing.T) {
+	// An unrecognised source must be rejected, not silently read as the default:
+	// a caller that asked for the warehouse and got the index has no way to tell.
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{tables: []string{"public.orders"}}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=live", p.ID, ""))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for an unknown source", w.Code)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_SourceWarehouse_ListerError_503(t *testing.T) {
+	// A live-listing failure must NOT fall back to the indexed set: on a scoped
+	// project that is the current scope, so the picker would look complete while
+	// still being impossible to widen. Report it instead.
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
+		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{tables: []string{"public.orders"}}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+	h.SetTableLister(&fakeTableLister{err: errors.New("warehouse unreachable")})
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "warehouse unreachable") {
+		t.Errorf("body = %s, want the underlying listing error", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "public.orders") {
+		t.Errorf("body = %s, must not serve the indexed set in place of the warehouse's", w.Body.String())
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_SourceWarehouse_ListerError_NegativeCached(t *testing.T) {
+	// A failure is negative-cached, so repeated polls back off instead of each
+	// spawning a doomed agent run — and every one of them still reports 503
+	// rather than a cached empty success.
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
+		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+	lister := &fakeTableLister{err: errors.New("warehouse unreachable")}
+	h.SetTableLister(lister)
+
+	for i := 0; i < 3; i++ {
+		w := httptest.NewRecorder()
+		h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("poll %d: status = %d, want 503", i, w.Code)
+		}
+	}
+	if lister.calls != 1 {
+		t.Errorf("lister spawned %d times across 3 polls, want 1 (failure negative-cached)", lister.calls)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_SourceWarehouse_NoLister_503(t *testing.T) {
+	// A build with no agent runner has no live enumeration to run. Saying so
+	// beats answering with the indexed set the caller did not ask for.
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
+		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{tables: []string{"public.orders"}}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 when no lister is wired", w.Code)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_SourceWarehouse_NoCacheRepo_StillLists(t *testing.T) {
+	// source=warehouse never reads the schema cache, so a build without the
+	// cache repo wired must still serve the live catalogue instead of the
+	// empty-list shortcut the default source takes.
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
+		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil, nil)
+	h.SetTableLister(&fakeTableLister{tables: []string{"public.orders"}})
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if got := decodeListCachedTables(t, w); len(got) != 1 || got[0] != "public.orders" {
+		t.Errorf("tables = %v, want [public.orders]", got)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_SourceWarehouse_NoWarehouse_EmptyNoSpawn(t *testing.T) {
+	// A project with no datasource has nothing to enumerate: the empty list is
+	// the honest answer, and no agent run is spawned for it.
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"} // no warehouse
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+	lister := &fakeTableLister{tables: []string{"public.should_not_appear"}}
+	h.SetTableLister(lister)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if lister.called {
+		t.Error("must not spawn a live listing for a project with no warehouse")
+	}
+	if got := decodeListCachedTables(t, w); len(got) != 0 {
+		t.Errorf("tables = %v, want empty", got)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_SourceWarehouse_CachedAcrossPolls(t *testing.T) {
+	// Always-live must still be bounded: the scope page re-fetches on every open
+	// and on every datasource switch, so polls inside the TTL reuse one listing.
+	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
+		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{tables: []string{"public.orders"}}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+	lister := &fakeTableLister{tables: []string{"public.orders", "public.customers"}}
+	h.SetTableLister(lister)
+
+	for i := 0; i < 3; i++ {
+		w := httptest.NewRecorder()
+		h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
+		if got := decodeListCachedTables(t, w); len(got) != 2 {
+			t.Fatalf("poll %d: tables = %v, want 2 entries", i, got)
+		}
+	}
+	if lister.calls != 1 {
+		t.Errorf("lister spawned %d times across 3 polls, want 1 (TTL-cached)", lister.calls)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_SourceWarehouse_PerDatasource(t *testing.T) {
+	// Each datasource has its own scope, so the picker must enumerate the
+	// datasource it is configuring — not whichever one was listed first.
+	p := twoWarehouseProject()
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{tables: []string{"indexed.only"}} // non-empty: ignored by source=warehouse
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+	lister := &fakeTableLister{byWarehouse: map[string][]string{
+		"wh_mssql": {"dbo.orders"},
+		"wh_pg":    {"public.customer"},
+	}}
+	h.SetTableLister(lister)
+
+	w1 := httptest.NewRecorder()
+	h.ListCachedTables(w1, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
+	if got := decodeListCachedTables(t, w1); len(got) != 1 || got[0] != "dbo.orders" {
+		t.Fatalf("primary tables = %v, want [dbo.orders]", got)
+	}
+	w2 := httptest.NewRecorder()
+	h.ListCachedTables(w2, newReq("GET", "/schema-cache/tables?source=warehouse&warehouse_id=wh_pg", p.ID, ""))
+	if got := decodeListCachedTables(t, w2); len(got) != 1 || got[0] != "public.customer" {
+		t.Fatalf("secondary tables = %v, want [public.customer]", got)
+	}
+	if len(lister.gotWarehouse) != 2 || lister.gotWarehouse[0] != "wh_mssql" || lister.gotWarehouse[1] != "wh_pg" {
+		t.Errorf("lister saw warehouse ids %v, want [wh_mssql wh_pg]", lister.gotWarehouse)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_SourceWarehouse_UnknownWarehouseID_404(t *testing.T) {
+	// The datasource check must run before the live enumeration, so a foreign id
+	// can't spawn a listing against an arbitrary warehouse.
+	p := twoWarehouseProject()
+	projRepo := newMockProjectRepo()
+	_ = projRepo.Create(context.Background(), p)
+	ci := &mockCacheInvalidator{}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+	lister := &fakeTableLister{tables: []string{"dbo.should_not_appear"}}
+	h.SetTableLister(lister)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse&warehouse_id=wh_nope", p.ID, ""))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+	if lister.called {
+		t.Error("live lister must not be called for an unknown warehouse id")
 	}
 }
