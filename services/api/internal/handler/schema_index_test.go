@@ -2009,6 +2009,19 @@ func TestSchemaIndex_ListCachedTables_SourceWarehouse_ListerError_503(t *testing
 	if !strings.Contains(w.Body.String(), "could not list the warehouse's tables") {
 		t.Errorf("body = %s, want the generic listing-failed message", w.Body.String())
 	}
+	// The cache must not retain the driver's error either: entries expire
+	// without being deleted, so a connection string stored here would outlive
+	// the datasource that produced it.
+	e, ok := h.getLiveTables(liveTableCacheKey(p.ID, p.PrimaryWarehouse()))
+	if !ok || e.err == nil {
+		t.Fatal("expected the failure to be negative-cached")
+	}
+	if !errors.Is(e.err, errLiveListing) {
+		t.Errorf("cached error = %v, want the sentinel", e.err)
+	}
+	if strings.Contains(e.err.Error(), "s3cret") || strings.Contains(e.err.Error(), "db.internal") {
+		t.Errorf("cached error retains the driver's text: %q", e.err.Error())
+	}
 	if strings.Contains(w.Body.String(), "public.orders") {
 		t.Errorf("body = %s, must not serve the indexed set in place of the warehouse's", w.Body.String())
 	}

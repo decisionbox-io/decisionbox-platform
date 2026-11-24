@@ -525,7 +525,7 @@ Query parameters (both optional):
 - `warehouse_id` — the data source to list (empty resolves to the primary). An id that is not on the project answers `404`.
 - `source` — which catalogue to answer from:
   - `index` (the default) — the names the agent has indexed for that data source, falling back to a live names-only enumeration of the warehouse while that cache is empty (i.e. before the first index). An unwired cache repository, or a failed live enumeration, answers with an empty list.
-  - `warehouse` — always the live enumeration, so the response is the warehouse's catalogue regardless of what is **indexed**. A caller choosing which tables to index needs this: a registered [`ListTables` filter](../concepts/plugin-hooks.md) narrows the set that gets indexed, which makes the index a subset of the warehouse, and an index-sourced list could then only ever offer the tables already indexed. This option bypasses the index, **not** deployment-level filtering — a registered `ListTables` filter runs on the live listing too, so a plugin that filters both paths returns its restricted set either way. A failed enumeration answers `503` rather than falling back to the indexed names. Its body is deliberately generic, and the driver's own message is not logged by the API either: it can quote the connection string it failed to parse, password included, and this route is open to a `viewer`. The agent process that talked to the warehouse logs its own failure, and `POST /test/warehouse` returns the agent's message to an `admin` — the tier raw warehouse diagnostics belong to.
+  - `warehouse` — always the live enumeration, so the response is the warehouse's catalogue regardless of what is **indexed**. A caller choosing which tables to index needs this: a registered [`ListTables` filter](../concepts/plugin-hooks.md) narrows the set that gets indexed, which makes the index a subset of the warehouse, and an index-sourced list could then only ever offer the tables already indexed. This option bypasses the index, **not** deployment-level filtering — a registered `ListTables` filter runs on the live listing too, so a plugin that filters both paths returns its restricted set either way. A failed enumeration answers `503` rather than falling back to the indexed names. Its body is deliberately generic, and the handler logs no driver text either: it can quote the connection string it failed to parse, password included, and this route is open to a `viewer`. The reason is in the **agent's** log — the agent logs its own failure in every runner mode — and `POST /test/warehouse` returns the agent's message to an `admin`, the tier raw warehouse diagnostics belong to. (Note that in the docker and kubernetes runner modes the runner relays the agent's container output to the API's log, so a driver message can still land there by that route — [#588](https://github.com/decisionbox-io/decisionbox-platform/issues/588).) The failure is not necessarily the connection: a registered `ListTables` filter failing for every dataset answers the same `503`, and a connection test would pass.
 
   Any other value answers `400`.
 
@@ -562,7 +562,11 @@ catalogue is never served as a complete one:
 ```
 
 `unlisted_datasets` is **omitted** when every dataset listed, so its presence
-means the catalogue is incomplete. It is never sent for `source=index`, which
+means the catalogue is incomplete. The converse needs an agent that sends the
+field: an agent image older than the API never emits it, so on a deployment
+mid-upgrade an absent field means "this agent doesn't say" rather than "nothing
+was skipped". The API takes that at face value, because treating it as unknown
+would flag every normal listing from such a deployment. It is never sent for `source=index`, which
 answers from the cache and enumerates nothing. Only an all-datasets failure is a
 `503`.
 

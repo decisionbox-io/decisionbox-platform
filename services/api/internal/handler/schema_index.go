@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sort"
 	"strconv"
@@ -37,11 +38,11 @@ const reindexLockStaleAfter = 2 * time.Minute
 
 type liveTableEntry struct {
 	listing WarehouseTableListing
-	// err is the listing failure, kept so a negative-cached entry can be
-	// REPORTED and not just counted: ?source=warehouse answers 503 and an
-	// empty-tables success must not be mistaken for it. Its message is never
-	// logged or returned — it carries the driver's own text, which can quote a
-	// connection string — so only its presence is ever used.
+	// err marks a negative-cached entry so ?source=warehouse can answer 503 and
+	// an empty-tables success is not mistaken for one. Always errLiveListing,
+	// never the driver's own error: only its presence is ever used, and the
+	// driver's text can quote a connection string, which an entry that expires
+	// without being deleted would then hold until the process restarts.
 	err error
 	at  time.Time
 }
@@ -196,21 +197,27 @@ func (h *SchemaIndexHandler) liveTables(ctx context.Context, projectID, whID str
 		}
 		live, lerr := h.lister.ListWarehouseTables(runCtx, projectID, whID)
 		if lerr != nil {
-			// The driver's own message is NOT logged here. It can quote the
-			// connection string it failed to parse, password included, and no
-			// pattern over arbitrary driver text is reliable enough to be the
-			// thing standing between a customer's password and a log sink. The
-			// agent process that actually talked to the warehouse logs its own
-			// failure, so nothing is lost by not keeping a second copy; the
-			// admin-only POST /test/warehouse is the supported way to see it.
+			// This handler does not log lerr. It carries the driver's own
+			// message, which can quote the connection string it failed to
+			// parse, and no pattern over arbitrary driver text is reliable
+			// enough to be the thing standing between a customer's password and
+			// a log sink. Nothing is lost by not keeping a copy: the agent that
+			// talked to the warehouse logs its own failure.
+			//
+			// Note this is not a guarantee about the API PROCESS. In docker and
+			// kubernetes runner modes the runner streams the agent's container
+			// output to the API's stderr so operators can watch a run, which
+			// puts the agent's own line — driver message included — in the API
+			// log by a route this handler doesn't control (platform#588).
 			apilog.WithFields(apilog.Fields{
 				"project_id": projectID, "warehouse_id": whID,
 			}).Warn("schema-cache tables: live warehouse enumeration failed")
 			// Negative-cache the failure (short TTL) so a persistent problem
 			// (bad creds, VPN down) backs off instead of spawning a doomed run
-			// per poll, but a fixed connection is retried soon.
-			h.putLiveTables(key, WarehouseTableListing{}, lerr)
-			return WarehouseTableListing{}, lerr
+			// per poll, but a fixed connection is retried soon. The sentinel,
+			// not lerr — see liveTableEntry.err.
+			h.putLiveTables(key, WarehouseTableListing{}, errLiveListing)
+			return WarehouseTableListing{}, errLiveListing
 		}
 		h.putLiveTables(key, live, nil)
 		return live, nil
@@ -835,10 +842,19 @@ const (
 // liveListingFailedMsg is what a failed source=warehouse enumeration tells the
 // client. Deliberately generic: the underlying error comes from a warehouse
 // driver and can quote the connection string it failed to parse, password
-// included, and this route is open to a VIEWER. POST /test/warehouse does
-// return the agent's own message and is admin-only — that is the tier raw
-// warehouse diagnostics belong to, and where this points the operator.
-const liveListingFailedMsg = "could not list the warehouse's tables; check the data source's connection, or run its connection test for the driver's own message"
+// included, and this route is open to a VIEWER.
+//
+// It points at the agent's log rather than at the data source's connection
+// test, because the cause need not be the connection — a registered ListTables
+// filter failing for every dataset lands here too, and HealthCheck would pass.
+// The agent logs its own failure in every runner mode.
+const liveListingFailedMsg = "could not list the warehouse's tables; the agent's own log has the reason"
+
+// errLiveListing is the sentinel a negative-cached entry holds in place of the
+// driver's error. The cache only needs to know THAT the listing failed; keeping
+// the real error would retain a possible connection string for the life of the
+// process, since entries expire rather than being deleted.
+var errLiveListing = errors.New("live warehouse table listing failed")
 
 // ListCachedTables returns one entry per qualified table (the exact form is
 // provider-dependent: e.g. "<dataset>.<table>" for BigQuery, "<schema>.<table>"
