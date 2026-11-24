@@ -21,6 +21,44 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
+// QueryRequest names one result to re-read: the datasource it was observed
+// against, the query that produced it, and the most rows the caller can use.
+type QueryRequest struct {
+	// DatasourceID is required. A re-read addresses a specific observation, so
+	// the caller knows which of the project's warehouses produced it; guessing
+	// on its behalf could read the wrong data, which is the worst outcome here.
+	DatasourceID string
+	// SQL is the query to run, verbatim. It is never parsed or rewritten.
+	SQL string
+	// MaxRows bounds the rows returned. 0 means the host's own fetch cap, which
+	// bounds it in either case.
+	MaxRows int
+}
+
+// QueryResult is a bounded re-read.
+type QueryResult struct {
+	Columns []string
+	Rows    []map[string]any
+	// RowCount is what the source returned BEFORE MaxRows was applied, so a
+	// caller can say "showing N of M" truthfully.
+	RowCount int
+}
+
+// QueryFunc re-runs a query the turn has already run: read-only, inside the
+// project, and bounded. The host binds it (the ask-serve loop owns the
+// warehouse connections); it is nil when the host offers no re-read, so a tool
+// MUST handle nil rather than assume one.
+//
+// The query runs exactly as given. It is not repaired on failure, so a caller
+// can never be handed rows from a rewritten query under the original query's
+// name, and nothing here parses or edits the SQL — a row cap is applied to the
+// rows returned, not by splicing a LIMIT the source's dialect may not use.
+//
+// An unknown datasource, a query the tenant filter refuses, a timeout and a
+// warehouse error are all errors. A caller that cannot proceed without the rows
+// should say so to its user rather than present a smaller answer as complete.
+type QueryFunc func(ctx context.Context, q QueryRequest) (*QueryResult, error)
+
 // Request is the per-call context a mutation tool receives. The agent binds the
 // shared Mongo handle (the loop itself stays storage-agnostic); the rest is the
 // turn identity the tool stamps on whatever it persists.
@@ -38,6 +76,10 @@ type Request struct {
 	Args map[string]any
 	// Mongo is the shared platform database handle the agent binds at build time.
 	Mongo *mongo.Database
+	// Query re-reads a result this turn observed, for a tool that needs more of
+	// it than the turn's own bounded preview carries. Nil when the host offers
+	// no re-read — handle that, never assume it is set.
+	Query QueryFunc
 }
 
 // Result is what a mutation tool returns. A tool that produced an approvable
