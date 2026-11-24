@@ -1941,15 +1941,24 @@ func TestSchemaIndex_ListCachedTables_SourceWarehouse_ListerError_503(t *testing
 	_ = projRepo.Create(context.Background(), p)
 	ci := &mockCacheInvalidator{tables: []string{"public.orders"}}
 	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
-	h.SetTableLister(&fakeTableLister{err: errors.New("warehouse unreachable")})
+	// A driver error that quotes the DSN it could not parse — the shape that
+	// makes relaying it to a viewer a credential leak.
+	h.SetTableLister(&fakeTableLister{
+		err: errors.New(`cannot parse "postgres://admin:s3cret@db.internal/sales": invalid port`),
+	})
 
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503, body=%s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "warehouse unreachable") {
-		t.Errorf("body = %s, want the underlying listing error", w.Body.String())
+	// The driver's own text stays out of a viewer-readable response: a warehouse
+	// error can quote the connection string it failed to parse.
+	if strings.Contains(w.Body.String(), "postgres://admin:s3cret@db.internal") {
+		t.Errorf("body = %s, leaks the underlying warehouse error", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "could not list the warehouse's tables") {
+		t.Errorf("body = %s, want the generic listing-failed message", w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), "public.orders") {
 		t.Errorf("body = %s, must not serve the indexed set in place of the warehouse's", w.Body.String())

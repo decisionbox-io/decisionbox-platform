@@ -800,6 +800,15 @@ const (
 	tableSourceWarehouse = "warehouse"
 )
 
+// liveListingFailedMsg is what a failed source=warehouse enumeration tells the
+// client. Deliberately generic: the underlying error comes from a warehouse
+// driver and can quote the connection string it failed to parse, password
+// included, and this route is open to a VIEWER. (POST /test/warehouse does
+// return the agent's own message, and is admin-only — that is the tier raw
+// warehouse diagnostics belong to.) The detail is logged server-side by
+// liveTables, so it stays one log line away for whoever can read them.
+const liveListingFailedMsg = "could not list the warehouse's tables; check the data source's connection (details in the API logs)"
+
 // ListCachedTables returns one entry per qualified table (the exact form is
 // provider-dependent: e.g. "<dataset>.<table>" for BigQuery, "<schema>.<table>"
 // for Postgres / Snowflake / Databricks, "dbo.orders" for MSSQL). Backs a
@@ -816,9 +825,9 @@ const (
 //     render is fine.
 //   - source=warehouse: always the live enumeration, so the caller sees the
 //     warehouse's whole catalogue regardless of what is indexed. A failure here
-//     is reported (503) rather than degraded to the indexed set: serving the
-//     scoped index in its place is exactly the one-way door this parameter
-//     exists to open.
+//     is reported (503, with a generic message — see liveListingFailedMsg)
+//     rather than degraded to the indexed set: serving the scoped index in its
+//     place is exactly the one-way door this parameter exists to open.
 func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -909,7 +918,7 @@ func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Req
 			// source keeps degrading to the empty list (the picker's empty
 			// state) rather than erroring the page.
 			if source == tableSourceWarehouse {
-				writeError(w, http.StatusServiceUnavailable, "list warehouse tables: "+lerr.Error())
+				writeError(w, http.StatusServiceUnavailable, liveListingFailedMsg)
 				return
 			}
 		} else {
