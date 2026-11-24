@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -57,6 +58,24 @@ func NewAgentTableLister(r runner.Runner) *AgentTableLister {
 	}
 	return &AgentTableLister{runner: r, timeoutSecs: listTablesTimeoutSecs()}
 }
+
+// How a live listing failed, as far as the API can tell without reading the
+// driver's own message. The handler logs which of these it was: coarse, but it
+// is the one diagnostic that can be written to a log sink safely, and it
+// separates the cases an operator would act on differently — a refusal (bad
+// credentials, an unreadable catalogue, a table filter erroring for every
+// dataset) from an agent that could not run or produced nothing to parse.
+var (
+	// ErrListingRefused is the agent reporting a failure of its own: it ran,
+	// and said no. Its message is in the agent's output, not in these errors.
+	ErrListingRefused = errors.New("warehouse listing refused")
+	// ErrListingAgentFailed is the agent exiting badly — image, runner, or
+	// environment, rather than anything about the warehouse.
+	ErrListingAgentFailed = errors.New("listing agent failed to run")
+	// ErrListingNoResult is a clean exit with nothing parseable on stdout,
+	// which means the agent and the API disagree about the contract.
+	ErrListingNoResult = errors.New("listing agent returned no result")
+)
 
 // listTablesResult is the agent's --list-tables stdout contract.
 type listTablesResult struct {
@@ -126,21 +145,24 @@ func (a *AgentTableLister) ListWarehouseTables(ctx context.Context, projectID, w
 			_ = json.Unmarshal(js, &out)
 		}
 	}
+	// Each returned error WRAPS one of the sentinels above, so a caller can log
+	// the class without the message. The message itself carries the driver's
+	// text and belongs only where an admin asked for it.
 	if err != nil {
 		if out.Error != "" {
-			return WarehouseTableListing{}, fmt.Errorf("list tables: %s", out.Error)
+			return WarehouseTableListing{}, fmt.Errorf("%w: %s", ErrListingRefused, out.Error)
 		}
 		msg := "agent exited with error"
 		if res != nil && res.Error != "" {
 			msg = res.Error
 		}
-		return WarehouseTableListing{}, fmt.Errorf("list tables: %s", msg)
+		return WarehouseTableListing{}, fmt.Errorf("%w: %s", ErrListingAgentFailed, msg)
 	}
 	if !out.Success {
 		if out.Error != "" {
-			return WarehouseTableListing{}, fmt.Errorf("list tables: %s", out.Error)
+			return WarehouseTableListing{}, fmt.Errorf("%w: %s", ErrListingRefused, out.Error)
 		}
-		return WarehouseTableListing{}, fmt.Errorf("list tables: no result from agent")
+		return WarehouseTableListing{}, ErrListingNoResult
 	}
 	return WarehouseTableListing{
 		Tables:           out.Tables,

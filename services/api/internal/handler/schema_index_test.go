@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -2278,5 +2279,147 @@ func TestSchemaIndex_ListCachedTables_SourceWarehouse_LeaderCancellationDoesNotF
 	}
 	if got := decodeListCachedTables(t, follower); len(got) != 1 || got[0] != "public.orders" {
 		t.Errorf("tables = %v, want [public.orders]", got)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_SourceDuplicated_400(t *testing.T) {
+	// Both values are well formed and name different catalogues. Resolving to
+	// the first silently is the substitution the parameter exists to prevent.
+	p := pgProject()
+	h := sourceModeHandler(t, p, &mockCacheInvalidator{tables: []string{"public.orders"}}, nil)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=index&source=warehouse", p.ID, ""))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a duplicated source", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "at most once") {
+		t.Errorf("body = %s, want it to say the parameter was repeated", w.Body.String())
+	}
+}
+
+func TestSchemaIndex_LiveTableCache_EvictsExpiredEntries(t *testing.T) {
+	// Expiry alone only stops an entry being reused. The key encodes the
+	// datasource config, so every warehouse edit mints a new key — and since
+	// ?source=warehouse populates this for every scope-page open, not just
+	// pre-index projects, the abandoned ones would accumulate until restart.
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, nil, nil)
+
+	// An entry old enough to be past even the success TTL.
+	h.putLiveTables("stale-key", WarehouseTableListing{Tables: []string{"a.b"}}, nil)
+	h.liveMu.Lock()
+	e := h.liveCache["stale-key"]
+	e.at = time.Now().Add(-2 * liveTableCacheTTL)
+	h.liveCache["stale-key"] = e
+	h.liveMu.Unlock()
+
+	// Any subsequent write sweeps it.
+	h.putLiveTables("fresh-key", WarehouseTableListing{Tables: []string{"c.d"}}, nil)
+
+	h.liveMu.Lock()
+	_, stalePresent := h.liveCache["stale-key"]
+	_, freshPresent := h.liveCache["fresh-key"]
+	size := len(h.liveCache)
+	h.liveMu.Unlock()
+
+	if stalePresent {
+		t.Error("expired entry survived a write — the cache grows without bound")
+	}
+	if !freshPresent {
+		t.Error("the entry just written is missing")
+	}
+	if size != 1 {
+		t.Errorf("cache holds %d entries, want 1", size)
+	}
+}
+
+func TestSchemaIndex_LiveTableCache_KeepsUnexpiredEntries(t *testing.T) {
+	// The sweep must not take entries that are still serving: two datasources
+	// of one project are both live at once on the scope page.
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, nil, nil)
+	h.putLiveTables("wh-a", WarehouseTableListing{Tables: []string{"a.b"}}, nil)
+	h.putLiveTables("wh-b", WarehouseTableListing{Tables: []string{"c.d"}}, nil)
+
+	if _, ok := h.getLiveTables("wh-a"); !ok {
+		t.Error("a fresh entry was evicted by a later write")
+	}
+	if _, ok := h.getLiveTables("wh-b"); !ok {
+		t.Error("the entry just written is missing")
+	}
+}
+
+func TestSchemaIndex_LiveTableCache_SweepRespectsTheShorterFailTTL(t *testing.T) {
+	// A negative entry lives on the shorter fail TTL, so it must be swept on
+	// that schedule rather than held for the success TTL.
+	h := NewSchemaIndexHandler(newMockProjectRepo(), newMockProgress(), nil, nil, nil, nil, nil)
+	h.putLiveTables("failed-key", WarehouseTableListing{}, errLiveListing)
+	h.liveMu.Lock()
+	e := h.liveCache["failed-key"]
+	// Older than the fail TTL, younger than the success TTL.
+	e.at = time.Now().Add(-(liveTableFailTTL + time.Second))
+	h.liveCache["failed-key"] = e
+	h.liveMu.Unlock()
+
+	h.putLiveTables("other-key", WarehouseTableListing{}, nil)
+
+	h.liveMu.Lock()
+	_, present := h.liveCache["failed-key"]
+	h.liveMu.Unlock()
+	if present {
+		t.Error("a negative entry past its own shorter TTL was not swept")
+	}
+}
+
+// --- listingFailureClass ---
+
+func TestListingFailureClass(t *testing.T) {
+	// The class is what reaches the log; the wrapped message never does. In the
+	// default subprocess mode the runner buffers the agent's stderr without
+	// writing it anywhere, so this is the only trace a failure leaves.
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"refused", fmt.Errorf("%w: %s", ErrListingRefused, "permission denied for schema staging"), "refused_by_warehouse_or_filter"},
+		{"agent failed", fmt.Errorf("%w: %s", ErrListingAgentFailed, "exit status 1"), "agent_failed_to_run"},
+		{"no result", ErrListingNoResult, "agent_returned_no_result"},
+		{"something else", errors.New("boom"), "unknown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := listingFailureClass(tc.err); got != tc.want {
+				t.Errorf("listingFailureClass(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAgentTableLister_ErrorsWrapAClass(t *testing.T) {
+	// The handler classifies by sentinel, so the lister has to wrap one — and
+	// a refusal must stay distinguishable from an agent that could not run.
+	refused := NewAgentTableLister(&stubListRunner{
+		mockRunner: newMockRunner(),
+		out:        []byte(`{"success":false,"error":"permission denied"}`),
+	})
+	if _, err := refused.ListWarehouseTables(context.Background(), "p1", ""); !errors.Is(err, ErrListingRefused) {
+		t.Errorf("err = %v, want it to wrap ErrListingRefused", err)
+	}
+
+	crashed := NewAgentTableLister(&stubListRunner{
+		mockRunner: newMockRunner(),
+		out:        []byte(`not json`),
+		err:        errors.New("exit status 2"),
+	})
+	if _, err := crashed.ListWarehouseTables(context.Background(), "p1", ""); !errors.Is(err, ErrListingAgentFailed) {
+		t.Errorf("err = %v, want it to wrap ErrListingAgentFailed", err)
+	}
+
+	empty := NewAgentTableLister(&stubListRunner{
+		mockRunner: newMockRunner(),
+		out:        []byte(`{"success":false}`),
+	})
+	if _, err := empty.ListWarehouseTables(context.Background(), "p1", ""); !errors.Is(err, ErrListingNoResult) {
+		t.Errorf("err = %v, want ErrListingNoResult", err)
 	}
 }

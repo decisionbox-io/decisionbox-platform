@@ -159,7 +159,22 @@ func (h *SchemaIndexHandler) putLiveTables(key string, listing WarehouseTableLis
 	if h.liveCache == nil {
 		h.liveCache = make(map[string]liveTableEntry)
 	}
-	h.liveCache[key] = liveTableEntry{listing: listing, err: err, at: time.Now()}
+	now := time.Now()
+	// Drop entries past their TTL while we hold the lock. Expiry alone only
+	// stops an entry being REUSED, and the key encodes the datasource config —
+	// so every warehouse edit mints a new key and abandons the old one. Before
+	// ?source=warehouse this cache only ever held pre-index projects, a set that
+	// stops growing once they are indexed; now every scope-page open populates
+	// it, so without this a long-lived API accumulates the catalogue of every
+	// datasource anyone ever looked at or edited. Writes are rare (the TTL and
+	// singleflight bound them), so sweeping on each one is cheaper than the
+	// bookkeeping to avoid it.
+	for k, e := range h.liveCache {
+		if now.Sub(e.at) > e.ttl() {
+			delete(h.liveCache, k)
+		}
+	}
+	h.liveCache[key] = liveTableEntry{listing: listing, err: err, at: now}
 }
 
 // liveTables enumerates one datasource's qualified table names live, through the
@@ -211,6 +226,7 @@ func (h *SchemaIndexHandler) liveTables(ctx context.Context, projectID, whID str
 			// log by a route this handler doesn't control (platform#588).
 			apilog.WithFields(apilog.Fields{
 				"project_id": projectID, "warehouse_id": whID,
+				"failure": listingFailureClass(lerr),
 			}).Warn("schema-cache tables: live warehouse enumeration failed")
 			// Negative-cache the failure (short TTL) so a persistent problem
 			// (bad creds, VPN down) backs off instead of spawning a doomed run
@@ -848,7 +864,28 @@ const (
 // test, because the cause need not be the connection — a registered ListTables
 // filter failing for every dataset lands here too, and HealthCheck would pass.
 // The agent logs its own failure in every runner mode.
-const liveListingFailedMsg = "could not list the warehouse's tables; the agent's own log has the reason"
+const liveListingFailedMsg = "could not list the warehouse's tables; check the data source's connection and any table-filter policy on it"
+
+// listingFailureClass names which way a live listing failed, for the log. The
+// driver's own message can quote a connection string and so is never logged;
+// the class can be, and it is the difference an operator acts on — a refusal
+// means the agent ran and said no (credentials, an unreadable catalogue, a
+// table filter erroring), the others mean it could not run or did not speak the
+// contract. In the default subprocess runner mode the agent's stderr is
+// buffered by the runner rather than written anywhere, so without this the
+// failure would leave no trace at all.
+func listingFailureClass(err error) string {
+	switch {
+	case errors.Is(err, ErrListingRefused):
+		return "refused_by_warehouse_or_filter"
+	case errors.Is(err, ErrListingAgentFailed):
+		return "agent_failed_to_run"
+	case errors.Is(err, ErrListingNoResult):
+		return "agent_returned_no_result"
+	default:
+		return "unknown"
+	}
+}
 
 // errLiveListing is the sentinel a negative-cached entry holds in place of the
 // driver's error. The cache only needs to know THAT the listing failed; keeping
@@ -896,6 +933,15 @@ func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Req
 	// Reject an unrecognised source rather than silently treating it as the
 	// default: a caller that asked for the warehouse catalogue and quietly got
 	// the indexed one has no way to tell.
+	// A duplicated source is refused rather than resolved to the first value.
+	// Unlike a malformed escape (a broken client, which Get's usual behaviour
+	// handles), both values here are well formed and the caller has asked for
+	// two different catalogues — picking one silently is the substitution this
+	// parameter exists to prevent.
+	if vals := r.URL.Query()["source"]; len(vals) > 1 {
+		writeError(w, http.StatusBadRequest, "source must be given at most once")
+		return
+	}
 	source := r.URL.Query().Get("source")
 	switch source {
 	case "", tableSourceIndex, tableSourceWarehouse:
