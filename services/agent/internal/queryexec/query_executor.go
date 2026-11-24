@@ -185,7 +185,11 @@ func (e *QueryExecutor) CurrentStep() int { return e.currentStep }
 
 // ExecuteResult represents the result of a query execution.
 type ExecuteResult struct {
-	Data            []map[string]interface{}
+	Data []map[string]interface{}
+	// Columns is the provider's own column metadata, where it supplied any.
+	// Kept because a query that matched no rows still HAS columns, and
+	// deriving them from row keys loses the schema of an empty result.
+	Columns         []string
 	RowCount        int
 	ExecutionTimeMs int64
 	FixAttempts     int
@@ -288,6 +292,7 @@ func (e *QueryExecutor) ExecuteNative(ctx context.Context, query gowarehouse.Nat
 
 		if err == nil {
 			result.Data = qr.Rows
+			result.Columns = qr.Columns
 			result.RowCount = len(qr.Rows)
 			result.ExecutionTimeMs = executionTime
 			result.FinalQuery = currentQuery.String()

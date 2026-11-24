@@ -86,16 +86,31 @@ func (r *runner) mutationQuery(rt *ProjectRuntime, st *turnState) MutationQuery 
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if r.cfg.MaxReReadsPerTurn > 0 && st.reReadsUsed >= r.cfg.MaxReReadsPerTurn {
-			return nil, fmt.Errorf("this turn has already made its %d permitted re-reads", r.cfg.MaxReReadsPerTurn)
+		// Reserved atomically. The loop serialises mutation INVOCATIONS, not
+		// the callbacks inside one: a tool reading several results
+		// concurrently would otherwise have two calls take the same remaining
+		// slot and run past the bound.
+		if r.cfg.MaxReReadsPerTurn > 0 {
+			if used := st.reReadsUsed.Add(1); int(used) > r.cfg.MaxReReadsPerTurn {
+				return nil, fmt.Errorf("this turn has already made its %d permitted re-reads", r.cfg.MaxReReadsPerTurn)
+			}
+		} else {
+			st.reReadsUsed.Add(1)
 		}
-		st.reReadsUsed++
 		dsID := strings.TrimSpace(q.DatasourceID)
 		if dsID == "" {
 			return nil, fmt.Errorf("a re-read must name the datasource its result came from")
 		}
 		if _, ok := rt.datasource(dsID); !ok {
 			return nil, fmt.Errorf("datasource %q is not configured for this project", dsID)
+		}
+		// A PINNED turn is the user's explicit choice of warehouse, and it
+		// binds this read too. Refusing is the only honest answer: running the
+		// query against the pinned datasource instead would silently change
+		// what the result is OF, and running it against the one it names would
+		// query a warehouse the user excluded from this turn.
+		if pin := st.routing.pinned; pin != "" && pin != dsID {
+			return nil, fmt.Errorf("this turn is pinned to datasource %q, so a result from %q cannot be read again here", pin, dsID)
 		}
 		// Trimmed only to reject a blank request; EXECUTED verbatim. Trimming
 		// what runs would change a query whose trailing character is part of a
@@ -142,6 +157,15 @@ func (r *runner) mutationQuery(rt *ProjectRuntime, st *turnState) MutationQuery 
 		}
 		qctx = gowarehouse.WithWarehouseID(qctx, dsID)
 
+		// The MERGED context, before any connection is opened. A turn that has
+		// already expired while the plugin passes a live context would
+		// otherwise reach acquireConn, which starts its build under
+		// context.WithoutCancel — a connection that keeps being established
+		// after this read has returned an error.
+		if err := qctx.Err(); err != nil {
+			return nil, err
+		}
+
 		conn, release, err := rt.acquireConn(qctx, dsID)
 		if err != nil {
 			return nil, fmt.Errorf("could not connect to datasource %q: %w", dsID, err)
@@ -155,8 +179,16 @@ func (r *runner) mutationQuery(rt *ProjectRuntime, st *turnState) MutationQuery 
 		}
 
 		rows := res.Data
+		// The provider's own column metadata where it gave any, falling back
+		// to the row keys. A query that matched nothing still has columns —
+		// Postgres reads them before iterating rows — and a caller writing a
+		// header row for an empty result needs them.
+		cols := res.Columns
+		if len(cols) == 0 {
+			cols = columnsOf(rows)
+		}
 		out := &MutationQueryResult{
-			Columns:  columnsOf(rows),
+			Columns:  cols,
 			RowCount: res.RowCount,
 			// Carried, never summarised: a caveat's own words name what was
 			// degraded, and only the source knows. Without it a caller sees

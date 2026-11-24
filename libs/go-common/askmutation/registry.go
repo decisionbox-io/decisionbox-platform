@@ -59,19 +59,38 @@ type QueryResult struct {
 	Quality []QualityCaveat
 }
 
-// QueryFunc re-runs a query the turn has already run: read-only, inside the
-// project, and bounded. The host binds it (the ask-serve loop owns the
-// warehouse connections); it is nil when the host offers no re-read, so a tool
-// MUST handle nil rather than assume one.
+// QueryFunc runs ONE read-only query inside the project, bounded. The host
+// binds it (the ask-serve loop owns the warehouse connections); it is nil when
+// the host offers no such read, so a tool MUST handle nil rather than assume
+// one.
 //
-// The query runs exactly as given. It is not repaired on failure, so a caller
-// can never be handed rows from a rewritten query under the original query's
-// name, and nothing here parses or edits the SQL — a row cap is applied to the
-// rows returned, not by splicing a LIMIT the source's dialect may not use.
+// It exists so a tool can re-read a result its conversation already observed —
+// a bounded preview is the right size for a model's context and the wrong size
+// for a consumer that needs the result itself. But read what it grants, not
+// what it is for: the host does NOT verify that the query was ever observed.
+// It cannot usefully, because the result being re-read usually belongs to an
+// earlier turn, so the turn's own query log cannot confirm it. **A successful
+// call therefore establishes nothing about provenance** — a tool that needs
+// the rows to be a particular observation's must satisfy itself of that, as
+// the reports tool does by taking the query from the frozen step it is
+// filling.
 //
-// An unknown datasource, a query the tenant filter refuses, a timeout and a
-// warehouse error are all errors. A caller that cannot proceed without the rows
-// should say so to its user rather than present a smaller answer as complete.
+// What the host DOES guarantee:
+//
+//   - the datasource is one of the project's, named explicitly, and within any
+//     datasource the turn is pinned to;
+//   - the tenant filter and read-only credentials of that datasource;
+//   - the query runs exactly as given — never parsed, never rewritten, and
+//     never repaired on failure, so rows can never come from a rewritten
+//     query under the original's name;
+//   - a row cap applied to the rows returned, not by splicing a LIMIT the
+//     source's dialect may not use;
+//   - the turn's deadline, and a per-turn count of these reads.
+//
+// An unknown or unpinned datasource, a query the tenant filter refuses, a
+// timeout and a warehouse error are all errors. A caller that cannot proceed
+// without the rows should say so to its user rather than present a smaller
+// answer as complete.
 type QueryFunc func(ctx context.Context, q QueryRequest) (*QueryResult, error)
 
 // Request is the per-call context a mutation tool receives. The agent binds the

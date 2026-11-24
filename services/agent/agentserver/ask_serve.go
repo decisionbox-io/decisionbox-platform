@@ -464,7 +464,13 @@ func adaptMutationQuery(q askserve.MutationQuery) gomutation.QueryFunc {
 		}
 		out := &gomutation.QueryResult{Columns: res.Columns, Rows: res.Rows, RowCount: res.RowCount}
 		for _, c := range res.Quality {
-			out.Quality = append(out.Quality, gomutation.QualityCaveat{Kind: string(c.Kind), Detail: c.String()})
+			// Detail, not String(): the result already carries Kind on its own
+			// field, so String() would repeat it — and a caller comparing a
+			// caveat against one recorded earlier (which stores Kind and
+			// Detail separately) would never match, making every caveat look
+			// new. An absent detail also stays absent rather than becoming the
+			// kind's own name.
+			out.Quality = append(out.Quality, gomutation.QualityCaveat{Kind: string(c.Kind), Detail: c.Detail})
 		}
 		return out, nil
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/charts"
@@ -66,7 +67,7 @@ type turnState struct {
 	// turn. Separate from queriesUsed because these are not the model's
 	// queries — charging them would starve the turn that asked for the work —
 	// but unbounded they would be a way to run any number of warehouse reads.
-	reReadsUsed int
+	reReadsUsed atomic.Int64
 	// ctx is the TURN's context: it carries the project id the warehouse
 	// middleware scopes by and the turn's wall-clock. Held so a seam handed to
 	// a plugin can run under it rather than under whatever the plugin passes.

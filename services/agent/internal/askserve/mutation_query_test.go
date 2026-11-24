@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -424,5 +426,158 @@ func TestMutationQuery_ExecutesTheQueryVerbatim(t *testing.T) {
 	// Blank is still refused.
 	if _, err := run(context.Background(), MutationQueryRequest{DatasourceID: "default", SQL: "   \n"}); err == nil {
 		t.Error("a blank query must be refused")
+	}
+}
+
+// A pinned turn is the user's explicit choice of warehouse, and it binds a
+// re-read too: a result from another datasource is refused rather than being
+// read behind the pin or silently redirected.
+func TestMutationQuery_RefusesAcrossADatasourcePin(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("ds")
+	wh.DefaultResult = &gowarehouse.QueryResult{Columns: []string{"id"}, Rows: rowsOf(5)}
+	exec := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{Warehouse: wh, MaxRetries: 1})
+	rt := NewProjectRuntime(ProjectRuntimeOptions{
+		PrimaryID:   "default",
+		Datasources: []DatasourceInfo{{ID: "default"}, {ID: "second"}},
+		Build: func(context.Context, string) (*WarehouseConn, error) {
+			return &WarehouseConn{Executor: exec}, nil
+		},
+	})
+	r := &runner{cfg: defaultQueryCfg(), store: &fakeStore{}}
+	st := &turnState{ctx: context.Background(), req: TurnRequest{ProjectID: "p1"}}
+	st.routing.pinned = "second"
+	run := r.mutationQuery(rt, st)
+
+	_, err := run(context.Background(), MutationQueryRequest{DatasourceID: "default", SQL: "SELECT id FROM t"})
+	if err == nil {
+		t.Fatal("a result from an unpinned datasource must be refused")
+	}
+	if !strings.Contains(err.Error(), "pinned") {
+		t.Errorf("the refusal should name the pin: %v", err)
+	}
+	if len(wh.Calls) != 0 {
+		t.Errorf("no warehouse call should be made, got %d", len(wh.Calls))
+	}
+
+	// The pinned datasource itself still reads.
+	if _, err := run(context.Background(), MutationQueryRequest{DatasourceID: "second", SQL: "SELECT id FROM t"}); err != nil {
+		t.Errorf("the pinned datasource should read: %v", err)
+	}
+}
+
+// The per-turn bound holds under concurrency. The loop serialises mutation
+// invocations, not the callbacks inside one, so a tool reading several results
+// at once would otherwise have two calls take the same remaining slot.
+func TestMutationQuery_BoundHoldsUnderConcurrency(t *testing.T) {
+	// Its own provider, not testutil's: that one appends to a Calls slice
+	// without a lock, so driving it from many goroutines would report the
+	// MOCK's race rather than exercise the bound under test.
+	wh := testutil.NewMockWarehouseProvider("ds")
+	wh.DefaultResult = &gowarehouse.QueryResult{Columns: []string{"id"}, Rows: rowsOf(2)}
+	safe := &lockedProvider{MockWarehouseProvider: wh}
+	exec := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{Warehouse: safe, MaxRetries: 1})
+	rt := NewProjectRuntime(ProjectRuntimeOptions{
+		PrimaryID:   "default",
+		Datasources: []DatasourceInfo{{ID: "default"}},
+		Build: func(context.Context, string) (*WarehouseConn, error) {
+			return &WarehouseConn{Executor: exec}, nil
+		},
+	})
+	cfg := defaultQueryCfg()
+	cfg.MaxReReadsPerTurn = 5
+	r := &runner{cfg: cfg, store: &fakeStore{}}
+	run := r.mutationQuery(rt, &turnState{ctx: context.Background(), req: TurnRequest{ProjectID: "p1"}})
+
+	// One serial call first, so the agent's lazily-initialised logger is warm:
+	// its init is not itself concurrency-safe and would otherwise be reported
+	// instead of anything this test is about. It spends one of the five slots.
+	if _, err := run(context.Background(), MutationQueryRequest{DatasourceID: "default", SQL: "SELECT id FROM t"}); err != nil {
+		t.Fatalf("warm-up read: %v", err)
+	}
+
+	const callers = 40
+	var ok, refused atomic.Int64
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := run(context.Background(), MutationQueryRequest{DatasourceID: "default", SQL: "SELECT id FROM t"}); err != nil {
+				refused.Add(1)
+			} else {
+				ok.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Four slots were left after the warm-up, and not one more may be taken.
+	if got := ok.Load(); got != 4 {
+		t.Errorf("%d concurrent reads were allowed, want the 4 slots left", got)
+	}
+	if got := refused.Load(); got != callers-4 {
+		t.Errorf("%d refusals, want %d", got, callers-4)
+	}
+}
+
+// lockedProvider serialises access to the shared mock, whose own Calls slice
+// is not concurrency-safe.
+type lockedProvider struct {
+	*testutil.MockWarehouseProvider
+	mu sync.Mutex
+}
+
+func (l *lockedProvider) Query(ctx context.Context, q string, params map[string]interface{}) (*gowarehouse.QueryResult, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.MockWarehouseProvider.Query(ctx, q, params)
+}
+
+// An empty result keeps the warehouse's own column names: a caller writing a
+// header row for "no matches" needs the schema, which row keys cannot supply.
+func TestMutationQuery_EmptyResultKeepsItsColumns(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("ds")
+	wh.DefaultResult = &gowarehouse.QueryResult{
+		Columns: []string{"order_id", "total"},
+		Rows:    []map[string]interface{}{},
+	}
+	run := queryRunner(t, defaultQueryCfg(), wh, "", nil)
+
+	res, err := run(context.Background(), MutationQueryRequest{DatasourceID: "default", SQL: "SELECT order_id, total FROM t WHERE 1=0"})
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	if len(res.Rows) != 0 {
+		t.Fatalf("rows = %d, want none", len(res.Rows))
+	}
+	if strings.Join(res.Columns, ",") != "order_id,total" {
+		t.Errorf("columns = %v, want the provider's own", res.Columns)
+	}
+}
+
+// A turn whose own deadline has passed opens no connection, even when the
+// plugin hands in a live context — acquireConn builds under
+// context.WithoutCancel, so that build would outlive the failed read.
+func TestMutationQuery_ExpiredTurnOpensNoConnection(t *testing.T) {
+	built := 0
+	rt := NewProjectRuntime(ProjectRuntimeOptions{
+		PrimaryID:   "default",
+		Datasources: []DatasourceInfo{{ID: "default"}},
+		Build: func(context.Context, string) (*WarehouseConn, error) {
+			built++
+			return &WarehouseConn{}, nil
+		},
+	})
+	r := &runner{cfg: defaultQueryCfg(), store: &fakeStore{}}
+	turnCtx, cancel := context.WithCancel(context.Background())
+	cancel() // the TURN is over
+	run := r.mutationQuery(rt, &turnState{ctx: turnCtx, req: TurnRequest{ProjectID: "p1"}})
+
+	// The caller's context is perfectly alive.
+	if _, err := run(context.Background(), MutationQueryRequest{DatasourceID: "default", SQL: "SELECT 1"}); err == nil {
+		t.Fatal("an expired turn must refuse the read")
+	}
+	if built != 0 {
+		t.Errorf("no connection should be built for an expired turn, got %d", built)
 	}
 }
