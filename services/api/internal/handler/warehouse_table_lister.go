@@ -63,13 +63,33 @@ type listTablesResult struct {
 	Success bool     `json:"success"`
 	Error   string   `json:"error"`
 	Tables  []string `json:"tables"`
+	// UnlistedDatasets names the datasets the agent could not read. It skips
+	// those and still succeeds as long as one listed, so this is the only way to
+	// tell a complete catalogue from a partial one. An agent older than this
+	// field omits it, which reads as nil — see WarehouseTableListing.Complete.
+	UnlistedDatasets []string `json:"unlisted_datasets"`
+}
+
+// WarehouseTableListing is one live enumeration's outcome: the qualified names,
+// plus the datasets that could not be read.
+type WarehouseTableListing struct {
+	Tables []string
+	// UnlistedDatasets is empty for a complete enumeration and nil when the
+	// agent did not report on it at all.
+	UnlistedDatasets []string
+	// Complete is false when at least one dataset could not be read. An agent
+	// that predates unlisted_datasets reports nothing either way, and is taken
+	// at its word (true) rather than marking every listing suspect: the field's
+	// absence is an old image, not evidence of a failure.
+	Complete bool
 }
 
 // ListWarehouseTables runs the agent's --list-tables mode for one datasource
 // (empty warehouseID → the project's primary) and returns the qualified table
-// names. Errors from the agent (bad credentials, unreachable warehouse) surface
-// as an error so the caller can decide whether to degrade to an empty picker.
-func (a *AgentTableLister) ListWarehouseTables(ctx context.Context, projectID, warehouseID string) ([]string, error) {
+// names, plus whether every configured dataset could be read. Errors from the
+// agent (bad credentials, unreachable warehouse) surface as an error so the
+// caller can decide whether to degrade to an empty picker.
+func (a *AgentTableLister) ListWarehouseTables(ctx context.Context, projectID, warehouseID string) (WarehouseTableListing, error) {
 	args := []string{"--list-tables"}
 	if warehouseID != "" {
 		args = append(args, "--warehouse-id", warehouseID)
@@ -99,19 +119,23 @@ func (a *AgentTableLister) ListWarehouseTables(ctx context.Context, projectID, w
 	}
 	if err != nil {
 		if out.Error != "" {
-			return nil, fmt.Errorf("list tables: %s", out.Error)
+			return WarehouseTableListing{}, fmt.Errorf("list tables: %s", out.Error)
 		}
 		msg := "agent exited with error"
 		if res != nil && res.Error != "" {
 			msg = res.Error
 		}
-		return nil, fmt.Errorf("list tables: %s", msg)
+		return WarehouseTableListing{}, fmt.Errorf("list tables: %s", msg)
 	}
 	if !out.Success {
 		if out.Error != "" {
-			return nil, fmt.Errorf("list tables: %s", out.Error)
+			return WarehouseTableListing{}, fmt.Errorf("list tables: %s", out.Error)
 		}
-		return nil, fmt.Errorf("list tables: no result from agent")
+		return WarehouseTableListing{}, fmt.Errorf("list tables: no result from agent")
 	}
-	return out.Tables, nil
+	return WarehouseTableListing{
+		Tables:           out.Tables,
+		UnlistedDatasets: out.UnlistedDatasets,
+		Complete:         len(out.UnlistedDatasets) == 0,
+	}, nil
 }

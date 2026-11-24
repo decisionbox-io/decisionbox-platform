@@ -18,11 +18,14 @@ import (
 // `--list-tables` (optionally `--warehouse-id <id>`; empty resolves to the
 // project's primary datasource).
 //
-// This is the cheap pre-index enumeration that powers the discovery-scope
-// table picker: it lists names only (the warehouse driver's ListTablesInDataset
-// metadata query) and does NOT pull per-table schema, sample rows, generate
-// blurbs, or embed — so an operator can choose a table scope on a 1000+ table
-// warehouse before paying to index it. The names are qualified with the same
+// This is the cheap enumeration that powers a table picker: it lists names only
+// (the warehouse driver's ListTablesInDataset metadata query) and does NOT pull
+// per-table schema, sample rows, generate blurbs, or embed — so an operator can
+// choose a table scope on a 1000+ table warehouse before paying to index it.
+//
+// A dataset that cannot be read is skipped rather than failing the whole
+// listing, but it is NAMED in unlisted_datasets so the caller knows the
+// catalogue is incomplete. Only an all-datasets failure is an error. The names are qualified with the same
 // RefQualifier the indexer/discovery use, so a scope saved from this list
 // matches the schema_key form the index and the run-time filters key on.
 //
@@ -87,6 +90,12 @@ func runListTables(cfg *config.Config, projectID, warehouseID string) error {
 	seen := make(map[string]struct{})
 	tables := make([]string, 0)
 	listed := 0
+	// unlisted names the datasets that could not be read. A skipped dataset is
+	// reported alongside the names that DID list, because a caller choosing
+	// which tables to index has to tell "this dataset has no tables" from "we
+	// could not read this dataset" — silently omitting it offers an incomplete
+	// catalogue as a complete one.
+	unlisted := make([]string, 0)
 	var lastErr error
 	for _, dataset := range datasets {
 		names, err := provider.ListTablesInDataset(whCtx, dataset)
@@ -94,6 +103,7 @@ func runListTables(cfg *config.Config, projectID, warehouseID string) error {
 			// One bad dataset shouldn't blank the whole picker — skip it and
 			// keep listing the others (mirrors discovery's per-dataset skip).
 			lastErr = err
+			unlisted = append(unlisted, dataset)
 			continue
 		}
 		// Apply any registered ListTables filters (the same hook the index pass
@@ -106,6 +116,7 @@ func runListTables(cfg *config.Config, projectID, warehouseID string) error {
 		filtered, ferr := agentplugin.ApplyListTablesFilters(whCtx, projectID, dataset, names)
 		if ferr != nil {
 			lastErr = ferr
+			unlisted = append(unlisted, dataset)
 			continue
 		}
 		names = filtered
@@ -132,11 +143,16 @@ func runListTables(cfg *config.Config, projectID, warehouseID string) error {
 		return fmt.Errorf("list tables: all %d dataset(s) failed to list; last error: %w", len(datasets), lastErr)
 	}
 	sort.Strings(tables)
+	sort.Strings(unlisted)
 
+	// unlisted_datasets is always present (empty when every dataset listed), so a
+	// caller can tell a complete enumeration from one this agent is too old to
+	// report on.
 	out, err := json.Marshal(map[string]interface{}{
-		"success":      true,
-		"warehouse_id": whID,
-		"tables":       tables,
+		"success":           true,
+		"warehouse_id":      whID,
+		"tables":            tables,
+		"unlisted_datasets": unlisted,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal result: %w", err)

@@ -995,23 +995,81 @@ func TestSchemaIndex_ListCachedTables_EmptyCache(t *testing.T) {
 // (or a per-warehouse list via byWarehouse) or an error.
 type fakeTableLister struct {
 	tables       []string
+	unlisted     []string            // datasets the enumeration could not read
 	byWarehouse  map[string][]string // optional per-warehouse result; falls back to tables
 	err          error
 	called       bool
 	calls        int
 	gotWarehouse []string // warehouse ids seen, in call order
+	// block, when non-nil, holds the listing until it is closed — for the
+	// cancellation test, which needs a run in flight while its caller goes away.
+	block chan struct{}
+	// gotCancelled records whether the context the handler passed was already
+	// cancelled by the time the listing ran.
+	gotCancelled bool
 }
 
-func (f *fakeTableLister) ListWarehouseTables(_ context.Context, _, warehouseID string) ([]string, error) {
+func (f *fakeTableLister) ListWarehouseTables(ctx context.Context, _, warehouseID string) (WarehouseTableListing, error) {
 	f.called = true
 	f.calls++
 	f.gotWarehouse = append(f.gotWarehouse, warehouseID)
+	if f.block != nil {
+		<-f.block
+	}
+	f.gotCancelled = ctx.Err() != nil
+	tables := f.tables
 	if f.byWarehouse != nil {
 		if v, ok := f.byWarehouse[warehouseID]; ok {
-			return v, f.err
+			tables = v
 		}
 	}
-	return f.tables, f.err
+	if f.err != nil {
+		return WarehouseTableListing{}, f.err
+	}
+	return WarehouseTableListing{
+		Tables:           tables,
+		UnlistedDatasets: f.unlisted,
+		Complete:         len(f.unlisted) == 0,
+	}, nil
+}
+
+// pgProject is a single-datasource Postgres project — the shape every
+// source-mode test needs, so each one only shows what it actually varies.
+func pgProject() *models.Project {
+	return &models.Project{Name: "t", Domain: "gaming", Category: "match3",
+		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
+}
+
+// sourceModeHandler creates the project and wires a handler over it with the
+// given schema cache and lister, so each source-mode test shows only what it
+// varies. Pass a nil cache to leave the repo unwired, a nil lister to leave the
+// live path unwired.
+func sourceModeHandler(t *testing.T, p *models.Project, ci SchemaCacheInvalidator, lister WarehouseTableLister) *SchemaIndexHandler {
+	t.Helper()
+	projRepo := newMockProjectRepo()
+	if err := projRepo.Create(context.Background(), p); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+	if lister != nil {
+		h.SetTableLister(lister)
+	}
+	return h
+}
+
+// decodeUnlistedDatasets pulls the unlisted_datasets field out of the response
+// envelope; absent (a complete catalogue) decodes as nil.
+func decodeUnlistedDatasets(t *testing.T, w *httptest.ResponseRecorder) []string {
+	t.Helper()
+	var got struct {
+		Data struct {
+			UnlistedDatasets []string `json:"unlisted_datasets"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	return got.Data.UnlistedDatasets
 }
 
 func TestSchemaIndex_ListCachedTables_LiveFallback_WhenCacheEmpty(t *testing.T) {
@@ -1865,14 +1923,10 @@ func TestSchemaIndex_ListCachedTables_SourceWarehouse_IgnoresNonEmptyCache(t *te
 	// in-scope table, and the default source would serve exactly that. With
 	// source=warehouse the picker sees the whole warehouse, excluded tables
 	// included, so the scope can be widened.
-	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
-		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
-	projRepo := newMockProjectRepo()
-	_ = projRepo.Create(context.Background(), p)
-	ci := &mockCacheInvalidator{tables: []string{"public.orders"}} // the saved allow-scope
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+	p := pgProject()
 	lister := &fakeTableLister{tables: []string{"public.orders", "public.customers", "public.payments"}}
-	h.SetTableLister(lister)
+	// The cache holds the saved allow-scope, which is all a scoped index has.
+	h := sourceModeHandler(t, p, &mockCacheInvalidator{tables: []string{"public.orders"}}, lister)
 
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
@@ -1896,14 +1950,9 @@ func TestSchemaIndex_ListCachedTables_SourceWarehouse_IgnoresNonEmptyCache(t *te
 func TestSchemaIndex_ListCachedTables_SourceIndex_ExplicitKeepsCache(t *testing.T) {
 	// source=index is the documented spelling of the default: the indexed set,
 	// no live enumeration while the cache has rows.
-	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
-		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
-	projRepo := newMockProjectRepo()
-	_ = projRepo.Create(context.Background(), p)
-	ci := &mockCacheInvalidator{tables: []string{"public.orders"}}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+	p := pgProject()
 	lister := &fakeTableLister{tables: []string{"public.should_not_appear"}}
-	h.SetTableLister(lister)
+	h := sourceModeHandler(t, p, &mockCacheInvalidator{tables: []string{"public.orders"}}, lister)
 
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=index", p.ID, ""))
@@ -1918,11 +1967,8 @@ func TestSchemaIndex_ListCachedTables_SourceIndex_ExplicitKeepsCache(t *testing.
 func TestSchemaIndex_ListCachedTables_SourceUnknown_400(t *testing.T) {
 	// An unrecognised source must be rejected, not silently read as the default:
 	// a caller that asked for the warehouse and got the index has no way to tell.
-	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"}
-	projRepo := newMockProjectRepo()
-	_ = projRepo.Create(context.Background(), p)
-	ci := &mockCacheInvalidator{tables: []string{"public.orders"}}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+	p := pgProject()
+	h := sourceModeHandler(t, p, &mockCacheInvalidator{tables: []string{"public.orders"}}, nil)
 
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=live", p.ID, ""))
@@ -1935,17 +1981,13 @@ func TestSchemaIndex_ListCachedTables_SourceWarehouse_ListerError_503(t *testing
 	// A live-listing failure must NOT fall back to the indexed set: on a scoped
 	// project that is the current scope, so the picker would look complete while
 	// still being impossible to widen. Report it instead.
-	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
-		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
-	projRepo := newMockProjectRepo()
-	_ = projRepo.Create(context.Background(), p)
-	ci := &mockCacheInvalidator{tables: []string{"public.orders"}}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+	p := pgProject()
 	// A driver error that quotes the DSN it could not parse — the shape that
 	// makes relaying it to a viewer a credential leak.
-	h.SetTableLister(&fakeTableLister{
+	lister := &fakeTableLister{
 		err: errors.New(`cannot parse "postgres://admin:s3cret@db.internal/sales": invalid port`),
-	})
+	}
+	h := sourceModeHandler(t, p, &mockCacheInvalidator{tables: []string{"public.orders"}}, lister)
 
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
@@ -1969,14 +2011,9 @@ func TestSchemaIndex_ListCachedTables_SourceWarehouse_ListerError_NegativeCached
 	// A failure is negative-cached, so repeated polls back off instead of each
 	// spawning a doomed agent run — and every one of them still reports 503
 	// rather than a cached empty success.
-	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
-		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
-	projRepo := newMockProjectRepo()
-	_ = projRepo.Create(context.Background(), p)
-	ci := &mockCacheInvalidator{}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+	p := pgProject()
 	lister := &fakeTableLister{err: errors.New("warehouse unreachable")}
-	h.SetTableLister(lister)
+	h := sourceModeHandler(t, p, &mockCacheInvalidator{}, lister)
 
 	for i := 0; i < 3; i++ {
 		w := httptest.NewRecorder()
@@ -1993,12 +2030,8 @@ func TestSchemaIndex_ListCachedTables_SourceWarehouse_ListerError_NegativeCached
 func TestSchemaIndex_ListCachedTables_SourceWarehouse_NoLister_503(t *testing.T) {
 	// A build with no agent runner has no live enumeration to run. Saying so
 	// beats answering with the indexed set the caller did not ask for.
-	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
-		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
-	projRepo := newMockProjectRepo()
-	_ = projRepo.Create(context.Background(), p)
-	ci := &mockCacheInvalidator{tables: []string{"public.orders"}}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+	p := pgProject()
+	h := sourceModeHandler(t, p, &mockCacheInvalidator{tables: []string{"public.orders"}}, nil)
 
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
@@ -2011,12 +2044,8 @@ func TestSchemaIndex_ListCachedTables_SourceWarehouse_NoCacheRepo_StillLists(t *
 	// source=warehouse never reads the schema cache, so a build without the
 	// cache repo wired must still serve the live catalogue instead of the
 	// empty-list shortcut the default source takes.
-	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
-		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
-	projRepo := newMockProjectRepo()
-	_ = projRepo.Create(context.Background(), p)
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, nil, nil)
-	h.SetTableLister(&fakeTableLister{tables: []string{"public.orders"}})
+	p := pgProject()
+	h := sourceModeHandler(t, p, nil, &fakeTableLister{tables: []string{"public.orders"}})
 
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
@@ -2032,12 +2061,8 @@ func TestSchemaIndex_ListCachedTables_SourceWarehouse_NoWarehouse_EmptyNoSpawn(t
 	// A project with no datasource has nothing to enumerate: the empty list is
 	// the honest answer, and no agent run is spawned for it.
 	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3"} // no warehouse
-	projRepo := newMockProjectRepo()
-	_ = projRepo.Create(context.Background(), p)
-	ci := &mockCacheInvalidator{}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 	lister := &fakeTableLister{tables: []string{"public.should_not_appear"}}
-	h.SetTableLister(lister)
+	h := sourceModeHandler(t, p, &mockCacheInvalidator{}, lister)
 
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
@@ -2055,14 +2080,9 @@ func TestSchemaIndex_ListCachedTables_SourceWarehouse_NoWarehouse_EmptyNoSpawn(t
 func TestSchemaIndex_ListCachedTables_SourceWarehouse_CachedAcrossPolls(t *testing.T) {
 	// Always-live must still be bounded: the scope page re-fetches on every open
 	// and on every datasource switch, so polls inside the TTL reuse one listing.
-	p := &models.Project{Name: "t", Domain: "gaming", Category: "match3",
-		Warehouse: models.WarehouseConfig{Provider: "postgres", Datasets: []string{"public"}}}
-	projRepo := newMockProjectRepo()
-	_ = projRepo.Create(context.Background(), p)
-	ci := &mockCacheInvalidator{tables: []string{"public.orders"}}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
+	p := pgProject()
 	lister := &fakeTableLister{tables: []string{"public.orders", "public.customers"}}
-	h.SetTableLister(lister)
+	h := sourceModeHandler(t, p, &mockCacheInvalidator{tables: []string{"public.orders"}}, lister)
 
 	for i := 0; i < 3; i++ {
 		w := httptest.NewRecorder()
@@ -2080,15 +2100,12 @@ func TestSchemaIndex_ListCachedTables_SourceWarehouse_PerDatasource(t *testing.T
 	// Each datasource has its own scope, so the picker must enumerate the
 	// datasource it is configuring — not whichever one was listed first.
 	p := twoWarehouseProject()
-	projRepo := newMockProjectRepo()
-	_ = projRepo.Create(context.Background(), p)
-	ci := &mockCacheInvalidator{tables: []string{"indexed.only"}} // non-empty: ignored by source=warehouse
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 	lister := &fakeTableLister{byWarehouse: map[string][]string{
 		"wh_mssql": {"dbo.orders"},
 		"wh_pg":    {"public.customer"},
 	}}
-	h.SetTableLister(lister)
+	// Non-empty cache: ignored by source=warehouse.
+	h := sourceModeHandler(t, p, &mockCacheInvalidator{tables: []string{"indexed.only"}}, lister)
 
 	w1 := httptest.NewRecorder()
 	h.ListCachedTables(w1, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
@@ -2109,12 +2126,8 @@ func TestSchemaIndex_ListCachedTables_SourceWarehouse_UnknownWarehouseID_404(t *
 	// The datasource check must run before the live enumeration, so a foreign id
 	// can't spawn a listing against an arbitrary warehouse.
 	p := twoWarehouseProject()
-	projRepo := newMockProjectRepo()
-	_ = projRepo.Create(context.Background(), p)
-	ci := &mockCacheInvalidator{}
-	h := NewSchemaIndexHandler(projRepo, newMockProgress(), nil, nil, nil, ci, nil)
 	lister := &fakeTableLister{tables: []string{"dbo.should_not_appear"}}
-	h.SetTableLister(lister)
+	h := sourceModeHandler(t, p, &mockCacheInvalidator{}, lister)
 
 	w := httptest.NewRecorder()
 	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse&warehouse_id=wh_nope", p.ID, ""))
@@ -2123,5 +2136,215 @@ func TestSchemaIndex_ListCachedTables_SourceWarehouse_UnknownWarehouseID_404(t *
 	}
 	if lister.called {
 		t.Error("live lister must not be called for an unknown warehouse id")
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_SourceWarehouse_ReportsUnlistedDatasets(t *testing.T) {
+	// A dataset the enumeration could not read is named, so a partial catalogue
+	// is not served as a complete one. Serving it silently is the bug this
+	// source exists to fix, in miniature: the picker can't offer the skipped
+	// dataset's tables and nothing says why.
+	p := twoWarehouseProject()
+	lister := &fakeTableLister{tables: []string{"dbo.orders"}, unlisted: []string{"staging"}}
+	h := sourceModeHandler(t, p, &mockCacheInvalidator{}, lister)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — the tables that DID list are still useful", w.Code)
+	}
+	// The partial result is still served: an unreadable dataset must not blank
+	// a picker that can otherwise be used.
+	if got := decodeListCachedTables(t, w); len(got) != 1 || got[0] != "dbo.orders" {
+		t.Errorf("tables = %v, want [dbo.orders]", got)
+	}
+	got := decodeUnlistedDatasets(t, w)
+	if len(got) != 1 || got[0] != "staging" {
+		t.Errorf("unlisted_datasets = %v, want [staging]", got)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_SourceWarehouse_CompleteOmitsUnlisted(t *testing.T) {
+	// A complete catalogue says nothing, so a caller can treat the field's
+	// presence as "incomplete" without comparing lengths.
+	p := pgProject()
+	h := sourceModeHandler(t, p, &mockCacheInvalidator{}, &fakeTableLister{tables: []string{"public.orders"}})
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), "unlisted_datasets") {
+		t.Errorf("body = %s, want unlisted_datasets omitted for a complete listing", w.Body.String())
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_SourceIndex_DropsUnlistedDatasets(t *testing.T) {
+	// The default source's contract is "what is indexed"; it reaches the live
+	// listing only as a pre-index courtesy, so its callers are not shaped to
+	// read a partial-enumeration field.
+	p := pgProject()
+	lister := &fakeTableLister{tables: []string{"public.orders"}, unlisted: []string{"staging"}}
+	h := sourceModeHandler(t, p, &mockCacheInvalidator{}, lister) // empty cache → live fallback
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables", p.ID, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if got := decodeUnlistedDatasets(t, w); got != nil {
+		t.Errorf("unlisted_datasets = %v, want absent on the default source", got)
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_SourceWarehouse_LeaderCancellationDoesNotFailFollowers(t *testing.T) {
+	// singleflight hands the leader's error to every follower and the failure is
+	// then negative-cached, so a leader that navigated away mid-listing would
+	// report a healthy warehouse as unavailable to everyone for the fail TTL.
+	// The shared run must not inherit one caller's cancellation.
+	p := pgProject()
+	lister := &fakeTableLister{tables: []string{"public.orders"}, block: make(chan struct{})}
+	h := sourceModeHandler(t, p, &mockCacheInvalidator{}, lister)
+
+	// Start the listing under a context we then cancel, as a disconnect would.
+	ctx, cancel := context.WithCancel(context.Background())
+	req := newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, "").WithContext(ctx)
+	w := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { defer close(done); h.ListCachedTables(w, req) }()
+
+	// Wait until the listing is actually in flight, then drop the caller.
+	deadline := time.Now().Add(2 * time.Second)
+	for !lister.called && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !lister.called {
+		t.Fatal("listing never started")
+	}
+	cancel()
+	close(lister.block)
+	<-done
+
+	if lister.gotCancelled {
+		t.Error("the shared listing ran under the caller's cancelled context")
+	}
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — the caller going away must not fail the listing", w.Code)
+	}
+	if got := decodeListCachedTables(t, w); len(got) != 1 || got[0] != "public.orders" {
+		t.Errorf("tables = %v, want [public.orders]", got)
+	}
+}
+
+// --- redactCredentials ---
+
+func TestRedactCredentials(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "postgres dsn in a parse error",
+			in:   `cannot parse "postgres://admin:s3cret@db.internal:5432/sales": invalid port`,
+			want: `cannot parse "postgres://admin:***@db.internal:5432/sales": invalid port`,
+		},
+		{
+			// A generated password holds whatever the generator produced; a
+			// pattern that assumed otherwise would leave the awkward ones.
+			name: "password with punctuation",
+			in:   `dial "mysql://svc:p@ss#w0rd!$%^&*()@mysql.internal/db" failed`,
+			want: `dial "mysql://svc:***@mysql.internal/db" failed`,
+		},
+		{
+			name: "no credential to redact",
+			in:   "dial tcp 10.0.0.4:5432: connect: connection refused",
+			want: "dial tcp 10.0.0.4:5432: connect: connection refused",
+		},
+		{
+			name: "uri without userinfo is untouched",
+			in:   `cannot reach "https://warehouse.example.com/api": timeout`,
+			want: `cannot reach "https://warehouse.example.com/api": timeout`,
+		},
+		{
+			name: "two dsns in one message",
+			in:   `primary postgres://a:one@h1/d and replica postgres://b:two@h2/d both failed`,
+			want: `primary postgres://a:***@h1/d and replica postgres://b:***@h2/d both failed`,
+		},
+		{
+			name: "empty password still redacted",
+			in:   `cannot parse "postgres://admin:@db.internal/sales"`,
+			want: `cannot parse "postgres://admin:***@db.internal/sales"`,
+		},
+		{
+			// Azure / Snowflake DSNs put an email in the user field. A pattern
+			// that excluded "@" from the user matched nothing here and left the
+			// password in the message.
+			name: "email-style username",
+			in:   `cannot parse "postgres://user@corp.com:s3cret@db.internal/sales"`,
+			want: `cannot parse "postgres://user@corp.com:***@db.internal/sales"`,
+		},
+		{
+			// A "/" in a password is invalid unencoded — which is precisely the
+			// kind of DSN a driver rejects, so it must still be covered.
+			name: "password containing a slash",
+			in:   `dial "postgres://svc:pa/ss@db.internal/sales" failed`,
+			want: `dial "postgres://svc:***@db.internal/sales" failed`,
+		},
+		{
+			name: "host:port is not userinfo",
+			in:   "dial postgres://db.internal:5432/sales: connection refused",
+			want: "dial postgres://db.internal:5432/sales: connection refused",
+		},
+		{
+			name: "userinfo with no password is left alone",
+			in:   `cannot parse "postgres://admin@db.internal/sales"`,
+			want: `cannot parse "postgres://admin@db.internal/sales"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := redactCredentials(errors.New(tc.in))
+			if got.Error() != tc.want {
+				t.Errorf("redactCredentials(%q)\n = %q\nwant %q", tc.in, got.Error(), tc.want)
+			}
+			if strings.Contains(got.Error(), "s3cret") || strings.Contains(got.Error(), "p@ss#w0rd") ||
+				strings.Contains(got.Error(), "pa/ss") {
+				t.Errorf("redacted message still carries the secret: %q", got.Error())
+			}
+		})
+	}
+}
+
+func TestRedactCredentials_Nil(t *testing.T) {
+	if redactCredentials(nil) != nil {
+		t.Error("redactCredentials(nil) must stay nil so callers need no guard")
+	}
+}
+
+func TestSchemaIndex_ListCachedTables_SourceWarehouse_RedactsBeforeCaching(t *testing.T) {
+	// The negative cache holds the error for the fail TTL and the log line is
+	// written from it, so the redaction has to happen before either.
+	p := pgProject()
+	lister := &fakeTableLister{
+		err: errors.New(`cannot parse "postgres://admin:s3cret@db.internal/sales": invalid port`),
+	}
+	h := sourceModeHandler(t, p, &mockCacheInvalidator{}, lister)
+
+	w := httptest.NewRecorder()
+	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+	e, ok := h.getLiveTables(liveTableCacheKey(p.ID, p.PrimaryWarehouse()))
+	if !ok || e.err == nil {
+		t.Fatal("expected the failure to be negative-cached")
+	}
+	if strings.Contains(e.err.Error(), "s3cret") {
+		t.Errorf("cached error carries the credential: %q", e.err.Error())
+	}
+	if !strings.Contains(e.err.Error(), "db.internal") {
+		t.Errorf("cached error lost the diagnostic: %q", e.err.Error())
 	}
 }

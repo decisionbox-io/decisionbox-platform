@@ -525,7 +525,7 @@ Query parameters (both optional):
 - `warehouse_id` — the data source to list (empty resolves to the primary). An id that is not on the project answers `404`.
 - `source` — which catalogue to answer from:
   - `index` (the default) — the names the agent has indexed for that data source, falling back to a live names-only enumeration of the warehouse while that cache is empty (i.e. before the first index). An unwired cache repository, or a failed live enumeration, answers with an empty list.
-  - `warehouse` — always the live enumeration, so the response is the warehouse's whole catalogue regardless of what is indexed. A caller choosing which tables to index needs this: a registered [`ListTables` filter](../concepts/plugin-hooks.md) narrows the set that gets indexed, which makes the index a subset of the warehouse, and an index-sourced list could then only ever offer the tables already indexed. A failed enumeration answers `503` rather than falling back to the indexed names. Its body is deliberately generic — a warehouse driver error can quote the connection string it failed to parse, and this route is open to a `viewer`; the reason is in the API log. (`POST /test/warehouse` does return the agent's own message, and requires `admin`.)
+  - `warehouse` — always the live enumeration, so the response is the warehouse's catalogue regardless of what is **indexed**. A caller choosing which tables to index needs this: a registered [`ListTables` filter](../concepts/plugin-hooks.md) narrows the set that gets indexed, which makes the index a subset of the warehouse, and an index-sourced list could then only ever offer the tables already indexed. This option bypasses the index, **not** deployment-level filtering — a registered `ListTables` filter runs on the live listing too, so a plugin that filters both paths returns its restricted set either way. A failed enumeration answers `503` rather than falling back to the indexed names. Its body is deliberately generic — a warehouse driver error can quote the connection string it failed to parse, and this route is open to a `viewer`; the reason is in the API log, with any URI password redacted. (`POST /test/warehouse` does return the agent's own message, and requires `admin`.)
 
   Any other value answers `400`.
 
@@ -546,6 +546,25 @@ curl "http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/schema-cach
 ```
 
 An empty result is `[]`, never `null`.
+
+A `source=warehouse` enumeration **skips a dataset it cannot read** and still
+succeeds on the strength of the others — blanking a usable picker over one
+unreadable schema would be worse. Those datasets are named, so a partial
+catalogue is never served as a complete one:
+
+```json
+{
+  "data": {
+    "tables": ["public.customers", "public.orders"],
+    "unlisted_datasets": ["staging"]
+  }
+}
+```
+
+`unlisted_datasets` is **omitted** when every dataset listed, so its presence
+means the catalogue is incomplete. It is never sent for `source=index`, which
+answers from the cache and enumerates nothing. Only an all-datasets failure is a
+`503`.
 
 ---
 
