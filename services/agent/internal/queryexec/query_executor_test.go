@@ -251,12 +251,12 @@ func (w *queryWrapper) ListTables(ctx context.Context) ([]string, error) {
 func (w *queryWrapper) GetTableSchema(ctx context.Context, table string) (*gowarehouse.TableSchema, error) {
 	return w.provider.GetTableSchema(ctx, table)
 }
-func (w *queryWrapper) GetDataset() string      { return w.provider.GetDataset() }
-func (w *queryWrapper) SQLDialect() string      { return w.provider.SQLDialect() }
+func (w *queryWrapper) GetDataset() string { return w.provider.GetDataset() }
+func (w *queryWrapper) SQLDialect() string { return w.provider.SQLDialect() }
 func (w *queryWrapper) QuoteRef(parts ...string) string {
 	return w.provider.QuoteRef(parts...)
 }
-func (w *queryWrapper) SQLFixPrompt() string    { return w.provider.SQLFixPrompt() }
+func (w *queryWrapper) SQLFixPrompt() string { return w.provider.SQLFixPrompt() }
 func (w *queryWrapper) ListTablesInDataset(ctx context.Context, dataset string) ([]string, error) {
 	return w.provider.ListTables(ctx)
 }
@@ -268,7 +268,7 @@ func (w *queryWrapper) ValidateSQL(ctx context.Context, sql string) error {
 	return nil
 }
 func (w *queryWrapper) HealthCheck(ctx context.Context) error { return nil }
-func (w *queryWrapper) Close() error            { return nil }
+func (w *queryWrapper) Close() error                          { return nil }
 
 func TestExecute_EmptyQuery(t *testing.T) {
 	wh := testutil.NewMockWarehouseProvider("test_dataset")
@@ -921,4 +921,115 @@ func (c *chainedFixer) FixSQL(_ context.Context, _ string, _ string, _ int, opts
 		OutputTokens: 1,
 		DurationMs:   1,
 	}, nil
+}
+
+// A caller that asked for no repair gets the first failure back, and the fixer
+// is never called — the point being both that the rows cannot come from a
+// rewritten query and that the LLM is not paid for an answer the caller
+// could not use anyway.
+func TestExecuteNoRepairReturnsTheFirstFailure(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	calls := 0
+	wrapper := &queryWrapper{provider: wh, fn: func(context.Context, string, map[string]interface{}) (*gowarehouse.QueryResult, error) {
+		calls++
+		return nil, fmt.Errorf("relation \"orders\" does not exist")
+	}}
+	fixer := &mockFixer{}
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:  wrapper,
+		SQLFixer:   fixer,
+		MaxRetries: 5,
+	})
+
+	res, err := executor.ExecuteWithFixOpts(context.Background(),
+		"SELECT * FROM orders", "re-read", FixOpts{NoRepair: true})
+	if err == nil {
+		t.Fatal("a failing query must still be an error with NoRepair")
+	}
+	if !strings.Contains(err.Error(), "not repaired") {
+		t.Errorf("the error should say the query was not repaired, got %q", err)
+	}
+	if fixer.Calls != 0 {
+		t.Errorf("the fixer must not be called with NoRepair, got %d calls", fixer.Calls)
+	}
+	if calls != 1 {
+		t.Errorf("the query should run exactly once with NoRepair, got %d", calls)
+	}
+	if res == nil || res.Fixed {
+		t.Errorf("the partial result must not be marked fixed: %+v", res)
+	}
+}
+
+// NoRepair changes nothing about a query that works: same rows, same final
+// query, no retry.
+func TestExecuteNoRepairLeavesASucceedingQueryAlone(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	fixer := &mockFixer{}
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:  wh,
+		SQLFixer:   fixer,
+		MaxRetries: 5,
+	})
+
+	res, err := executor.ExecuteWithFixOpts(context.Background(),
+		"SELECT 1", "re-read", FixOpts{NoRepair: true})
+	if err != nil {
+		t.Fatalf("ExecuteWithFixOpts error: %v", err)
+	}
+	if res.RowCount == 0 {
+		t.Error("expected rows back")
+	}
+	if res.Fixed || res.FixAttempts != 0 || fixer.Calls != 0 {
+		t.Errorf("nothing should have been repaired: fixed=%v attempts=%d fixerCalls=%d",
+			res.Fixed, res.FixAttempts, fixer.Calls)
+	}
+	if res.FinalQuery != "SELECT 1" {
+		t.Errorf("the final query must be the one given, got %q", res.FinalQuery)
+	}
+}
+
+// The tenant filter is checked before anything runs, NoRepair or not: a
+// re-read must not be a way around the scope check.
+func TestExecuteNoRepairStillEnforcesTheTenantFilter(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:   wh,
+		MaxRetries:  5,
+		FilterField: "app_id",
+		FilterValue: "test",
+	})
+
+	_, err := executor.ExecuteWithFixOpts(context.Background(),
+		"SELECT * FROM orders", "re-read", FixOpts{NoRepair: true})
+	if err == nil || !strings.Contains(err.Error(), "security violation") {
+		t.Fatalf("an unscoped query must be refused with NoRepair too, got %v", err)
+	}
+}
+
+// Without NoRepair the repair path still runs — the regression guard for the
+// branch this flag adds.
+func TestExecuteRepairsWhenNoRepairIsUnset(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("test_dataset")
+	calls := 0
+	wrapper := &queryWrapper{provider: wh, fn: func(_ context.Context, _ string, _ map[string]interface{}) (*gowarehouse.QueryResult, error) {
+		calls++
+		if calls == 1 {
+			return nil, fmt.Errorf("syntax error near 'BAD'")
+		}
+		return &gowarehouse.QueryResult{Columns: []string{"n"}, Rows: []map[string]interface{}{{"n": 1}}}, nil
+	}}
+	fixer := &mockFixer{FixedQuery: "SELECT 1 AS n"}
+	executor := NewQueryExecutor(QueryExecutorOptions{
+		Warehouse:  wrapper,
+		SQLFixer:   fixer,
+		MaxRetries: 3,
+	})
+
+	res, err := executor.Execute(context.Background(), "SELECT BAD", "test")
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if !res.Fixed || fixer.Calls != 1 {
+		t.Errorf("the repair path should still run by default: fixed=%v fixerCalls=%d", res.Fixed, fixer.Calls)
+	}
 }

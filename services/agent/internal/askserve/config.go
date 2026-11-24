@@ -26,6 +26,7 @@ const (
 	EnvMaxFetchRows        = "ASK_SERVE_MAX_FETCH_ROWS"
 	EnvPreviewRows         = "ASK_SERVE_PREVIEW_ROWS"
 	EnvMaxQueriesPerTurn   = "ASK_SERVE_MAX_QUERIES_PER_TURN"
+	EnvMaxReReadsPerTurn   = "ASK_SERVE_MAX_RE_READS_PER_TURN"
 	EnvMaxRounds           = "ASK_SERVE_MAX_ROUNDS"
 	EnvWallClockSeconds    = "ASK_SERVE_WALLCLOCK_SECONDS"
 	EnvQueryTimeoutSeconds = "ASK_SERVE_QUERY_TIMEOUT_SECONDS"
@@ -52,10 +53,18 @@ const (
 // hours, so the per-turn wall-clock and per-query timeouts default to 12h;
 // these bound a durable background job, not a held connection.
 const (
-	defaultPort                = 8090
-	defaultMaxFetchRows        = 1000
-	defaultPreviewRows         = 50
-	defaultMaxQueriesPerTurn   = 6
+	defaultPort              = 8090
+	defaultMaxFetchRows      = 1000
+	defaultPreviewRows       = 50
+	defaultMaxQueriesPerTurn = 6
+	// defaultMaxReReadsPerTurn bounds the re-reads a write tool may ask for in
+	// one turn. They are not the model's queries, so they do not spend its
+	// budget; this is what keeps "not charged" from meaning "not bounded".
+	//
+	// 12 is twice the per-turn query budget: a tool re-reading results the
+	// conversation produced cannot legitimately need more reads than the
+	// conversation could have produced results, across a couple of calls.
+	defaultMaxReReadsPerTurn   = 12
 	defaultMaxRounds           = 12
 	defaultWallClock           = 12 * time.Hour
 	defaultQueryTimeout        = 12 * time.Hour
@@ -91,7 +100,9 @@ const (
 type Config struct {
 	Port int
 
-	MaxFetchRows      int
+	MaxFetchRows int
+	// MaxReReadsPerTurn bounds a write tool's bounded re-reads per turn.
+	MaxReReadsPerTurn int
 	PreviewRows       int
 	MaxQueriesPerTurn int
 	MaxRounds         int
@@ -129,6 +140,7 @@ func LoadConfig() Config {
 	return Config{
 		Port:                    goconfig.GetEnvAsInt(EnvPort, defaultPort),
 		MaxFetchRows:            positive(goconfig.GetEnvAsInt(EnvMaxFetchRows, defaultMaxFetchRows), defaultMaxFetchRows),
+		MaxReReadsPerTurn:       positive(goconfig.GetEnvAsInt(EnvMaxReReadsPerTurn, defaultMaxReReadsPerTurn), defaultMaxReReadsPerTurn),
 		PreviewRows:             previewRows,
 		MaxQueriesPerTurn:       positive(goconfig.GetEnvAsInt(EnvMaxQueriesPerTurn, defaultMaxQueriesPerTurn), defaultMaxQueriesPerTurn),
 		MaxRounds:               positive(goconfig.GetEnvAsInt(EnvMaxRounds, defaultMaxRounds), defaultMaxRounds),

@@ -21,6 +21,78 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
+// QueryRequest names one result to re-read: the datasource it was observed
+// against, the query that produced it, and the most rows the caller can use.
+type QueryRequest struct {
+	// DatasourceID is required. A re-read addresses a specific observation, so
+	// the caller knows which of the project's warehouses produced it; guessing
+	// on its behalf could read the wrong data, which is the worst outcome here.
+	DatasourceID string
+	// SQL is the query to run, verbatim. It is never parsed or rewritten.
+	SQL string
+	// MaxRows bounds the rows returned. 0 means the host's own fetch cap, which
+	// bounds it in either case.
+	MaxRows int
+}
+
+// QualityCaveat is one thing the SOURCE said about a result's fidelity: rows
+// it withheld, values it sampled, a cap the query reached.
+//
+// Re-declared here rather than shared with the warehouse package, which this
+// registry does not depend on. Kind is the source's own machine-readable
+// label; Detail is its own words, which are the ones worth showing.
+type QualityCaveat struct {
+	Kind   string
+	Detail string
+}
+
+// QueryResult is a bounded read.
+type QueryResult struct {
+	Columns []string
+	Rows    []map[string]any
+	// RowCount is what the source returned BEFORE MaxRows was applied, so a
+	// caller can say "showing N of M" truthfully.
+	RowCount int
+	// Quality is what the source declared about this result. A caller that
+	// presents rows as a population MUST check it: a sampled or capped result
+	// comes back with len(Rows) == RowCount and is not the whole answer.
+	Quality []QualityCaveat
+}
+
+// QueryFunc runs ONE read-only query inside the project, bounded. The host
+// binds it (the ask-serve loop owns the warehouse connections); it is nil when
+// the host offers no such read, so a tool MUST handle nil rather than assume
+// one.
+//
+// It exists so a tool can re-read a result its conversation already observed —
+// a bounded preview is the right size for a model's context and the wrong size
+// for a consumer that needs the result itself. But read what it grants, not
+// what it is for: the host does NOT verify that the query was ever observed.
+// It cannot usefully, because the result being re-read usually belongs to an
+// earlier turn, so the turn's own query log cannot confirm it. **A successful
+// call therefore establishes nothing about provenance** — a tool that needs
+// the rows to be a particular observation's must satisfy itself of that, as
+// the reports tool does by taking the query from the frozen step it is
+// filling.
+//
+// What the host DOES guarantee:
+//
+//   - the datasource is one of the project's, named explicitly, and within any
+//     datasource the turn is pinned to;
+//   - the tenant filter and read-only credentials of that datasource;
+//   - the query runs exactly as given — never parsed, never rewritten, and
+//     never repaired on failure, so rows can never come from a rewritten
+//     query under the original's name;
+//   - a row cap applied to the rows returned, not by splicing a LIMIT the
+//     source's dialect may not use;
+//   - the turn's deadline, and a per-turn count of these reads.
+//
+// An unknown or unpinned datasource, a query the tenant filter refuses, a
+// timeout and a warehouse error are all errors. A caller that cannot proceed
+// without the rows should say so to its user rather than present a smaller
+// answer as complete.
+type QueryFunc func(ctx context.Context, q QueryRequest) (*QueryResult, error)
+
 // Request is the per-call context a mutation tool receives. The agent binds the
 // shared Mongo handle (the loop itself stays storage-agnostic); the rest is the
 // turn identity the tool stamps on whatever it persists.
@@ -38,6 +110,10 @@ type Request struct {
 	Args map[string]any
 	// Mongo is the shared platform database handle the agent binds at build time.
 	Mongo *mongo.Database
+	// Query re-reads a result this turn observed, for a tool that needs more of
+	// it than the turn's own bounded preview carries. Nil when the host offers
+	// no re-read — handle that, never assume it is set.
+	Query QueryFunc
 }
 
 // Result is what a mutation tool returns. A tool that produced an approvable

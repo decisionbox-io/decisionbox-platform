@@ -52,6 +52,16 @@ type FixOpts struct {
 	// surrounding {{#VERIFICATION_CONTEXT}}…{{/VERIFICATION_CONTEXT}} section
 	// from the rendered prompt.
 	VerificationContext string
+
+	// NoRepair executes the query exactly as given and returns the first
+	// failure, instead of asking the fixer to rewrite it and retrying.
+	//
+	// It is for a caller RE-RUNNING a query that has already succeeded, where a
+	// repair would be the wrong outcome rather than a better one: a rewritten
+	// query is a different query, and its rows must not be reported as the
+	// original query's. A caller that cannot use a repaired answer also should
+	// not pay for one — the repair path spends an LLM call per attempt.
+	NoRepair bool
 }
 
 // FixResult is the structured return shape of SQLFixer.FixSQL. It
@@ -175,7 +185,11 @@ func (e *QueryExecutor) CurrentStep() int { return e.currentStep }
 
 // ExecuteResult represents the result of a query execution.
 type ExecuteResult struct {
-	Data            []map[string]interface{}
+	Data []map[string]interface{}
+	// Columns is the provider's own column metadata, where it supplied any.
+	// Kept because a query that matched no rows still HAS columns, and
+	// deriving them from row keys loses the schema of an empty result.
+	Columns         []string
 	RowCount        int
 	ExecutionTimeMs int64
 	FixAttempts     int
@@ -278,6 +292,7 @@ func (e *QueryExecutor) ExecuteNative(ctx context.Context, query gowarehouse.Nat
 
 		if err == nil {
 			result.Data = qr.Rows
+			result.Columns = qr.Columns
 			result.RowCount = len(qr.Rows)
 			result.ExecutionTimeMs = executionTime
 			result.FinalQuery = currentQuery.String()
@@ -380,6 +395,18 @@ func (e *QueryExecutor) ExecuteNative(ctx context.Context, query gowarehouse.Nat
 				"error":   err.Error(),
 			}).Error("Structured query failed and the text repair loop cannot repair it")
 			return result, fmt.Errorf("query failed and structured queries have no repair path: %w", err)
+		}
+
+		// Asked not to repair: return the first failure rather than rewriting the
+		// query. Checked before the fixer, because the caller's instruction holds
+		// whether or not a fixer happens to be configured, and the message has to
+		// say what actually stopped the retry.
+		if opts.NoRepair {
+			applog.WithFields(applog.Fields{
+				"purpose": purpose,
+				"error":   err.Error(),
+			}).Warn("Query failed and the caller asked for no repair")
+			return result, fmt.Errorf("query failed and was not repaired (the caller asked for none): %w", err)
 		}
 
 		if e.sqlFixer == nil {
