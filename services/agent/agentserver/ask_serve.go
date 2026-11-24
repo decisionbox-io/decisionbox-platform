@@ -462,7 +462,11 @@ func adaptMutationQuery(q askserve.MutationQuery) gomutation.QueryFunc {
 		if err != nil {
 			return nil, err
 		}
-		return &gomutation.QueryResult{Columns: res.Columns, Rows: res.Rows, RowCount: res.RowCount}, nil
+		out := &gomutation.QueryResult{Columns: res.Columns, Rows: res.Rows, RowCount: res.RowCount}
+		for _, c := range res.Quality {
+			out.Quality = append(out.Quality, gomutation.QualityCaveat{Kind: string(c.Kind), Detail: c.String()})
+		}
+		return out, nil
 	}
 }
 

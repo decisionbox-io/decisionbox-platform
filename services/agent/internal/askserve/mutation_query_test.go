@@ -44,7 +44,7 @@ func queryRunner(t *testing.T, cfg Config, wh *testutil.MockWarehouseProvider, f
 		},
 	})
 	r := &runner{cfg: cfg, store: &fakeStore{}}
-	st := &turnState{req: TurnRequest{ProjectID: "p1", SessionID: "s1", TurnID: "t1"}}
+	st := &turnState{ctx: context.Background(), req: TurnRequest{ProjectID: "p1", SessionID: "s1", TurnID: "t1"}}
 	return r.mutationQuery(rt, st)
 }
 
@@ -149,7 +149,7 @@ func TestMutationQuery_RefusesAnUnknownOrMissingDatasource(t *testing.T) {
 				},
 			})
 			r := &runner{cfg: defaultQueryCfg(), store: &fakeStore{}}
-			run := r.mutationQuery(rt, &turnState{req: TurnRequest{ProjectID: "p1"}})
+			run := r.mutationQuery(rt, &turnState{ctx: context.Background(), req: TurnRequest{ProjectID: "p1"}})
 
 			if _, err := run(context.Background(), MutationQueryRequest{DatasourceID: dsID, SQL: "SELECT 1"}); err == nil {
 				t.Fatal("expected a refusal")
@@ -232,7 +232,7 @@ func TestMutationQuery_SurfacesAConnectFailure(t *testing.T) {
 		},
 	})
 	r := &runner{cfg: defaultQueryCfg(), store: &fakeStore{}}
-	run := r.mutationQuery(rt, &turnState{req: TurnRequest{ProjectID: "p1"}})
+	run := r.mutationQuery(rt, &turnState{ctx: context.Background(), req: TurnRequest{ProjectID: "p1"}})
 
 	_, err := run(context.Background(), MutationQueryRequest{DatasourceID: "default", SQL: "SELECT 1"})
 	if err == nil || !strings.Contains(err.Error(), "could not connect") {
@@ -243,16 +243,21 @@ func TestMutationQuery_SurfacesAConnectFailure(t *testing.T) {
 // A cancelled context returns promptly rather than hanging the generate.
 func TestMutationQuery_HonoursACancelledContext(t *testing.T) {
 	wh := testutil.NewMockWarehouseProvider("ds")
+	// The builder runs under context.WithoutCancel, so its Done channel is nil
+	// and blocking on it would leave the goroutine alive for the rest of the
+	// test process. Block on a channel the test owns and closes instead.
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
 	rt := NewProjectRuntime(ProjectRuntimeOptions{
 		PrimaryID:   "default",
 		Datasources: []DatasourceInfo{{ID: "default"}},
-		Build: func(ctx context.Context, _ string) (*WarehouseConn, error) {
-			<-ctx.Done()
-			return nil, ctx.Err()
+		Build: func(context.Context, string) (*WarehouseConn, error) {
+			<-release
+			return nil, fmt.Errorf("released")
 		},
 	})
 	r := &runner{cfg: defaultQueryCfg(), store: &fakeStore{}}
-	run := r.mutationQuery(rt, &turnState{req: TurnRequest{ProjectID: "p1"}})
+	run := r.mutationQuery(rt, &turnState{ctx: context.Background(), req: TurnRequest{ProjectID: "p1"}})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -278,4 +283,146 @@ type countingFixer struct{ calls int }
 func (c *countingFixer) FixSQL(context.Context, string, string, int, queryexec.FixOpts) (queryexec.FixResult, error) {
 	c.calls++
 	return queryexec.FixResult{FixedSQL: "SELECT 1"}, nil
+}
+
+// --- what the platform review surfaced -----------------------------------
+
+// Re-reads do not spend the model's query budget, so they need a bound of
+// their own: otherwise "not charged" would mean "not limited".
+func TestMutationQuery_IsBoundedPerTurn(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("ds")
+	wh.DefaultResult = &gowarehouse.QueryResult{Columns: []string{"id"}, Rows: rowsOf(5)}
+	cfg := defaultQueryCfg()
+	cfg.MaxReReadsPerTurn = 3
+	run := queryRunner(t, cfg, wh, "", nil)
+
+	for i := 1; i <= 3; i++ {
+		if _, err := run(context.Background(), MutationQueryRequest{DatasourceID: "default", SQL: "SELECT id FROM t"}); err != nil {
+			t.Fatalf("re-read %d should be allowed: %v", i, err)
+		}
+	}
+	_, err := run(context.Background(), MutationQueryRequest{DatasourceID: "default", SQL: "SELECT id FROM t"})
+	if err == nil {
+		t.Fatal("the fourth re-read must be refused")
+	}
+	if !strings.Contains(err.Error(), "already made its 3") {
+		t.Errorf("the refusal should name the bound: %v", err)
+	}
+	// And the model's own query budget is untouched by any of it.
+	if len(wh.Calls) != 3 {
+		t.Errorf("warehouse calls = %d, want 3", len(wh.Calls))
+	}
+}
+
+// The read runs under the TURN's context, so a plugin handing in a detached
+// one cannot lose the project id a warehouse middleware scopes by.
+func TestMutationQuery_RunsUnderTheTurnContext(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("ds")
+	wh.DefaultResult = &gowarehouse.QueryResult{Columns: []string{"id"}, Rows: rowsOf(3)}
+	exec := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{Warehouse: wh, MaxRetries: 1})
+
+	var sawWarehouse string
+	rt := NewProjectRuntime(ProjectRuntimeOptions{
+		PrimaryID:   "default",
+		Datasources: []DatasourceInfo{{ID: "default"}},
+		Build: func(ctx context.Context, _ string) (*WarehouseConn, error) {
+			sawWarehouse = gowarehouse.WarehouseIDFromContext(ctx)
+			return &WarehouseConn{Executor: exec}, nil
+		},
+	})
+	r := &runner{cfg: defaultQueryCfg(), store: &fakeStore{}}
+	turnCtx := gowarehouse.WithWarehouseID(context.Background(), "turn-scope")
+	st := &turnState{ctx: turnCtx, req: TurnRequest{ProjectID: "p1"}}
+	run := r.mutationQuery(rt, st)
+
+	// A caller that passes a brand-new context must not detach the read.
+	if _, err := run(context.Background(), MutationQueryRequest{DatasourceID: "default", SQL: "SELECT id FROM t"}); err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	if sawWarehouse != "default" {
+		t.Errorf("the datasource should be stamped on the context, got %q", sawWarehouse)
+	}
+}
+
+// The caller's context may only SHORTEN the read: a cancelled caller stops it
+// even though the turn is still live.
+func TestMutationQuery_CallerContextCanOnlyShorten(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("ds")
+	wh.DefaultResult = &gowarehouse.QueryResult{Columns: []string{"id"}, Rows: rowsOf(3)}
+	exec := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{Warehouse: wh, MaxRetries: 1})
+	rt := NewProjectRuntime(ProjectRuntimeOptions{
+		PrimaryID:   "default",
+		Datasources: []DatasourceInfo{{ID: "default"}},
+		Build: func(context.Context, string) (*WarehouseConn, error) {
+			return &WarehouseConn{Executor: exec}, nil
+		},
+	})
+	r := &runner{cfg: defaultQueryCfg(), store: &fakeStore{}}
+	run := r.mutationQuery(rt, &turnState{ctx: context.Background(), req: TurnRequest{ProjectID: "p1"}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := run(ctx, MutationQueryRequest{DatasourceID: "default", SQL: "SELECT id FROM t"}); err == nil {
+		t.Fatal("a cancelled caller must stop the read even while the turn lives")
+	}
+}
+
+// A source-declared caveat survives the re-read. Dropping it would hand a
+// caller len(Rows) == RowCount for a sampled result, which reads as the whole
+// population.
+func TestMutationQuery_CarriesQualityCaveats(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("ds")
+	wh.DefaultResult = &gowarehouse.QueryResult{
+		Columns: []string{"id"}, Rows: rowsOf(10),
+		Quality: []gowarehouse.QualityCaveat{{Kind: "sampled", Detail: "1% sample"}},
+	}
+	run := queryRunner(t, defaultQueryCfg(), wh, "", nil)
+
+	res, err := run(context.Background(), MutationQueryRequest{DatasourceID: "default", SQL: "SELECT id FROM t", MaxRows: 100})
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	if len(res.Quality) != 1 || res.Quality[0].Kind != "sampled" {
+		t.Errorf("the source's caveat must survive, got %+v", res.Quality)
+	}
+}
+
+// The capped rows are copied, not resliced: a reslice keeps the whole
+// warehouse response alive for as long as the caller holds the result.
+func TestMutationQuery_CappedRowsDoNotRetainTheWholeResult(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("ds")
+	wh.DefaultResult = &gowarehouse.QueryResult{Columns: []string{"id"}, Rows: rowsOf(500)}
+	run := queryRunner(t, defaultQueryCfg(), wh, "", nil)
+
+	res, err := run(context.Background(), MutationQueryRequest{DatasourceID: "default", SQL: "SELECT id FROM t", MaxRows: 10})
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	if len(res.Rows) != 10 {
+		t.Fatalf("rows = %d, want 10", len(res.Rows))
+	}
+	if cap(res.Rows) != 10 {
+		t.Errorf("cap = %d, want 10 — a reslice would keep all 500 rows alive", cap(res.Rows))
+	}
+}
+
+// The query executes verbatim: trimming is only how a blank request is
+// rejected, because a trailing character can belong to a quoted identifier.
+func TestMutationQuery_ExecutesTheQueryVerbatim(t *testing.T) {
+	wh := testutil.NewMockWarehouseProvider("ds")
+	wh.DefaultResult = &gowarehouse.QueryResult{Columns: []string{"id"}, Rows: rowsOf(1)}
+	run := queryRunner(t, defaultQueryCfg(), wh, "", nil)
+
+	sql := "SELECT id FROM t  "
+	if _, err := run(context.Background(), MutationQueryRequest{DatasourceID: "default", SQL: sql}); err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	if len(wh.Calls) != 1 || wh.Calls[0].Query != sql {
+		t.Errorf("the warehouse should see the query unchanged, got %q", wh.Calls[0].Query)
+	}
+
+	// Blank is still refused.
+	if _, err := run(context.Background(), MutationQueryRequest{DatasourceID: "default", SQL: "   \n"}); err == nil {
+		t.Error("a blank query must be refused")
+	}
 }

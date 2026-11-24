@@ -35,13 +35,28 @@ type QueryRequest struct {
 	MaxRows int
 }
 
-// QueryResult is a bounded re-read.
+// QualityCaveat is one thing the SOURCE said about a result's fidelity: rows
+// it withheld, values it sampled, a cap the query reached.
+//
+// Re-declared here rather than shared with the warehouse package, which this
+// registry does not depend on. Kind is the source's own machine-readable
+// label; Detail is its own words, which are the ones worth showing.
+type QualityCaveat struct {
+	Kind   string
+	Detail string
+}
+
+// QueryResult is a bounded read.
 type QueryResult struct {
 	Columns []string
 	Rows    []map[string]any
 	// RowCount is what the source returned BEFORE MaxRows was applied, so a
 	// caller can say "showing N of M" truthfully.
 	RowCount int
+	// Quality is what the source declared about this result. A caller that
+	// presents rows as a population MUST check it: a sampled or capped result
+	// comes back with len(Rows) == RowCount and is not the whole answer.
+	Quality []QualityCaveat
 }
 
 // QueryFunc re-runs a query the turn has already run: read-only, inside the

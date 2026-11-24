@@ -24,36 +24,72 @@ type MutationQueryRequest struct {
 	MaxRows int
 }
 
-// MutationQueryResult is a bounded re-read. RowCount is what the source
-// returned before MaxRows was applied.
+// MutationQueryResult is a bounded read. RowCount is what the source returned
+// before MaxRows was applied.
 type MutationQueryResult struct {
 	Columns  []string
 	Rows     []map[string]any
 	RowCount int
+	// Quality carries what the SOURCE said about this result's fidelity — rows
+	// it withheld, values it sampled, a cap the query reached. Dropping it
+	// would hand a caller len(Rows) == RowCount for a result that is not the
+	// whole population, which is exactly the mistake a grounded consumer must
+	// not make. Nil for every SQL warehouse that declared nothing.
+	Quality []gowarehouse.QualityCaveat
 }
 
 // MutationQuery re-runs a query the turn has already run. See the
 // askmutation.QueryFunc contract it is adapted onto in the agentserver.
 type MutationQuery func(ctx context.Context, q MutationQueryRequest) (*MutationQueryResult, error)
 
-// mutationQuery builds the re-read a write tool receives for this turn. It is
-// execQuery's path with the model removed: the same datasource resolution, the
-// same per-query deadline under the turn's, the same warehouse-id context for
-// the governance middleware, the same warm connection, and the same executor —
-// which carries the tenant filter and runs over read-only credentials.
+// mutationQuery builds the bounded read a write tool receives for this turn.
 //
-// Three things differ, all because the caller is re-reading its own
-// observation rather than asking a new question:
+// What it actually grants, stated plainly rather than by its intended use: a
+// tool may run ANY query it supplies, read-only and tenant-scoped, against any
+// datasource configured for the project. It is for re-reading a result the
+// conversation already observed — that is why it exists and what its only
+// caller does — but nothing here verifies that the query was observed, so the
+// capability must be described as the wider one it is.
 //
-//   - The datasource must be named. The model's query may fall back to the
-//     project's primary; a re-read may not, because the observation it belongs
-//     to was made against one specific warehouse.
-//   - No repair. A rewritten query is a different query, and its rows must not
-//     be reported as this one's.
-//   - It does not spend the turn's query budget. This is not one of the model's
-//     queries, and charging it would starve the turn that asked for the work.
+// Verifying it is not available at this layer and would break the use it is
+// for: the result being re-read usually belongs to an EARLIER turn, so the
+// turn's own query log cannot confirm it, and reaching into session storage
+// from the loop to check would couple the loop to a store it deliberately
+// knows nothing about. What bounds it instead:
+//
+//   - the datasource must be one of the project's, named explicitly — the
+//     model's query may fall back to the primary, this may not, because a
+//     re-read belongs to one specific warehouse;
+//   - the tenant filter and read-only credentials of that datasource, both the
+//     executor's, identical to every query_data call;
+//   - no repair, so a rewritten query's rows are never returned as this one's;
+//   - a row cap and the turn's deadline;
+//   - a per-turn count (Config.MaxReReadsPerTurn). These do not spend the
+//     model's query budget — charging them would starve the turn that asked
+//     for the work — and that is precisely why they need a bound of their own.
 func (r *runner) mutationQuery(rt *ProjectRuntime, st *turnState) MutationQuery {
+	// The TURN's context, captured here rather than taken from the caller. A
+	// plugin handing in a fresh one would lose the project id the warehouse
+	// middleware scopes by and the turn deadline that bounds the read; the
+	// caller's context can only shorten or cancel, never extend or detach.
+	turnCtx := st.ctx
 	return func(ctx context.Context, q MutationQueryRequest) (*MutationQueryResult, error) {
+		// A turn built without its context (the early-failure path, a test)
+		// must not take the read down with it: fall back to the caller's,
+		// which is the behaviour before the turn context was threaded here.
+		if turnCtx == nil {
+			turnCtx = ctx
+		}
+		// A caller that is already done gets no warehouse call at all. Relying
+		// on the cancellation watch below would race a fast query, and the
+		// read's whole result would be discarded anyway.
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if r.cfg.MaxReReadsPerTurn > 0 && st.reReadsUsed >= r.cfg.MaxReReadsPerTurn {
+			return nil, fmt.Errorf("this turn has already made its %d permitted re-reads", r.cfg.MaxReReadsPerTurn)
+		}
+		st.reReadsUsed++
 		dsID := strings.TrimSpace(q.DatasourceID)
 		if dsID == "" {
 			return nil, fmt.Errorf("a re-read must name the datasource its result came from")
@@ -61,10 +97,14 @@ func (r *runner) mutationQuery(rt *ProjectRuntime, st *turnState) MutationQuery 
 		if _, ok := rt.datasource(dsID); !ok {
 			return nil, fmt.Errorf("datasource %q is not configured for this project", dsID)
 		}
-		sql := strings.TrimSpace(q.SQL)
-		if sql == "" {
+		// Trimmed only to reject a blank request; EXECUTED verbatim. Trimming
+		// what runs would change a query whose trailing character is part of a
+		// quoted identifier, and the contract here is that the query runs as
+		// given.
+		if strings.TrimSpace(q.SQL) == "" {
 			return nil, fmt.Errorf("a re-read needs the query that produced the result")
 		}
+		sql := q.SQL
 
 		// The fetch cap is the process's memory bound, for the same reason
 		// summarizeResult re-applies it: a caller asking for more than the loop
@@ -74,13 +114,31 @@ func (r *runner) mutationQuery(rt *ProjectRuntime, st *turnState) MutationQuery 
 			limit = r.cfg.MaxFetchRows
 		}
 
-		// Per-query deadline under the turn's: ctx already carries the turn
-		// wall-clock, so WithTimeout takes whichever is sooner.
-		qctx := ctx
+		// Run under the TURN's context, narrowed by the caller's. The turn's
+		// carries the project id and its wall-clock; the caller's may only make
+		// the read end sooner.
+		qctx, cancel := context.WithCancel(turnCtx)
+		defer cancel()
+		if d, ok := ctx.Deadline(); ok {
+			var dcancel context.CancelFunc
+			qctx, dcancel = context.WithDeadline(qctx, d)
+			defer dcancel()
+		}
+		// And honour an outright cancellation of the caller's context, which a
+		// deadline alone would not catch.
+		stop := make(chan struct{})
+		defer close(stop)
+		go func() {
+			select {
+			case <-ctx.Done():
+				cancel()
+			case <-stop:
+			}
+		}()
 		if r.cfg.QueryTimeout > 0 {
-			var cancel context.CancelFunc
-			qctx, cancel = context.WithTimeout(ctx, r.cfg.QueryTimeout)
-			defer cancel()
+			var qcancel context.CancelFunc
+			qctx, qcancel = context.WithTimeout(qctx, r.cfg.QueryTimeout)
+			defer qcancel()
 		}
 		qctx = gowarehouse.WithWarehouseID(qctx, dsID)
 
@@ -97,9 +155,23 @@ func (r *runner) mutationQuery(rt *ProjectRuntime, st *turnState) MutationQuery 
 		}
 
 		rows := res.Data
-		out := &MutationQueryResult{Columns: columnsOf(rows), RowCount: res.RowCount}
+		out := &MutationQueryResult{
+			Columns:  columnsOf(rows),
+			RowCount: res.RowCount,
+			// Carried, never summarised: a caveat's own words name what was
+			// degraded, and only the source knows. Without it a caller sees
+			// len(Rows) == RowCount and reads a sampled result as the whole
+			// population.
+			Quality: res.Quality,
+		}
 		if limit > 0 && len(rows) > limit {
-			rows = rows[:limit]
+			// COPIED, not resliced: a reslice keeps the whole warehouse
+			// response and every row map in it alive for as long as the caller
+			// holds the capped result, which for a six-figure result is the
+			// difference between megabytes and tens of them.
+			kept := make([]map[string]any, limit)
+			copy(kept, rows[:limit])
+			rows = kept
 		}
 		out.Rows = rows
 

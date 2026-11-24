@@ -30,7 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The contract is narrow on purpose. The datasource id is required: a re-read addresses one specific observation, and resolving an empty id to the project's primary would read another warehouse's data for any turn that queried one. The query runs verbatim and is never parsed or rewritten — a row cap applies to the rows that come back, not by splicing a `LIMIT` the source's dialect may not use. `RowCount` is the source's own count before that cap, so a caller can say "showing N of M" truthfully. And the re-read is not repaired on failure, so a caller can never be handed rows from a rewritten query under the original query's name; `queryexec.FixOpts` gains `NoRepair` for that, which also saves an LLM call per attempt for an answer such a caller could not use.
 
-  It does not spend the turn's query budget, since it is not one of the model's queries. The community build registers no mutation tools, so nothing consults any of this and the loop's behaviour is unchanged.
+  It does not spend the turn's query budget, since it is not one of the model's queries — and `ASK_SERVE_MAX_RE_READS_PER_TURN` (12) bounds it for exactly that reason, so "not charged" cannot mean "not limited". The read runs under the TURN's context, not the caller's: a tool handing in a detached one would otherwise lose the project id a warehouse middleware scopes by and the deadline that bounds the read, so the caller's context may only shorten or cancel. Source-declared quality caveats are carried through, because a sampled result comes back with `len(Rows) == RowCount` and a consumer presenting rows as a population has to be able to tell.
+
+  The community build registers no mutation tools, so nothing consults any of this and the loop's behaviour is unchanged.
 
 ### Fixed
 

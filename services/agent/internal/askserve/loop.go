@@ -57,11 +57,20 @@ type turnState struct {
 	// layer). Equal to client when the project did not override that layer.
 	routerClient *ai.Client
 	// outputCap bounds one assistant message, from the `ask` layer's budget.
-	outputCap       int
-	model           string
-	events          []commonmodels.ToolEvent
-	round           int
-	queriesUsed     int
+	outputCap   int
+	model       string
+	events      []commonmodels.ToolEvent
+	round       int
+	queriesUsed int
+	// reReadsUsed counts the bounded re-reads a write tool has asked for this
+	// turn. Separate from queriesUsed because these are not the model's
+	// queries — charging them would starve the turn that asked for the work —
+	// but unbounded they would be a way to run any number of warehouse reads.
+	reReadsUsed int
+	// ctx is the TURN's context: it carries the project id the warehouse
+	// middleware scopes by and the turn's wall-clock. Held so a seam handed to
+	// a plugin can run under it rather than under whatever the plugin passes.
+	ctx             context.Context
 	tokensIn        int
 	tokensOut       int
 	groundingNudges int
@@ -349,7 +358,7 @@ func (r *runner) run(ctx context.Context, rt *ProjectRuntime, req TurnRequest) {
 		r.finishFailed(ctx, st, fmt.Sprintf("invalid datasource selection: %v", err))
 		return
 	}
-	st := &turnState{req: req, client: rt.AIClient, routerClient: rt.router(), routerOutputCap: rt.RouterOutputCap, outputCap: rt.stepOutputCap(), model: rt.Model, routing: routing}
+	st := &turnState{req: req, ctx: ctx, client: rt.AIClient, routerClient: rt.router(), routerOutputCap: rt.RouterOutputCap, outputCap: rt.stepOutputCap(), model: rt.Model, routing: routing}
 	// Per-turn charting entitlement: the caller's EnableCharts AND the ops
 	// kill-switch. Set here, once, so both loops and the router path agree.
 	st.chartsEnabled = req.EnableCharts && r.cfg.ChartsEnabled
