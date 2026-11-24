@@ -887,9 +887,10 @@ func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "source must be "+tableSourceIndex+" or "+tableSourceWarehouse)
 		return
 	}
+	wantWarehouse := source == tableSourceWarehouse
 	// source=warehouse never reads the schema cache, so a build without the
 	// cache repo wired can still serve it.
-	if h.cacheRepo == nil && source != tableSourceWarehouse {
+	if h.cacheRepo == nil && !wantWarehouse {
 		writeJSON(w, http.StatusOK, response{Tables: []string{}})
 		return
 	}
@@ -927,7 +928,7 @@ func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Req
 	}
 	var tables []string
 	var unlisted []string
-	if source != tableSourceWarehouse {
+	if !wantWarehouse {
 		if tables, err = h.cacheRepo.ListTables(r.Context(), id, whID); err != nil {
 			writeError(w, http.StatusInternalServerError, "list cached tables: "+err.Error())
 			return
@@ -942,7 +943,6 @@ func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Req
 	// Skipped entirely for a project with no datasource configured — a blank
 	// project would otherwise spawn a doomed agent run on every poll, and an
 	// empty list is the honest answer when there is no warehouse to enumerate.
-	wantWarehouse := source == tableSourceWarehouse
 	needLive := (wantWarehouse || len(tables) == 0) && len(p.EffectiveWarehouses()) > 0
 	if needLive && h.lister == nil && wantWarehouse {
 		// No agent runner on this build, so there is no live enumeration to run
