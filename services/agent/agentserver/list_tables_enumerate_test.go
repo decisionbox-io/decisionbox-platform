@@ -203,3 +203,44 @@ func TestEnumerateTables_FilterErrorSkipsTheDatasetAndNamesIt(t *testing.T) {
 		t.Errorf("unlisted = %v, want [staging]", unlisted)
 	}
 }
+
+// --- listTablesJSON: the stdout contract the API parses ---
+
+func TestListTablesJSON_CompleteListing(t *testing.T) {
+	// The API keys off these exact field names (handler.listTablesResult). A
+	// rename or omission here breaks the picker in the other repo, silently —
+	// the field would simply decode as absent.
+	got, err := listTablesJSON("wh_pg", []string{"public.orders"}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := `{"success":true,"tables":["public.orders"],"unlisted_datasets":[],"warehouse_id":"wh_pg"}`
+	if string(got) != want {
+		t.Errorf("listTablesJSON =\n %s\nwant\n %s", got, want)
+	}
+}
+
+func TestListTablesJSON_PartialListing(t *testing.T) {
+	got, err := listTablesJSON("wh_pg", []string{"public.orders"}, []string{"staging"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := `{"success":true,"tables":["public.orders"],"unlisted_datasets":["staging"],"warehouse_id":"wh_pg"}`
+	if string(got) != want {
+		t.Errorf("listTablesJSON =\n %s\nwant\n %s", got, want)
+	}
+}
+
+func TestListTablesJSON_EmptyListsAreArraysNotNull(t *testing.T) {
+	// unlisted_datasets must be [] rather than absent or null: the API reads an
+	// OMITTED field as "this agent predates the field", which is a different
+	// claim from "nothing was skipped".
+	got, err := listTablesJSON("wh_pg", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := `{"success":true,"tables":[],"unlisted_datasets":[],"warehouse_id":"wh_pg"}`
+	if string(got) != want {
+		t.Errorf("listTablesJSON =\n %s\nwant\n %s", got, want)
+	}
+}

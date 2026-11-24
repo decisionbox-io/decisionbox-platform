@@ -39,8 +39,9 @@ type liveTableEntry struct {
 	listing WarehouseTableListing
 	// err is the listing failure, kept so a negative-cached entry can be
 	// REPORTED and not just counted: ?source=warehouse answers 503 and an
-	// empty-tables success must not be mistaken for it. Already redacted — see
-	// redactCredentials.
+	// empty-tables success must not be mistaken for it. Its message is never
+	// logged or returned — it carries the driver's own text, which can quote a
+	// connection string — so only its presence is ever used.
 	err error
 	at  time.Time
 }
@@ -187,7 +188,7 @@ func (h *SchemaIndexHandler) liveTables(ctx context.Context, projectID, whID str
 	// Coalesce concurrent picker polls for the same key through singleflight so
 	// parallel requests share ONE agent run instead of each spawning its own;
 	// the TTL cache then bounds sequential polls.
-	v, err, _ := h.liveSF.Do(key, func() (interface{}, error) {
+	ch := h.liveSF.DoChan(key, func() (interface{}, error) {
 		// Re-check the cache inside the flight: a just-finished leader may have
 		// populated it while this call was queued behind the lock.
 		if e, ok := h.getLiveTables(key); ok {
@@ -195,12 +196,16 @@ func (h *SchemaIndexHandler) liveTables(ctx context.Context, projectID, whID str
 		}
 		live, lerr := h.lister.ListWarehouseTables(runCtx, projectID, whID)
 		if lerr != nil {
-			// A warehouse driver asked to parse a malformed connection string
-			// quotes it back, password and all, so the message is redacted
-			// before it reaches the log sink or the cache.
-			lerr = redactCredentials(lerr)
-			apilog.WithField("project_id", projectID).
-				Warn("schema-cache tables: live warehouse enumeration failed: " + lerr.Error())
+			// The driver's own message is NOT logged here. It can quote the
+			// connection string it failed to parse, password included, and no
+			// pattern over arbitrary driver text is reliable enough to be the
+			// thing standing between a customer's password and a log sink. The
+			// agent process that actually talked to the warehouse logs its own
+			// failure, so nothing is lost by not keeping a second copy; the
+			// admin-only POST /test/warehouse is the supported way to see it.
+			apilog.WithFields(apilog.Fields{
+				"project_id": projectID, "warehouse_id": whID,
+			}).Warn("schema-cache tables: live warehouse enumeration failed")
 			// Negative-cache the failure (short TTL) so a persistent problem
 			// (bad creds, VPN down) backs off instead of spawning a doomed run
 			// per poll, but a fixed connection is retried soon.
@@ -210,8 +215,19 @@ func (h *SchemaIndexHandler) liveTables(ctx context.Context, projectID, whID str
 		h.putLiveTables(key, live, nil)
 		return live, nil
 	})
-	listing, _ := v.(WarehouseTableListing)
-	return listing, err
+	// DoChan, not Do: Do would keep THIS handler blocked on the shared run until
+	// it finishes — up to the lister's full deadline — even after its own caller
+	// disconnected. An abandoned request sitting there also eats into the
+	// server's HTTP drain budget if a shutdown starts. Waiting on the request's
+	// context instead lets this handler return while the run continues for
+	// everyone else, and its result still lands in the TTL cache.
+	select {
+	case res := <-ch:
+		listing, _ := res.Val.(WarehouseTableListing)
+		return listing, res.Err
+	case <-ctx.Done():
+		return WarehouseTableListing{}, ctx.Err()
+	}
 }
 
 // liveTableCacheKey identifies a (project, primary-datasource config) so the
@@ -819,11 +835,10 @@ const (
 // liveListingFailedMsg is what a failed source=warehouse enumeration tells the
 // client. Deliberately generic: the underlying error comes from a warehouse
 // driver and can quote the connection string it failed to parse, password
-// included, and this route is open to a VIEWER. (POST /test/warehouse does
-// return the agent's own message, and is admin-only — that is the tier raw
-// warehouse diagnostics belong to.) The detail is logged server-side by
-// liveTables, so it stays one log line away for whoever can read them.
-const liveListingFailedMsg = "could not list the warehouse's tables; check the data source's connection (details in the API logs)"
+// included, and this route is open to a VIEWER. POST /test/warehouse does
+// return the agent's own message and is admin-only — that is the tier raw
+// warehouse diagnostics belong to, and where this points the operator.
+const liveListingFailedMsg = "could not list the warehouse's tables; check the data source's connection, or run its connection test for the driver's own message"
 
 // ListCachedTables returns one entry per qualified table (the exact form is
 // provider-dependent: e.g. "<dataset>.<table>" for BigQuery, "<schema>.<table>"

@@ -1004,8 +1004,12 @@ type fakeTableLister struct {
 	// block, when non-nil, holds the listing until it is closed — for the
 	// cancellation test, which needs a run in flight while its caller goes away.
 	block chan struct{}
+	// started, when non-nil, is closed as the listing begins, so a test can wait
+	// for the run to be in flight without racing on a plain bool.
+	started chan struct{}
 	// gotCancelled records whether the context the handler passed was already
-	// cancelled by the time the listing ran.
+	// cancelled by the time the listing ran. Written before block is released
+	// and read only after the handler has returned, so it needs no lock.
 	gotCancelled bool
 }
 
@@ -1013,6 +1017,9 @@ func (f *fakeTableLister) ListWarehouseTables(ctx context.Context, _, warehouseI
 	f.called = true
 	f.calls++
 	f.gotWarehouse = append(f.gotWarehouse, warehouseID)
+	if f.started != nil {
+		close(f.started)
+	}
 	if f.block != nil {
 		<-f.block
 	}
@@ -2204,147 +2211,59 @@ func TestSchemaIndex_ListCachedTables_SourceWarehouse_LeaderCancellationDoesNotF
 	// report a healthy warehouse as unavailable to everyone for the fail TTL.
 	// The shared run must not inherit one caller's cancellation.
 	p := pgProject()
-	lister := &fakeTableLister{tables: []string{"public.orders"}, block: make(chan struct{})}
+	lister := &fakeTableLister{
+		tables:  []string{"public.orders"},
+		block:   make(chan struct{}),
+		started: make(chan struct{}),
+	}
 	h := sourceModeHandler(t, p, &mockCacheInvalidator{}, lister)
+
+	// A second caller shares the flight; it is the one whose response proves the
+	// leader's cancellation didn't poison the run.
+	follower := httptest.NewRecorder()
+	followerDone := make(chan struct{})
 
 	// Start the listing under a context we then cancel, as a disconnect would.
 	ctx, cancel := context.WithCancel(context.Background())
 	req := newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, "").WithContext(ctx)
-	w := httptest.NewRecorder()
-	done := make(chan struct{})
-	go func() { defer close(done); h.ListCachedTables(w, req) }()
+	leaderDone := make(chan struct{})
+	go func() { defer close(leaderDone); h.ListCachedTables(httptest.NewRecorder(), req) }()
 
-	// Wait until the listing is actually in flight, then drop the caller.
-	deadline := time.Now().Add(2 * time.Second)
-	for !lister.called && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if !lister.called {
+	// Wait for the run to actually be in flight — a channel, not a polled bool,
+	// which the race detector rightly rejects.
+	select {
+	case <-lister.started:
+	case <-time.After(5 * time.Second):
 		t.Fatal("listing never started")
 	}
+	// Drop the leader, then let the run finish.
 	cancel()
+	// The leader's handler must not wait for the shared run once its caller is
+	// gone; the run continues for everyone else.
+	select {
+	case <-leaderDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the leader's handler blocked on the shared run after its caller disconnected")
+	}
+
+	go func() {
+		defer close(followerDone)
+		h.ListCachedTables(follower, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
+	}()
 	close(lister.block)
-	<-done
+	select {
+	case <-followerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("follower never completed")
+	}
 
 	if lister.gotCancelled {
-		t.Error("the shared listing ran under the caller's cancelled context")
+		t.Error("the shared listing ran under the leader's cancelled context")
 	}
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 — the caller going away must not fail the listing", w.Code)
+	if follower.Code != http.StatusOK {
+		t.Fatalf("follower status = %d, want 200 — the leader going away must not fail the listing", follower.Code)
 	}
-	if got := decodeListCachedTables(t, w); len(got) != 1 || got[0] != "public.orders" {
+	if got := decodeListCachedTables(t, follower); len(got) != 1 || got[0] != "public.orders" {
 		t.Errorf("tables = %v, want [public.orders]", got)
-	}
-}
-
-// --- redactCredentials ---
-
-func TestRedactCredentials(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{
-			name: "postgres dsn in a parse error",
-			in:   `cannot parse "postgres://admin:s3cret@db.internal:5432/sales": invalid port`,
-			want: `cannot parse "postgres://admin:***@db.internal:5432/sales": invalid port`,
-		},
-		{
-			// A generated password holds whatever the generator produced; a
-			// pattern that assumed otherwise would leave the awkward ones.
-			name: "password with punctuation",
-			in:   `dial "mysql://svc:p@ss#w0rd!$%^&*()@mysql.internal/db" failed`,
-			want: `dial "mysql://svc:***@mysql.internal/db" failed`,
-		},
-		{
-			name: "no credential to redact",
-			in:   "dial tcp 10.0.0.4:5432: connect: connection refused",
-			want: "dial tcp 10.0.0.4:5432: connect: connection refused",
-		},
-		{
-			name: "uri without userinfo is untouched",
-			in:   `cannot reach "https://warehouse.example.com/api": timeout`,
-			want: `cannot reach "https://warehouse.example.com/api": timeout`,
-		},
-		{
-			name: "two dsns in one message",
-			in:   `primary postgres://a:one@h1/d and replica postgres://b:two@h2/d both failed`,
-			want: `primary postgres://a:***@h1/d and replica postgres://b:***@h2/d both failed`,
-		},
-		{
-			name: "empty password still redacted",
-			in:   `cannot parse "postgres://admin:@db.internal/sales"`,
-			want: `cannot parse "postgres://admin:***@db.internal/sales"`,
-		},
-		{
-			// Azure / Snowflake DSNs put an email in the user field. A pattern
-			// that excluded "@" from the user matched nothing here and left the
-			// password in the message.
-			name: "email-style username",
-			in:   `cannot parse "postgres://user@corp.com:s3cret@db.internal/sales"`,
-			want: `cannot parse "postgres://user@corp.com:***@db.internal/sales"`,
-		},
-		{
-			// A "/" in a password is invalid unencoded — which is precisely the
-			// kind of DSN a driver rejects, so it must still be covered.
-			name: "password containing a slash",
-			in:   `dial "postgres://svc:pa/ss@db.internal/sales" failed`,
-			want: `dial "postgres://svc:***@db.internal/sales" failed`,
-		},
-		{
-			name: "host:port is not userinfo",
-			in:   "dial postgres://db.internal:5432/sales: connection refused",
-			want: "dial postgres://db.internal:5432/sales: connection refused",
-		},
-		{
-			name: "userinfo with no password is left alone",
-			in:   `cannot parse "postgres://admin@db.internal/sales"`,
-			want: `cannot parse "postgres://admin@db.internal/sales"`,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := redactCredentials(errors.New(tc.in))
-			if got.Error() != tc.want {
-				t.Errorf("redactCredentials(%q)\n = %q\nwant %q", tc.in, got.Error(), tc.want)
-			}
-			if strings.Contains(got.Error(), "s3cret") || strings.Contains(got.Error(), "p@ss#w0rd") ||
-				strings.Contains(got.Error(), "pa/ss") {
-				t.Errorf("redacted message still carries the secret: %q", got.Error())
-			}
-		})
-	}
-}
-
-func TestRedactCredentials_Nil(t *testing.T) {
-	if redactCredentials(nil) != nil {
-		t.Error("redactCredentials(nil) must stay nil so callers need no guard")
-	}
-}
-
-func TestSchemaIndex_ListCachedTables_SourceWarehouse_RedactsBeforeCaching(t *testing.T) {
-	// The negative cache holds the error for the fail TTL and the log line is
-	// written from it, so the redaction has to happen before either.
-	p := pgProject()
-	lister := &fakeTableLister{
-		err: errors.New(`cannot parse "postgres://admin:s3cret@db.internal/sales": invalid port`),
-	}
-	h := sourceModeHandler(t, p, &mockCacheInvalidator{}, lister)
-
-	w := httptest.NewRecorder()
-	h.ListCachedTables(w, newReq("GET", "/schema-cache/tables?source=warehouse", p.ID, ""))
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503", w.Code)
-	}
-	e, ok := h.getLiveTables(liveTableCacheKey(p.ID, p.PrimaryWarehouse()))
-	if !ok || e.err == nil {
-		t.Fatal("expected the failure to be negative-cached")
-	}
-	if strings.Contains(e.err.Error(), "s3cret") {
-		t.Errorf("cached error carries the credential: %q", e.err.Error())
-	}
-	if !strings.Contains(e.err.Error(), "db.internal") {
-		t.Errorf("cached error lost the diagnostic: %q", e.err.Error())
 	}
 }

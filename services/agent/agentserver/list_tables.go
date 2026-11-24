@@ -2,7 +2,6 @@ package agentserver
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -98,17 +97,9 @@ func runListTables(cfg *config.Config, projectID, warehouseID string) error {
 		return err
 	}
 
-	// unlisted_datasets is always present (empty when every dataset listed), so a
-	// caller can tell a complete enumeration from one this agent is too old to
-	// report on.
-	out, err := json.Marshal(map[string]interface{}{
-		"success":           true,
-		"warehouse_id":      whID,
-		"tables":            tables,
-		"unlisted_datasets": unlisted,
-	})
+	out, err := listTablesJSON(whID, tables, unlisted)
 	if err != nil {
-		return fmt.Errorf("failed to marshal result: %w", err)
+		return err
 	}
 	fmt.Println(string(out))
 	return nil

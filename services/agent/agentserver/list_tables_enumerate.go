@@ -2,6 +2,7 @@ package agentserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 )
@@ -76,4 +77,31 @@ func enumerateTables(
 	sort.Strings(tables)
 	sort.Strings(unlisted)
 	return tables, unlisted, nil
+}
+
+// listTablesJSON renders the --list-tables stdout contract. The API parses this
+// (handler.listTablesResult), so the field names are a wire contract between
+// two repos' release trains — hence a tested function rather than an inline
+// marshal in the wiring half of this mode.
+//
+// unlisted_datasets is ALWAYS present, empty when every dataset listed, so the
+// API can tell a complete enumeration from one an agent too old to report it
+// produced (an omitted field) rather than reading both as "nothing skipped".
+func listTablesJSON(warehouseID string, tables, unlisted []string) ([]byte, error) {
+	if tables == nil {
+		tables = []string{}
+	}
+	if unlisted == nil {
+		unlisted = []string{}
+	}
+	out, err := json.Marshal(map[string]interface{}{
+		"success":           true,
+		"warehouse_id":      warehouseID,
+		"tables":            tables,
+		"unlisted_datasets": unlisted,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+	return out, nil
 }

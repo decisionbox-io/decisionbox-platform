@@ -74,13 +74,22 @@ type listTablesResult struct {
 // plus the datasets that could not be read.
 type WarehouseTableListing struct {
 	Tables []string
-	// UnlistedDatasets is empty for a complete enumeration and nil when the
-	// agent did not report on it at all.
+	// UnlistedDatasets is empty when every configured dataset reported a result,
+	// and nil when the agent did not report on it at all.
 	UnlistedDatasets []string
-	// Complete is false when at least one dataset could not be read. An agent
-	// that predates unlisted_datasets reports nothing either way, and is taken
-	// at its word (true) rather than marking every listing suspect: the field's
-	// absence is an old image, not evidence of a failure.
+	// Complete is false when at least one DATASET could not be read. Dataset
+	// granularity is all this can honestly claim: a provider may also drop an
+	// individual table whose metadata it can't fetch and still return the rest
+	// with no error (BigQuery does — see decisionbox-platform#587), and
+	// ListTablesInDataset has no channel to report that. So Complete means
+	// "every dataset answered", not "every table in the warehouse is here".
+	//
+	// An agent that predates unlisted_datasets reports nothing either way and is
+	// taken at its word (true) rather than marking every listing suspect: the
+	// field's absence is an old image, not evidence of a failure, and treating
+	// it as one would warn about every normal listing from that deployment.
+	// API and agent ship from one release train, so the skew is a self-hosted
+	// upgrade window rather than a steady state.
 	Complete bool
 }
 
