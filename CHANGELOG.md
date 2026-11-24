@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`GET /.well-known/decisionbox` — unauthenticated deployment discovery.** A client pointed at a deployment URL needs to know three things before it has any credentials: which API contract the server speaks, which capabilities it has, and how to authenticate. There was no way to ask. The DecisionBox Chat mobile client's first screen is "type your deployment URL", which cannot work without it.
+
+  The endpoint is mounted ahead of the auth chain, on an exact-path sub-mux so it owns the path for every method — a non-GET answers `405`, not the `401` that falling through to the auth chain would produce, which would tell a client it needs a login for the one endpoint that exists to be read without one. Its body is deliberately **not** wrapped in the `{"data": ...}` envelope: a client reads it before it knows any of the platform's conventions.
+
+  `auth.type` is always explicit (`none` or `oidc`), never absent. A client that had to infer "no authentication" from a missing field would downgrade a misconfigured OIDC deployment to anonymous access and then fail every subsequent call with an unexplained `401`. The new `libs/go-common/wellknown` registry is how a build that enables authentication fills in the issuer, mobile client id, scopes and audience, and its stated invariant is that this happens in the **same `init()`** that installs the auth provider — split across two, the advertised mode and the enforced mode can diverge.
+
+  The advertised `features` list carries only capabilities the server mounts unconditionally. Plan- or licence-gated features are reported after login by `GET /api/v1/capabilities`, which knows the entitlement, and whether a question runs as an asynchronous Ask turn is discovered per response, because it depends on the project and the caller's role rather than on the deployment.
+
+- **`PATCH /api/v1/projects/{id}/ask/sessions/{sessionId}` — rename a conversation.** Advertised as the `ask_session_rename` discovery feature so a client can hide the control against an older deployment.
+
+  Requires `viewer`, matching delete: a user who can hold a conversation can name it, and the repository's existing `(project, owner, id)` key is what stops a viewer touching anyone else's. Another user's session answers `404`, not `403` — the wrong tier is a `403`, the wrong scope is a `404`, and somebody else's conversation is scope. `AskSessionRepo.UpdateTitle` is owner-scoped like every other method on that interface rather than taking a bare session id; the single unscoped write would have been the one nobody remembers to scope.
+
+  The 200-character cap is counted in runes, so a Turkish or Japanese title gets the same allowance as an English one and truncation never splits a character into invalid UTF-8. The response echoes the **stored** title rather than the submitted one, so a truncated title renders as truncated instead of drifting from the document until the next reload.
+
 ### Fixed
 
 - **The Run discovery area picker offered the domain pack's areas, not the project's own ([#573](https://github.com/decisionbox-io/decisionbox-platform/issues/573)).** A domain pack seeds a project's analysis areas once, at creation. After that the Playbook page is what defines them — it adds areas the pack never had, switches areas off and deletes custom ones — and the agent builds every run's list from the project, skipping anything disabled. The picker had never stopped reading the seed.

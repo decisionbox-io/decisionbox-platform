@@ -260,3 +260,28 @@ func (r *AskSessionRepository) Delete(ctx context.Context, projectID, userID, se
 	}
 	return nil
 }
+
+// UpdateTitle renames a conversation, bumping updated_at so the renamed
+// session sorts as recently touched in the list.
+//
+// Scoped on the same (project, owner, id) key as every other method here, so
+// renaming is not a way around the ownership the reads enforce. Returns
+// ErrAskSessionNotFound when nothing matched — an unknown id, another
+// project's session and another person's session are one answer, so the route
+// cannot be used to probe for session ids.
+//
+// The caller is responsible for trimming and bounding the title; this writes
+// what it is given.
+func (r *AskSessionRepository) UpdateTitle(ctx context.Context, projectID, userID, sessionID, title string) error {
+	res, err := r.db.Collection("ask_sessions").UpdateOne(ctx,
+		sessionFilter(projectID, userID, sessionID),
+		bson.M{"$set": bson.M{"title": title, "updated_at": time.Now()}},
+	)
+	if err != nil {
+		return fmt.Errorf("update ask session title %s: %w", sessionID, err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrAskSessionNotFound
+	}
+	return nil
+}

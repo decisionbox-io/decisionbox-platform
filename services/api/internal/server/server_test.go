@@ -22,8 +22,10 @@ func TestCorsMiddleware_SetsHeaders(t *testing.T) {
 	}
 
 	expectedHeaders := map[string]string{
-		"Access-Control-Allow-Origin":  "*",
-		"Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+		"Access-Control-Allow-Origin": "*",
+		// PATCH is required by the ask-session rename route; a browser
+		// preflight refuses the request without it.
+		"Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
 		"Access-Control-Allow-Headers": "Content-Type, Authorization",
 	}
 	for header, expected := range expectedHeaders {

@@ -34,6 +34,61 @@ Returns `503` (with `"status": "degraded"` and per-service errors under `service
 
 ---
 
+## Service Discovery
+
+### GET /.well-known/decisionbox
+
+Unauthenticated deployment discovery.
+A client reads this **before it has any credentials** to learn the API contract version, which capabilities the deployment has, and how to authenticate against it.
+
+Two things about this endpoint are unlike every other one here.
+It is mounted ahead of the auth chain, so it answers without a token — and its body is **not** wrapped in the `{"data": ...}` envelope, because a client fetches it before it knows any of the platform's conventions.
+
+```bash
+curl http://localhost:8080/.well-known/decisionbox
+```
+
+A deployment with authentication off:
+
+```json
+{
+  "api_version": "v1",
+  "features": ["projects", "grounded_chat", "ask_sessions", "ask_session_rename", "me",
+               "insights", "recommendations", "lists", "reads", "search", "cross_project_search"],
+  "auth": {"type": "none"}
+}
+```
+
+A deployment with OIDC enabled adds a top-level `oidc` sibling:
+
+```json
+{
+  "api_version": "v1",
+  "features": ["..."],
+  "auth": {"type": "oidc"},
+  "oidc": {
+    "issuer": "https://id.example/realms/decisionbox",
+    "mobile_client_id": "decisionbox-mobile",
+    "scopes": ["openid", "profile", "email", "roles"],
+    "audience": "decisionbox-api"
+  }
+}
+```
+
+`auth.type` is **always explicit** (`none` or `oidc`), so a client never infers "no authentication" from a missing field — a misconfigured OIDC deployment would otherwise be silently downgraded to anonymous access.
+`oidc` is present if and only if `auth.type` is `oidc`; `mobile_client_id` may be an empty string on a deployment that runs the dashboard client only.
+
+An optional `branding` object is passed through verbatim when a deployment overlay registers one.
+
+Any method other than `GET` returns `405`, not `401` — the endpoint exists to be read without a login, so it never asks for one.
+The response is served `Cache-Control: no-store`, so a shared proxy cannot hand one deployment's auth mode to a client pointed at another.
+
+**What is deliberately absent.** The `features` list carries only capabilities the server mounts unconditionally.
+Plan- or licence-gated features (executive summaries, reports) are reported after login by `GET /api/v1/capabilities`, which knows the entitlement.
+Whether a question runs as an asynchronous Ask turn is not here either: that depends on the project and on the caller's role, so it is not a property of the deployment — a client discovers it per response (a `202` carrying a turn id instead of an answer).
+
+---
+
 ## System
 
 ### GET /api/v1/system
@@ -1130,6 +1185,36 @@ curl http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/secrets
 ```
 
 **Note:** There is no DELETE endpoint for secrets. Secrets are removed manually via cloud console, CLI, or direct database access. This is intentional to prevent accidental deletion.
+
+---
+
+## Ask Sessions
+
+A conversation with the Ask agent. A session belongs to the person who started it: every lookup is scoped on `(project_id, user_id, session_id)`, so another user's conversation reads as `404` rather than `403` — the wrong tier is a `403`, the wrong scope is a `404`, and somebody else's conversation is scope.
+
+Sessions written before per-user scoping existed (owner: the anonymous subject) stay readable by everyone, so a deployment that has since turned authentication on does not hide rows people were already reading.
+
+### PATCH /api/v1/projects/{id}/ask/sessions/{sessionId}
+
+Rename a conversation. Requires `viewer`: a user who can hold a conversation can name it, and the ownership key stops a viewer touching anyone else's.
+
+Advertised in discovery as the `ask_session_rename` feature, so a client can hide the control on a deployment that predates it.
+
+```bash
+curl -X PATCH http://localhost:8080/api/v1/projects/$PID/ask/sessions/$SID \
+  -H 'Content-Type: application/json' \
+  -d '{"title": "Q3 churn"}'
+```
+
+```json
+{"data": {"id": "...", "title": "Q3 churn"}}
+```
+
+The title is trimmed, must be non-empty (`400` otherwise), and is capped at 200 **characters** — counted in runes, so a title in a non-Latin script gets the same allowance as an English one and truncation never splits a character.
+
+The response echoes the **stored** title, not the submitted one, so a client renders a truncated title as truncated instead of drifting from the document until the next reload.
+
+Returns `404` for an unknown session, one in another project, or one belonging to another user — including when a concurrent `DELETE` lands between the request and the write.
 
 ---
 

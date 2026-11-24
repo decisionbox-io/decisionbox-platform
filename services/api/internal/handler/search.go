@@ -1101,6 +1101,74 @@ func (h *SearchHandler) GetAskSession(w http.ResponseWriter, r *http.Request) {
 // route no longer asks for the admin tier — a person may throw away their own
 // conversation whatever their tier, and no tier lets them throw away anyone
 // else's.
+// maxSessionTitleRunes bounds a renamed conversation's title. Counted in
+// runes, not bytes, so a title in a non-Latin script gets the same number of
+// characters as an English one — and so truncation never splits a multi-byte
+// character and leaves invalid UTF-8 in the document.
+const maxSessionTitleRunes = 200
+
+// maxSessionTitleBodyBytes caps the rename request body. A title is a few
+// words, so anything near this is already a mistake; it exists so the route
+// cannot be used to make the server read an arbitrarily large request.
+const maxSessionTitleBodyBytes = 1 << 20 // 1 MiB
+
+type renameAskSessionRequest struct {
+	Title string `json:"title"`
+}
+
+// RenameAskSession renames a conversation.
+//
+// PATCH /api/v1/projects/{id}/ask/sessions/{sessionId}  body: {"title": "..."}
+//
+// Gated at "viewer" on the route because a user who can hold a conversation
+// can name it; ownership is enforced by the repository's (project, owner, id)
+// key, so a viewer cannot rename anyone else's. A session that is not the
+// caller's reads as 404, not 403: the wrong tier is a 403, the wrong scope is
+// a 404, and somebody else's conversation is scope.
+func (h *SearchHandler) RenameAskSession(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+	sessionID := r.PathValue("sessionId")
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, "session ID is required")
+		return
+	}
+	uid, ok := userID(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthenticated")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxSessionTitleBodyBytes)
+	var req renameAskSessionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
+	if runes := []rune(title); len(runes) > maxSessionTitleRunes {
+		title = string(runes[:maxSessionTitleRunes])
+	}
+
+	err := h.sessionRepo.UpdateTitle(r.Context(), projectID, uid, sessionID, title)
+	if errors.Is(err, database.ErrAskSessionNotFound) {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to rename session")
+		return
+	}
+
+	// Echo the stored title rather than the submitted one: the client renders
+	// what the server kept, so a truncated title shows up as truncated
+	// instead of drifting from the document until the next reload.
+	writeJSON(w, http.StatusOK, map[string]string{"id": sessionID, "title": title})
+}
+
 func (h *SearchHandler) DeleteAskSession(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("id")
 	sessionID := r.PathValue("sessionId")
