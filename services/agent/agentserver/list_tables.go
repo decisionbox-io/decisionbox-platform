@@ -2,9 +2,7 @@ package agentserver
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"sort"
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
@@ -18,11 +16,14 @@ import (
 // `--list-tables` (optionally `--warehouse-id <id>`; empty resolves to the
 // project's primary datasource).
 //
-// This is the cheap pre-index enumeration that powers the discovery-scope
-// table picker: it lists names only (the warehouse driver's ListTablesInDataset
-// metadata query) and does NOT pull per-table schema, sample rows, generate
-// blurbs, or embed — so an operator can choose a table scope on a 1000+ table
-// warehouse before paying to index it. The names are qualified with the same
+// This is the cheap enumeration that powers a table picker: it lists names only
+// (the warehouse driver's ListTablesInDataset metadata query) and does NOT pull
+// per-table schema, sample rows, generate blurbs, or embed — so an operator can
+// choose a table scope on a 1000+ table warehouse before paying to index it.
+//
+// A dataset that cannot be read is skipped rather than failing the whole
+// listing, but it is NAMED in unlisted_datasets so the caller knows the
+// catalogue is incomplete — see enumerateTables. The names are qualified with the same
 // RefQualifier the indexer/discovery use, so a scope saved from this list
 // matches the schema_key form the index and the run-time filters key on.
 //
@@ -83,63 +84,22 @@ func runListTables(cfg *config.Config, projectID, warehouseID string) error {
 	// schema_key the index and scope filters use.
 	qualifier, hasQualifier := provider.(gowarehouse.RefQualifier)
 
-	datasets := wh.GetDatasets()
-	seen := make(map[string]struct{})
-	tables := make([]string, 0)
-	listed := 0
-	var lastErr error
-	for _, dataset := range datasets {
-		names, err := provider.ListTablesInDataset(whCtx, dataset)
-		if err != nil {
-			// One bad dataset shouldn't blank the whole picker — skip it and
-			// keep listing the others (mirrors discovery's per-dataset skip).
-			lastErr = err
-			continue
+	qualify := func(dataset, name string) string {
+		if hasQualifier {
+			return qualifier.QualifiedName(dataset, name)
 		}
-		// Apply any registered ListTables filters (the same hook the index pass
-		// uses at schema_discovery.go), so a governance/policy allow-deny list is
-		// honoured by the picker too — the operator can't scope to a table the
-		// deployment forbids. The user-editable discovery-scope filter is a
-		// no-op here (its repo isn't wired in --list-tables mode, so it passes
-		// through) — deliberately, so the picker still shows the full set to
-		// choose a scope from. A filter error skips the dataset like a list error.
-		filtered, ferr := agentplugin.ApplyListTablesFilters(whCtx, projectID, dataset, names)
-		if ferr != nil {
-			lastErr = ferr
-			continue
-		}
-		names = filtered
-		listed++
-		for _, name := range names {
-			qualified := dataset + "." + name
-			if hasQualifier {
-				qualified = qualifier.QualifiedName(dataset, name)
-			}
-			if _, dup := seen[qualified]; dup {
-				continue
-			}
-			seen[qualified] = struct{}{}
-			tables = append(tables, qualified)
-		}
+		return dataset + "." + name
 	}
-	// If the warehouse has datasets but NONE could be listed (bad credentials,
-	// unreachable warehouse, or the deadline hit while listing the only one),
-	// surface the failure instead of a misleading success with zero tables — the
-	// API relays it so the picker shows an error rather than a silent empty list.
-	// A warehouse that genuinely has no datasets configured returns an empty list
-	// (no error).
-	if listed == 0 && len(datasets) > 0 {
-		return fmt.Errorf("list tables: all %d dataset(s) failed to list; last error: %w", len(datasets), lastErr)
-	}
-	sort.Strings(tables)
 
-	out, err := json.Marshal(map[string]interface{}{
-		"success":      true,
-		"warehouse_id": whID,
-		"tables":       tables,
-	})
+	tables, unlisted, err := enumerateTables(whCtx, projectID, wh.GetDatasets(),
+		provider.ListTablesInDataset, agentplugin.ApplyListTablesFilters, qualify)
 	if err != nil {
-		return fmt.Errorf("failed to marshal result: %w", err)
+		return err
+	}
+
+	out, err := listTablesJSON(whID, tables, unlisted)
+	if err != nil {
+		return err
 	}
 	fmt.Println(string(out))
 	return nil

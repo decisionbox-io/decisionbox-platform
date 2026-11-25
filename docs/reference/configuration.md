@@ -135,7 +135,7 @@ The agent uses Qdrant to store and index embeddings during the discovery process
 |----------|---------|-------------|
 | `QDRANT_URL` | *(empty)* | Qdrant gRPC endpoint (e.g., `qdrant:6334`). If empty, vector indexing is disabled. |
 | `QDRANT_API_KEY` | *(empty)* | Optional API key for authenticated Qdrant instances. |
-| `LIST_TABLES_TIMEOUT_SECONDS` | `120` | Deadline for the pre-index table-name listing that populates the table picker before a project is indexed. Raise it for very large warehouses (e.g. BigQuery, which makes a metadata call per table); set the same value on the API and agent so their deadlines match. |
+| `LIST_TABLES_TIMEOUT_SECONDS` | `120` | Deadline for the live table-name listing that populates the table picker (before a project is indexed, and on every `GET /schema-cache/tables?source=warehouse`). Raise it for very large warehouses (e.g. BigQuery, which makes a metadata call per table); set the same value on the API and agent so their deadlines match. |
 
 ### Telemetry
 

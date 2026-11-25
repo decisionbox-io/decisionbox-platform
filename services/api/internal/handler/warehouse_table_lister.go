@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -58,18 +59,65 @@ func NewAgentTableLister(r runner.Runner) *AgentTableLister {
 	return &AgentTableLister{runner: r, timeoutSecs: listTablesTimeoutSecs()}
 }
 
+// How a live listing failed, as far as the API can tell without reading the
+// driver's own message. The handler logs which of these it was: coarse, but it
+// is the one diagnostic that can be written to a log sink safely, and it
+// separates the cases an operator would act on differently — a refusal (bad
+// credentials, an unreadable catalogue, a table filter erroring for every
+// dataset) from an agent that could not run or produced nothing to parse.
+var (
+	// ErrListingRefused is the agent reporting a failure of its own: it ran,
+	// and said no. Its message is in the agent's output, not in these errors.
+	ErrListingRefused = errors.New("warehouse listing refused")
+	// ErrListingAgentFailed is the agent exiting badly — image, runner, or
+	// environment, rather than anything about the warehouse.
+	ErrListingAgentFailed = errors.New("listing agent failed to run")
+	// ErrListingNoResult is a clean exit with nothing parseable on stdout,
+	// which means the agent and the API disagree about the contract.
+	ErrListingNoResult = errors.New("listing agent returned no result")
+)
+
 // listTablesResult is the agent's --list-tables stdout contract.
 type listTablesResult struct {
 	Success bool     `json:"success"`
 	Error   string   `json:"error"`
 	Tables  []string `json:"tables"`
+	// UnlistedDatasets names the datasets the agent could not read. It skips
+	// those and still succeeds as long as one listed, so this is the only way to
+	// tell a complete catalogue from a partial one. An agent older than this
+	// field omits it, which reads as nil — see WarehouseTableListing.Complete.
+	UnlistedDatasets []string `json:"unlisted_datasets"`
+}
+
+// WarehouseTableListing is one live enumeration's outcome: the qualified names,
+// plus the datasets that could not be read.
+type WarehouseTableListing struct {
+	Tables []string
+	// UnlistedDatasets is empty when every configured dataset reported a result,
+	// and nil when the agent did not report on it at all.
+	UnlistedDatasets []string
+	// Complete is false when at least one DATASET could not be read. Dataset
+	// granularity is all this can honestly claim: a provider may also drop an
+	// individual table whose metadata it can't fetch and still return the rest
+	// with no error (BigQuery does — see decisionbox-platform#587), and
+	// ListTablesInDataset has no channel to report that. So Complete means
+	// "every dataset answered", not "every table in the warehouse is here".
+	//
+	// An agent that predates unlisted_datasets reports nothing either way and is
+	// taken at its word (true) rather than marking every listing suspect: the
+	// field's absence is an old image, not evidence of a failure, and treating
+	// it as one would warn about every normal listing from that deployment.
+	// API and agent ship from one release train, so the skew is a self-hosted
+	// upgrade window rather than a steady state.
+	Complete bool
 }
 
 // ListWarehouseTables runs the agent's --list-tables mode for one datasource
 // (empty warehouseID → the project's primary) and returns the qualified table
-// names. Errors from the agent (bad credentials, unreachable warehouse) surface
-// as an error so the caller can decide whether to degrade to an empty picker.
-func (a *AgentTableLister) ListWarehouseTables(ctx context.Context, projectID, warehouseID string) ([]string, error) {
+// names, plus whether every configured dataset could be read. Errors from the
+// agent (bad credentials, unreachable warehouse) surface as an error so the
+// caller can decide whether to degrade to an empty picker.
+func (a *AgentTableLister) ListWarehouseTables(ctx context.Context, projectID, warehouseID string) (WarehouseTableListing, error) {
 	args := []string{"--list-tables"}
 	if warehouseID != "" {
 		args = append(args, "--warehouse-id", warehouseID)
@@ -97,21 +145,28 @@ func (a *AgentTableLister) ListWarehouseTables(ctx context.Context, projectID, w
 			_ = json.Unmarshal(js, &out)
 		}
 	}
+	// Each returned error WRAPS one of the sentinels above, so a caller can log
+	// the class without the message. The message itself carries the driver's
+	// text and belongs only where an admin asked for it.
 	if err != nil {
 		if out.Error != "" {
-			return nil, fmt.Errorf("list tables: %s", out.Error)
+			return WarehouseTableListing{}, fmt.Errorf("%w: %s", ErrListingRefused, out.Error)
 		}
 		msg := "agent exited with error"
 		if res != nil && res.Error != "" {
 			msg = res.Error
 		}
-		return nil, fmt.Errorf("list tables: %s", msg)
+		return WarehouseTableListing{}, fmt.Errorf("%w: %s", ErrListingAgentFailed, msg)
 	}
 	if !out.Success {
 		if out.Error != "" {
-			return nil, fmt.Errorf("list tables: %s", out.Error)
+			return WarehouseTableListing{}, fmt.Errorf("%w: %s", ErrListingRefused, out.Error)
 		}
-		return nil, fmt.Errorf("list tables: no result from agent")
+		return WarehouseTableListing{}, ErrListingNoResult
 	}
-	return out.Tables, nil
+	return WarehouseTableListing{
+		Tables:           out.Tables,
+		UnlistedDatasets: out.UnlistedDatasets,
+		Complete:         len(out.UnlistedDatasets) == 0,
+	}, nil
 }

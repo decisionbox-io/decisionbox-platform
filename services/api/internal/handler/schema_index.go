@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sort"
 	"strconv"
@@ -36,15 +37,20 @@ const (
 const reindexLockStaleAfter = 2 * time.Minute
 
 type liveTableEntry struct {
-	tables []string
-	failed bool
-	at     time.Time
+	listing WarehouseTableListing
+	// err marks a negative-cached entry so ?source=warehouse can answer 503 and
+	// an empty-tables success is not mistaken for one. Always errLiveListing,
+	// never the driver's own error: only its presence is ever used, and the
+	// driver's text can quote a connection string, which an entry that expires
+	// without being deleted would then hold until the process restarts.
+	err error
+	at  time.Time
 }
 
 // ttl returns the entry's effective lifetime — shorter for a failed listing so
 // a fixed credential/connection recovers quickly.
 func (e liveTableEntry) ttl() time.Duration {
-	if e.failed {
+	if e.err != nil {
 		return liveTableFailTTL
 	}
 	return liveTableCacheTTL
@@ -101,14 +107,17 @@ type SchemaIndexRunLister interface {
 }
 
 // WarehouseTableLister lists a warehouse's qualified table names live (by
-// running the agent's --list-tables mode). It backs the discovery-scope table
-// picker before the first index exists — at that point project_schema_cache is
-// empty, so ListCachedTables falls back to this to enumerate the warehouse's
-// tables cheaply (names only, no schema/blurb/embed). Concrete impl is
-// AgentTableLister over runner.Runner; nullable — when unset (e.g. a build
+// running the agent's --list-tables mode). It backs a table picker: before the
+// first index project_schema_cache is empty, so ListCachedTables falls back to
+// this to enumerate the warehouse's tables cheaply (names only, no
+// schema/blurb/embed), and ?source=warehouse goes straight here. Concrete impl
+// is AgentTableLister over runner.Runner; nullable — when unset (e.g. a build
 // without an agent runner) ListCachedTables serves only the indexed cache.
+//
+// The result reports whether every configured dataset could be read, so a
+// partial catalogue is not mistaken for a complete one.
 type WarehouseTableLister interface {
-	ListWarehouseTables(ctx context.Context, projectID, warehouseID string) ([]string, error)
+	ListWarehouseTables(ctx context.Context, projectID, warehouseID string) (WarehouseTableListing, error)
 }
 
 // SchemaIndexHandler serves the lifecycle endpoints the dashboard uses
@@ -132,25 +141,116 @@ type SchemaIndexHandler struct {
 // within its TTL (a failed listing is cached too, on a shorter TTL, so a
 // persistent failure backs off instead of re-spawning). The key encodes the
 // datasource config so a warehouse/dataset change yields a fresh listing.
-func (h *SchemaIndexHandler) getLiveTables(key string) ([]string, bool) {
+func (h *SchemaIndexHandler) getLiveTables(key string) (liveTableEntry, bool) {
 	h.liveMu.Lock()
 	defer h.liveMu.Unlock()
 	e, ok := h.liveCache[key]
 	if !ok || time.Since(e.at) > e.ttl() {
-		return nil, false
+		return liveTableEntry{}, false
 	}
-	return e.tables, true
+	return e, true
 }
 
-// putLiveTables records a live-listing result (success, or failure→failed=true)
-// with the current time so subsequent polls within the TTL reuse it.
-func (h *SchemaIndexHandler) putLiveTables(key string, tables []string, failed bool) {
+// putLiveTables records a live-listing result (success, or a failure with its
+// error) with the current time so subsequent polls within the TTL reuse it.
+func (h *SchemaIndexHandler) putLiveTables(key string, listing WarehouseTableListing, err error) {
 	h.liveMu.Lock()
 	defer h.liveMu.Unlock()
 	if h.liveCache == nil {
 		h.liveCache = make(map[string]liveTableEntry)
 	}
-	h.liveCache[key] = liveTableEntry{tables: tables, failed: failed, at: time.Now()}
+	now := time.Now()
+	// Drop entries past their TTL while we hold the lock. Expiry alone only
+	// stops an entry being REUSED, and the key encodes the datasource config —
+	// so every warehouse edit mints a new key and abandons the old one. Before
+	// ?source=warehouse this cache only ever held pre-index projects, a set that
+	// stops growing once they are indexed; now every scope-page open populates
+	// it, so without this a long-lived API accumulates the catalogue of every
+	// datasource anyone ever looked at or edited. Writes are rare (the TTL and
+	// singleflight bound them), so sweeping on each one is cheaper than the
+	// bookkeeping to avoid it.
+	for k, e := range h.liveCache {
+		if now.Sub(e.at) > e.ttl() {
+			delete(h.liveCache, k)
+		}
+	}
+	h.liveCache[key] = liveTableEntry{listing: listing, err: err, at: now}
+}
+
+// liveTables enumerates one datasource's qualified table names live, through the
+// TTL cache + singleflight that bound how often an agent --list-tables run is
+// spawned: a result (or a failure) inside its TTL is reused, and concurrent
+// callers for the same key share one run. Unlike the pre-index fallback it
+// RETURNS the failure, so the caller decides whether to degrade to an empty
+// list or report it.
+//
+// Must only be called with h.lister non-nil.
+func (h *SchemaIndexHandler) liveTables(ctx context.Context, projectID, whID string, wh models.WarehouseConfig) (WarehouseTableListing, error) {
+	// Cache key encodes the datasource config so a warehouse/dataset change
+	// invalidates the cached listing immediately (not just after the TTL).
+	key := liveTableCacheKey(projectID, wh)
+	if e, ok := h.getLiveTables(key); ok {
+		// Fresh cached result (possibly empty, possibly a failure) — reuse it;
+		// don't re-spawn.
+		return e.listing, e.err
+	}
+	// The shared run must not inherit ONE caller's cancellation: singleflight
+	// hands the leader's error to every follower and the failure is then
+	// negative-cached, so a leader that navigated away would report a healthy
+	// warehouse as unavailable to everyone for the fail TTL. WithoutCancel keeps
+	// the request's values (the runner reads them) and drops its cancellation;
+	// the lister owns the deadline, derived from LIST_TABLES_TIMEOUT_SECONDS.
+	runCtx := context.WithoutCancel(ctx)
+	// Coalesce concurrent picker polls for the same key through singleflight so
+	// parallel requests share ONE agent run instead of each spawning its own;
+	// the TTL cache then bounds sequential polls.
+	ch := h.liveSF.DoChan(key, func() (interface{}, error) {
+		// Re-check the cache inside the flight: a just-finished leader may have
+		// populated it while this call was queued behind the lock.
+		if e, ok := h.getLiveTables(key); ok {
+			return e.listing, e.err
+		}
+		live, lerr := h.lister.ListWarehouseTables(runCtx, projectID, whID)
+		if lerr != nil {
+			// This handler does not log lerr. It carries the driver's own
+			// message, which can quote the connection string it failed to
+			// parse, and no pattern over arbitrary driver text is reliable
+			// enough to be the thing standing between a customer's password and
+			// a log sink. Nothing is lost by not keeping a copy: the agent that
+			// talked to the warehouse logs its own failure.
+			//
+			// Note this is not a guarantee about the API PROCESS. In docker and
+			// kubernetes runner modes the runner streams the agent's container
+			// output to the API's stderr so operators can watch a run, which
+			// puts the agent's own line — driver message included — in the API
+			// log by a route this handler doesn't control (platform#588).
+			apilog.WithFields(apilog.Fields{
+				"project_id": projectID, "warehouse_id": whID,
+				"failure": listingFailureClass(lerr),
+			}).Warn("schema-cache tables: live warehouse enumeration failed")
+			// Negative-cache the failure (short TTL) so a persistent problem
+			// (bad creds, VPN down) backs off instead of spawning a doomed run
+			// per poll, but a fixed connection is retried soon. The sentinel,
+			// not lerr — see liveTableEntry.err.
+			h.putLiveTables(key, WarehouseTableListing{}, errLiveListing)
+			return WarehouseTableListing{}, errLiveListing
+		}
+		h.putLiveTables(key, live, nil)
+		return live, nil
+	})
+	// DoChan, not Do: Do would keep THIS handler blocked on the shared run until
+	// it finishes — up to the lister's full deadline — even after its own caller
+	// disconnected. An abandoned request sitting there also eats into the
+	// server's HTTP drain budget if a shutdown starts. Waiting on the request's
+	// context instead lets this handler return while the run continues for
+	// everyone else, and its result still lands in the TTL cache.
+	select {
+	case res := <-ch:
+		listing, _ := res.Val.(WarehouseTableListing)
+		return listing, res.Err
+	case <-ctx.Done():
+		return WarehouseTableListing{}, ctx.Err()
+	}
 }
 
 // liveTableCacheKey identifies a (project, primary-datasource config) so the
@@ -740,18 +840,81 @@ func (h *SchemaIndexHandler) GetCacheInfo(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// ListCachedTables returns the distinct cached schema_key values
-// the agent has stored for a project — one entry per qualified table
-// (the exact form is provider-dependent: e.g. "<dataset>.<table>"
-// for BigQuery, "<schema>.<table>" for Postgres / Snowflake /
-// Databricks, "dbo.orders" for MSSQL). Used by the discovery-scope
-// page's table picker so the user picks from what the agent actually
-// sees, not a free-form text input.
+// Table-list sources for GET /schema-cache/tables's ?source= parameter.
 //
-// GET /api/v1/projects/{id}/schema-cache/tables
+// tableSourceIndex (the default) answers from the project's schema cache —
+// what the agent has actually indexed — and falls back to a live enumeration
+// only when the cache is empty. tableSourceWarehouse always enumerates the
+// warehouse live, which is what a caller choosing a table scope needs: the
+// scope is applied when the index is built, so after a scoped re-index the
+// cache holds only in-scope tables and an index-sourced picker can never offer
+// a table the scope excluded. It bypasses the INDEX, not a registered
+// ListTables filter — those run on the live listing too.
+const (
+	tableSourceIndex     = "index"
+	tableSourceWarehouse = "warehouse"
+)
+
+// liveListingFailedMsg is what a failed source=warehouse enumeration tells the
+// client. Deliberately generic: the underlying error comes from a warehouse
+// driver and can quote the connection string it failed to parse, password
+// included, and this route is open to a VIEWER.
 //
-// When the schema cache repository isn't wired, or no rows exist yet,
-// returns an empty list — the UI's empty-state render is fine.
+// It points at the agent's log rather than at the data source's connection
+// test, because the cause need not be the connection — a registered ListTables
+// filter failing for every dataset lands here too, and HealthCheck would pass.
+// The agent logs its own failure in every runner mode.
+const liveListingFailedMsg = "could not list the warehouse's tables; check the data source's connection and any table-filter policy on it"
+
+// listingFailureClass names which way a live listing failed, for the log. The
+// driver's own message can quote a connection string and so is never logged;
+// the class can be, and it is the difference an operator acts on — a refusal
+// means the agent ran and said no (credentials, an unreadable catalogue, a
+// table filter erroring), the others mean it could not run or did not speak the
+// contract. In the default subprocess runner mode the agent's stderr is
+// buffered by the runner rather than written anywhere, so without this the
+// failure would leave no trace at all.
+func listingFailureClass(err error) string {
+	switch {
+	case errors.Is(err, ErrListingRefused):
+		return "refused_by_warehouse_or_filter"
+	case errors.Is(err, ErrListingAgentFailed):
+		return "agent_failed_to_run"
+	case errors.Is(err, ErrListingNoResult):
+		return "agent_returned_no_result"
+	default:
+		return "unknown"
+	}
+}
+
+// errLiveListing is the sentinel a negative-cached entry holds in place of the
+// driver's error. The cache only needs to know THAT the listing failed; keeping
+// the real error would retain a possible connection string for the life of the
+// process, since entries expire rather than being deleted.
+var errLiveListing = errors.New("live warehouse table listing failed")
+
+// ListCachedTables returns one entry per qualified table (the exact form is
+// provider-dependent: e.g. "<dataset>.<table>" for BigQuery, "<schema>.<table>"
+// for Postgres / Snowflake / Databricks, "dbo.orders" for MSSQL). Backs a
+// table-picker UI so the user chooses from real names rather than typing them
+// into a free-form input.
+//
+// GET /api/v1/projects/{id}/schema-cache/tables?warehouse_id=<id>&source=<index|warehouse>
+//
+//   - source=index (default): the distinct cached schema_key values the agent
+//     has stored for the datasource, falling back to a live names-only
+//     enumeration when the cache is empty (i.e. before the first index). When
+//     the schema cache repository isn't wired, or no rows exist and no live
+//     listing is available, returns an empty list — the UI's empty-state
+//     render is fine.
+//   - source=warehouse: always the live enumeration, so the caller sees the
+//     warehouse's whole catalogue regardless of what is INDEXED (filters that
+//     also run on the live listing still apply). A failure here is reported
+//     (503, with a generic message — see liveListingFailedMsg) rather than
+//     degraded to the indexed set: serving the scoped index in its place is
+//     exactly the one-way door this parameter exists to open. A dataset the
+//     enumeration could not read is named in unlisted_datasets, so a partial
+//     catalogue is not served as a complete one.
 func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -760,8 +923,36 @@ func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Req
 	}
 	type response struct {
 		Tables []string `json:"tables"`
+		// UnlistedDatasets names the datasets a source=warehouse enumeration
+		// could not read. Omitted when the catalogue is complete, and for the
+		// index source (which answers from the cache and enumerates nothing).
+		// A caller choosing which tables to index has to be able to tell "this
+		// dataset has no tables" from "we could not read this dataset".
+		UnlistedDatasets []string `json:"unlisted_datasets,omitempty"`
 	}
-	if h.cacheRepo == nil {
+	// Reject an unrecognised source rather than silently treating it as the
+	// default: a caller that asked for the warehouse catalogue and quietly got
+	// the indexed one has no way to tell.
+	// A duplicated source is refused rather than resolved to the first value.
+	// Unlike a malformed escape (a broken client, which Get's usual behaviour
+	// handles), both values here are well formed and the caller has asked for
+	// two different catalogues — picking one silently is the substitution this
+	// parameter exists to prevent.
+	if vals := r.URL.Query()["source"]; len(vals) > 1 {
+		writeError(w, http.StatusBadRequest, "source must be given at most once")
+		return
+	}
+	source := r.URL.Query().Get("source")
+	switch source {
+	case "", tableSourceIndex, tableSourceWarehouse:
+	default:
+		writeError(w, http.StatusBadRequest, "source must be "+tableSourceIndex+" or "+tableSourceWarehouse)
+		return
+	}
+	wantWarehouse := source == tableSourceWarehouse
+	// source=warehouse never reads the schema cache, so a build without the
+	// cache repo wired can still serve it.
+	if h.cacheRepo == nil && !wantWarehouse {
 		writeJSON(w, http.StatusOK, response{Tables: []string{}})
 		return
 	}
@@ -797,58 +988,58 @@ func (h *SchemaIndexHandler) ListCachedTables(w http.ResponseWriter, r *http.Req
 			return
 		}
 	}
-	tables, err := h.cacheRepo.ListTables(r.Context(), id, whID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "list cached tables: "+err.Error())
+	var tables []string
+	var unlisted []string
+	if !wantWarehouse {
+		if tables, err = h.cacheRepo.ListTables(r.Context(), id, whID); err != nil {
+			writeError(w, http.StatusInternalServerError, "list cached tables: "+err.Error())
+			return
+		}
+	}
+	// Enumerate the warehouse's table names live (cheap — names only, via the
+	// agent's --list-tables mode). Always for source=warehouse; for the default
+	// source only when the schema cache has nothing, which is the pre-first-index
+	// state a table picker needs populating in so the operator can restrict the
+	// table set BEFORE paying to index it.
+	//
+	// Skipped entirely for a project with no datasource configured — a blank
+	// project would otherwise spawn a doomed agent run on every poll, and an
+	// empty list is the honest answer when there is no warehouse to enumerate.
+	needLive := (wantWarehouse || len(tables) == 0) && len(p.EffectiveWarehouses()) > 0
+	if needLive && h.lister == nil && wantWarehouse {
+		// No agent runner on this build, so there is no live enumeration to run
+		// at all. (The default source just degrades to the cache below, as it
+		// always has.) Saying so beats answering with a list we did not produce.
+		writeError(w, http.StatusServiceUnavailable, "live warehouse table listing is not available on this deployment")
 		return
 	}
-	// Before the first index the schema cache is empty, so fall back to a live
-	// enumeration of the warehouse's table names (cheap — names only, via the
-	// agent's --list-tables mode) so the discovery-scope picker is populated and
-	// the operator can restrict the table set BEFORE paying to index it. Only
-	// when a lister is wired, the cache truly has nothing, AND the project has a
-	// warehouse configured — a blank project with no datasource would otherwise
-	// spawn a doomed agent run on every poll. A live-listing failure degrades to
-	// the empty list (the picker's empty state) rather than erroring the page.
-	if len(tables) == 0 && h.lister != nil && len(p.EffectiveWarehouses()) > 0 {
-		// Cache key encodes the datasource config so a warehouse/dataset change
-		// invalidates the cached listing immediately (not just after the TTL).
-		key := liveTableCacheKey(id, wh)
-		if cached, ok := h.getLiveTables(key); ok {
-			// Fresh cached result (possibly empty) — reuse it; don't re-spawn.
-			tables = cached
-		} else {
-			// Coalesce concurrent picker polls for the same key through
-			// singleflight so parallel requests share ONE agent run instead of
-			// each spawning its own; the TTL cache then bounds sequential polls.
-			v, _, _ := h.liveSF.Do(key, func() (interface{}, error) {
-				// Re-check the cache inside the flight: a just-finished leader may
-				// have populated it while this call was queued behind the lock.
-				if cached, ok := h.getLiveTables(key); ok {
-					return cached, nil
-				}
-				live, lerr := h.lister.ListWarehouseTables(r.Context(), id, whID)
-				if lerr != nil {
-					apilog.WithField("project_id", id).
-						Warn("schema-cache tables: live warehouse enumeration failed; serving empty list: " + lerr.Error())
-					// Negative-cache the failure (short TTL) so a persistent problem
-					// (bad creds, VPN down) backs off instead of spawning a doomed
-					// run per poll, but a fixed connection is retried soon.
-					h.putLiveTables(key, nil, true)
-					return []string(nil), nil
-				}
-				h.putLiveTables(key, live, false)
-				return live, nil
-			})
-			if v != nil {
-				tables, _ = v.([]string)
+	if needLive && h.lister != nil {
+		live, lerr := h.liveTables(r.Context(), id, whID, wh)
+		switch {
+		case lerr != nil && wantWarehouse:
+			// Reporting the failure is the point: answering with the indexed set
+			// would, on a project whose index is narrowed, hand back the current
+			// selection and silently make widening it impossible.
+			writeError(w, http.StatusServiceUnavailable, liveListingFailedMsg)
+			return
+		case lerr != nil:
+			// Default source: keep degrading to the empty list (the picker's
+			// empty state) rather than erroring the page.
+		default:
+			tables = live.Tables
+			// Carried through only for source=warehouse: the default source's
+			// contract is "what is indexed", and it reaches the live listing
+			// only as a pre-index courtesy, so a partial result there is not
+			// something its callers are shaped to read.
+			if wantWarehouse && !live.Complete {
+				unlisted = live.UnlistedDatasets
 			}
 		}
 	}
 	if tables == nil {
 		tables = []string{}
 	}
-	writeJSON(w, http.StatusOK, response{Tables: tables})
+	writeJSON(w, http.StatusOK, response{Tables: tables, UnlistedDatasets: unlisted})
 }
 
 // SchemaIndexLogLine is one line the dashboard tail renders.

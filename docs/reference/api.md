@@ -514,6 +514,68 @@ curl "http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/schema-inde
 
 A `failed` run carries the same shape with `"status": "failed"` and an `"error"` string.
 
+### GET /api/v1/projects/{id}/schema-cache/tables
+
+List a data source's qualified table names, one entry per table.
+The exact form is provider-dependent — `<dataset>.<table>` for BigQuery, `<schema>.<table>` for Postgres / Snowflake / Databricks, `dbo.orders` for MSSQL.
+Requires `viewer`.
+
+Query parameters (both optional):
+
+- `warehouse_id` — the data source to list (empty resolves to the primary). An id that is not on the project answers `404`.
+- `source` — which catalogue to answer from:
+  - `index` (the default) — the names the agent has indexed for that data source, falling back to a live names-only enumeration of the warehouse while that cache is empty (i.e. before the first index). An unwired cache repository, or a failed live enumeration, answers with an empty list.
+  - `warehouse` — always the live enumeration, so the response is the warehouse's catalogue regardless of what is **indexed**. A caller choosing which tables to index needs this: a registered [`ListTables` filter](../concepts/plugin-hooks.md) narrows the set that gets indexed, which makes the index a subset of the warehouse, and an index-sourced list could then only ever offer the tables already indexed. This option bypasses the index, **not** deployment-level filtering — a registered `ListTables` filter runs on the live listing too, so a plugin that filters both paths returns its restricted set either way. A failed enumeration answers `503` rather than falling back to the indexed names. Its body is deliberately generic, and the handler logs no driver text either: it can quote the connection string it failed to parse, password included, and this route is open to a `viewer`. `POST /test/warehouse` returns the agent's message to an `admin`, the tier raw warehouse diagnostics belong to. The API logs a failure *class* alongside the project and data source — `refused_by_warehouse_or_filter`, `agent_failed_to_run`, `agent_returned_no_result` — which is the distinction an operator acts on and is safe to write to a log sink; in the default subprocess runner mode the runner buffers the agent's stderr without writing it anywhere, so this is the only trace the failure leaves. (Note that in the docker and kubernetes runner modes the runner relays the agent's container output to the API's log, so a driver message can still land there by that route — [#588](https://github.com/decisionbox-io/decisionbox-platform/issues/588).) The failure is not necessarily the connection: a registered `ListTables` filter failing for every dataset answers the same `503`, and a connection test would pass.
+
+  Any other value answers `400`, as does repeating the parameter — two well-formed values naming different catalogues is a request to resolve, not to guess at.
+
+The live enumeration lists names only — no schema pull, no table descriptions, no embeddings — and runs the agent's `--list-tables` mode against the warehouse under `LIST_TABLES_TIMEOUT_SECONDS` (see [Configuration](configuration.md)).
+Results are cached per data-source configuration for a short TTL and concurrent callers share one run, so repeated polls do not each spawn an agent.
+A deployment with no agent runner has no live enumeration: `source=warehouse` answers `503` there.
+
+```bash
+curl "http://localhost:8080/api/v1/projects/507f1f77bcf86cd799439011/schema-cache/tables?source=warehouse"
+```
+
+```json
+{
+  "data": {
+    "tables": ["public.customers", "public.orders", "public.payments"]
+  }
+}
+```
+
+An empty result is `[]`, never `null`.
+
+A `source=warehouse` enumeration **skips a dataset it cannot read** and still
+succeeds on the strength of the others — blanking a usable picker over one
+unreadable schema would be worse. Those datasets are named, so a partial
+catalogue is never served as a complete one:
+
+```json
+{
+  "data": {
+    "tables": ["public.customers", "public.orders"],
+    "unlisted_datasets": ["staging"]
+  }
+}
+```
+
+`unlisted_datasets` is **omitted** when every dataset listed, so its presence
+means the catalogue is incomplete. The converse needs an agent that sends the
+field: an agent image older than the API never emits it, so on a deployment
+mid-upgrade an absent field means "this agent doesn't say" rather than "nothing
+was skipped". The API takes that at face value, because treating it as unknown
+would flag every normal listing from such a deployment. It is never sent for `source=index`, which
+answers from the cache and enumerates nothing. Only an all-datasets failure is a
+`503`.
+
+The granularity is the dataset. A provider may also drop an individual table
+whose metadata it cannot fetch and still return the rest without an error
+([#587](https://github.com/decisionbox-io/decisionbox-platform/issues/587)), so
+an absent `unlisted_datasets` means every dataset answered — not that every
+table in the warehouse is in the response.
+
 ---
 
 ## Schema editor
