@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-11-25
+
 ### Added
 
 - **`GET /.well-known/decisionbox` — unauthenticated deployment discovery.** A client pointed at a deployment URL needs to know three things before it has any credentials: which API contract the server speaks, which capabilities it has, and how to authenticate. There was no way to ask. The DecisionBox Chat mobile client's first screen is "type your deployment URL", which cannot work without it.
@@ -48,6 +50,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **One caller's disconnect no longer fails a shared table listing for everyone.** The singleflight-coalesced enumeration ran under the first caller's request context, and singleflight hands the leader's error to every follower — which is then negative-cached for the fail TTL. A leader navigating away mid-listing therefore reported a healthy warehouse as unavailable to every other caller for the next 15 seconds. The shared run now uses `context.WithoutCancel`, keeping the request's values (the runner reads them) while dropping its cancellation; the lister still owns the deadline, derived from `LIST_TABLES_TIMEOUT_SECONDS`. The handler waits on `DoChan` rather than `Do`, so a disconnected caller returns immediately instead of sitting on the shared run for up to its full deadline — an abandoned request parked there also eats into the server's HTTP drain budget if a shutdown starts.
 
+- **An upstream failure now carries the status the upstream used ([#41](https://github.com/decisionbox-io/decisionbox-ai-gateway/issues/41)).** `Provider.Chat` returns a plain error, so every failure has looked alike to a caller for as long as the interface has existed: a prompt past the model's window, a parameter the model does not take, and a backend outage all arrive as "the provider failed". A caller that cannot tell them apart retries the ones that can never succeed, and reports the sender's own mistake as an internal error — which is what a managed gateway in front of this does today, answering 502 to a request the backend called invalid.
+
+  New `llm.UpstreamError` carries the status, the upstream's own classification where it gives one, and a sanitised message; `llm.UpstreamStatus` and `llm.UpstreamClientFault` read it out of a wrapped chain. `ClientFault` is a 4xx that is not 408 or 429 — those two say "ask again later", so reading them as the caller's mistake would stop a retry that works. An unknown status reads as unknown, never as a client fault, so a provider that has not adopted this cannot have its failures reclassified.
+
+  Adopted by the Bedrock wires and the LiteLLM provider, which is where a rejected request is most likely: `enable_pre_call_checks` on a proxy turns an over-long prompt into a 400, and Bedrock reports one as a `ValidationException`. The status is taken from the error through an interface assertion (`HTTPStatusCode() int`), so no SDK import is needed to read an AWS response error. Verified against a real model: a million-token prompt returns status 400, `ValidationException: prompt is too long`, and reads as a client fault, while a healthy call does not.
+
+- **Four provider comments described the opposite of what `NormalizeReasoningEffort` does ([#565](https://github.com/decisionbox-io/decisionbox-platform/issues/565)).** Each said a model the catalog does not know "keeps" its `reasoning_effort`. It does not: the helper requires *positive* catalog evidence and clears the field for anything else, which its own doc comment explains at length — the set of targets whose capability cannot be known is open, so no denial list covers it and a guess collects a 400.
+
+  The behaviour is right and is not changed here. The comments are, in the four providers that carry the field as a plain request key. They matter because they sit at the call site, which is where someone decides whether to rely on the field: read as written, they promise that an effort set by a caller survives an opaque hop, and it does not.
+
+  A test now pins the end-to-end behaviour on the LiteLLM provider — the one that registers no catalog and dispatches any model name, so every model it serves is unidentifiable and this is its normal case rather than an edge one. Asserted on the request that reaches the proxy, because that is what a reader of that comment actually wants to know.
+
 ### Fixed
 
 - **The Run discovery area picker offered the domain pack's areas, not the project's own ([#573](https://github.com/decisionbox-io/decisionbox-platform/issues/573)).** A domain pack seeds a project's analysis areas once, at creation. After that the Playbook page is what defines them — it adds areas the pack never had, switches areas off and deletes custom ones — and the agent builds every run's list from the project, skipping anything disabled. The picker had never stopped reading the seed.
@@ -67,20 +81,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A tool call's numbers were rounded through `float64`.** Three providers decoded a tool input into `map[string]interface{}` — the Anthropic wire on Bedrock, the Claude provider, and the shared OpenAI-compatible parser that the LiteLLM and OpenAI providers use — so any integer past 2^53 came back altered. A model answering the id `9007199254740993` reported `9007199254740992`, including when the schema that asked for it had been forwarded exactly.
 
   All three now share one `llm.DecodeToolInput`, which decodes with `UseNumber` so the model's own digits survive. `json.Number` re-marshals as the text it was read from, so a folded structured answer carries them through to the caller unchanged. Verified against a real model returning that id inside a schema-constrained reply.
-
-### Added
-
-- **An upstream failure now carries the status the upstream used ([#41](https://github.com/decisionbox-io/decisionbox-ai-gateway/issues/41)).** `Provider.Chat` returns a plain error, so every failure has looked alike to a caller for as long as the interface has existed: a prompt past the model's window, a parameter the model does not take, and a backend outage all arrive as "the provider failed". A caller that cannot tell them apart retries the ones that can never succeed, and reports the sender's own mistake as an internal error — which is what a managed gateway in front of this does today, answering 502 to a request the backend called invalid.
-
-  New `llm.UpstreamError` carries the status, the upstream's own classification where it gives one, and a sanitised message; `llm.UpstreamStatus` and `llm.UpstreamClientFault` read it out of a wrapped chain. `ClientFault` is a 4xx that is not 408 or 429 — those two say "ask again later", so reading them as the caller's mistake would stop a retry that works. An unknown status reads as unknown, never as a client fault, so a provider that has not adopted this cannot have its failures reclassified.
-
-  Adopted by the Bedrock wires and the LiteLLM provider, which is where a rejected request is most likely: `enable_pre_call_checks` on a proxy turns an over-long prompt into a 400, and Bedrock reports one as a `ValidationException`. The status is taken from the error through an interface assertion (`HTTPStatusCode() int`), so no SDK import is needed to read an AWS response error. Verified against a real model: a million-token prompt returns status 400, `ValidationException: prompt is too long`, and reads as a client fault, while a healthy call does not.
-
-- **Four provider comments described the opposite of what `NormalizeReasoningEffort` does ([#565](https://github.com/decisionbox-io/decisionbox-platform/issues/565)).** Each said a model the catalog does not know "keeps" its `reasoning_effort`. It does not: the helper requires *positive* catalog evidence and clears the field for anything else, which its own doc comment explains at length — the set of targets whose capability cannot be known is open, so no denial list covers it and a guess collects a 400.
-
-  The behaviour is right and is not changed here. The comments are, in the four providers that carry the field as a plain request key. They matter because they sit at the call site, which is where someone decides whether to rely on the field: read as written, they promise that an effort set by a caller survives an opaque hop, and it does not.
-
-  A test now pins the end-to-end behaviour on the LiteLLM provider — the one that registers no catalog and dispatches any model name, so every model it serves is unidentifiable and this is its normal case rather than an edge one. Asserted on the request that reaches the proxy, because that is what a reader of that comment actually wants to know.
 
 
 ## [0.41.0] - 2026-11-18
