@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`brokered` auth mode in `GET /.well-known/decisionbox`.** Discovery could describe only two worlds: the API takes no token (`none`), or it takes the identity provider's own access token (`oidc`). A deployment whose API accepts neither had nothing honest to say about itself, and the closest available answer was a lie in the direction that costs a client the most — advertise `oidc`, and the client signs in, calls every route with the IdP's token and collects a `401` each time while the discovery document tells it that was correct.
+
+  `auth.type: "brokered"` says the missing third thing: sign in at the advertised `oidc.issuer`, then exchange that identity at the new `broker` sibling (`url`, `deployment_id`, `kind`) for a token scoped to this one deployment, and call the API with that. The `oidc` block is still served, because the exchange needs an identity it can verify; `broker` is present only in this mode, and `broker.kind` names the exchange protocol so a client can tell whether it implements it before starting a flow it cannot finish.
+
+  Why the mode exists at all: wherever several deployments share one identity provider, an IdP token says who the holder is and nothing about which deployment they may use. A token minted per deployment, by the party that knows the answer, lets the API decide from the token alone — which is a property no amount of client-side care can supply.
+
 ## [0.42.0] - 2026-11-25
 
 ### Added

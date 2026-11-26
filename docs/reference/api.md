@@ -75,8 +75,34 @@ A deployment with OIDC enabled adds a top-level `oidc` sibling:
 }
 ```
 
-`auth.type` is **always explicit** (`none` or `oidc`), so a client never infers "no authentication" from a missing field — a misconfigured OIDC deployment would otherwise be silently downgraded to anonymous access.
-`oidc` is present if and only if `auth.type` is `oidc`; `mobile_client_id` may be an empty string on a deployment that runs the dashboard client only.
+A deployment whose API does **not** accept the identity provider's own tokens reports `brokered` and adds a `broker` sibling alongside `oidc`:
+
+```json
+{
+  "api_version": "v1",
+  "features": ["..."],
+  "auth": {"type": "brokered"},
+  "oidc": {
+    "issuer": "https://id.example/",
+    "mobile_client_id": "decisionbox-mobile",
+    "scopes": ["openid", "profile", "email"],
+    "audience": "https://broker.example"
+  },
+  "broker": {
+    "url": "https://broker.example",
+    "deployment_id": "6a5e9999169725e95aa71f1d",
+    "kind": "decisionbox-cloud"
+  }
+}
+```
+
+In this mode the client signs in at `oidc.issuer` as usual, then exchanges that identity at `broker.url` for a token scoped to this one deployment, and calls the API with **that** token — the access token from the issuer is not accepted.
+The distinction matters wherever several deployments share one identity provider: an IdP token says who the holder is and nothing about which deployment they may use, while a brokered token is issued for one deployment by the party that knows the answer.
+`broker.kind` names the exchange protocol (`decisionbox-cloud` is the managed-cloud control plane's); a client that does not recognise the value should say so rather than guess at a flow it cannot finish.
+
+`auth.type` is **always explicit** (`none`, `oidc` or `brokered`), so a client never infers "no authentication" from a missing field — a misconfigured OIDC deployment would otherwise be silently downgraded to anonymous access.
+`oidc` is present for `oidc` and `brokered` (both begin with a sign-in at the issuer); `mobile_client_id` may be an empty string on a deployment that runs the dashboard client only.
+`broker` is present if and only if `auth.type` is `brokered`.
 
 An optional `branding` object is passed through verbatim when a deployment overlay registers one.
 

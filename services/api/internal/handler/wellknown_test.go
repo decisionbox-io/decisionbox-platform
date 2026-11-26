@@ -280,3 +280,95 @@ func TestWellKnown_NoStore(t *testing.T) {
 		t.Errorf("Cache-Control = %q, want no-store", cc)
 	}
 }
+
+// TestWellKnown_BrokeredRegistered covers the mode where the API does not
+// accept the identity provider's own tokens. Both siblings have to be there:
+// `oidc` because the client still signs in at the issuer, and `broker`
+// because the token it signs in for is not the one the API takes.
+//
+// Advertising "oidc" for such a deployment is the failure this mode exists to
+// prevent — a client would call the API with its IdP access token and get 401
+// on every route, with a discovery document telling it that was the right
+// thing to do.
+func TestWellKnown_BrokeredRegistered(t *testing.T) {
+	wellknown.ResetForTest()
+	wellknown.Register(wellknown.Config{Auth: wellknown.Auth{
+		Type: wellknown.AuthTypeBrokered,
+		OIDC: &wellknown.OIDC{
+			Issuer:         "https://id.example/",
+			MobileClientID: "decisionbox-mobile",
+			Scopes:         []string{"openid", "profile", "email"},
+			Audience:       "https://broker.example",
+		},
+		Broker: &wellknown.Broker{
+			URL:          "https://broker.example",
+			DeploymentID: "6a5e9999169725e95aa71f1d",
+			Kind:         "example-broker",
+		},
+	}})
+	t.Cleanup(wellknown.ResetForTest)
+
+	got := decodeDiscovery(t, serveWellKnown(t).Body.Bytes())
+
+	auth := got["auth"].(map[string]any)
+	if auth["type"] != wellknown.AuthTypeBrokered {
+		t.Errorf("auth.type = %v, want %q", auth["type"], wellknown.AuthTypeBrokered)
+	}
+
+	broker, ok := got["broker"].(map[string]any)
+	if !ok {
+		t.Fatalf("broker = %v, want an object sibling of auth", got["broker"])
+	}
+	if _, nested := auth["broker"]; nested {
+		t.Errorf("broker is nested inside auth; it must be a top-level sibling")
+	}
+	if broker["url"] != "https://broker.example" {
+		t.Errorf("broker.url = %v", broker["url"])
+	}
+	if broker["deployment_id"] != "6a5e9999169725e95aa71f1d" {
+		t.Errorf("broker.deployment_id = %v", broker["deployment_id"])
+	}
+	// Without the kind a client cannot tell whether it implements the
+	// exchange before starting a flow it may not be able to finish.
+	if broker["kind"] != "example-broker" {
+		t.Errorf("broker.kind = %v", broker["kind"])
+	}
+
+	oidc, ok := got["oidc"].(map[string]any)
+	if !ok {
+		t.Fatalf("oidc = %v, want the sign-in block alongside the broker", got["oidc"])
+	}
+	if oidc["issuer"] != "https://id.example/" {
+		t.Errorf("oidc.issuer = %v", oidc["issuer"])
+	}
+}
+
+// TestWellKnown_OIDCModeOmitsBroker and its brokered twin keep the two modes
+// from bleeding into each other: a registered block is served only for the
+// mode it belongs to, so a client switching on auth.type never finds details
+// that contradict it.
+func TestWellKnown_OIDCModeOmitsBroker(t *testing.T) {
+	wellknown.ResetForTest()
+	wellknown.Register(wellknown.Config{Auth: wellknown.Auth{
+		Type:   wellknown.AuthTypeOIDC,
+		OIDC:   &wellknown.OIDC{Issuer: "https://id.example/"},
+		Broker: &wellknown.Broker{URL: "https://broker.example", Kind: "example-broker"},
+	}})
+	t.Cleanup(wellknown.ResetForTest)
+
+	got := decodeDiscovery(t, serveWellKnown(t).Body.Bytes())
+
+	if _, present := got["broker"]; present {
+		t.Errorf("broker key is served for an oidc deployment: %v", got["broker"])
+	}
+}
+
+func TestWellKnown_NothingRegistered_OmitsBroker(t *testing.T) {
+	wellknown.ResetForTest()
+
+	got := decodeDiscovery(t, serveWellKnown(t).Body.Bytes())
+
+	if _, present := got["broker"]; present {
+		t.Errorf("broker key is present on a no-auth deployment: %v", got["broker"])
+	}
+}

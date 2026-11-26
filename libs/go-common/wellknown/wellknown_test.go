@@ -178,3 +178,120 @@ func TestConcurrentRegisterAndGet(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestRegister_BrokeredRoundTrips covers the brokered descriptor: both blocks
+// survive registration, because a client needs the issuer to sign in AND the
+// broker to turn that identity into the token the API accepts.
+func TestRegister_BrokeredRoundTrips(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(ResetForTest)
+
+	Register(Config{Auth: Auth{
+		Type: AuthTypeBrokered,
+		OIDC: &OIDC{Issuer: "https://id.example/", MobileClientID: "mobile"},
+		Broker: &Broker{
+			URL:          "https://broker.example",
+			DeploymentID: "6a5e9999169725e95aa71f1d",
+			Kind:         "example-broker",
+		},
+	}})
+
+	got, ok := Get()
+	if !ok {
+		t.Fatalf("Get() ok = false after Register, want true")
+	}
+	if got.Auth.Type != AuthTypeBrokered {
+		t.Errorf("Auth.Type = %q, want %q", got.Auth.Type, AuthTypeBrokered)
+	}
+	if got.Auth.Broker == nil {
+		t.Fatalf("Auth.Broker = nil, wanted the registered block")
+	}
+	if got.Auth.Broker.URL != "https://broker.example" {
+		t.Errorf("Broker.URL = %q", got.Auth.Broker.URL)
+	}
+	if got.Auth.Broker.DeploymentID != "6a5e9999169725e95aa71f1d" {
+		t.Errorf("Broker.DeploymentID = %q", got.Auth.Broker.DeploymentID)
+	}
+	if got.Auth.Broker.Kind != "example-broker" {
+		t.Errorf("Broker.Kind = %q", got.Auth.Broker.Kind)
+	}
+	// The sign-in block must survive too: a brokered deployment that
+	// advertised no issuer would leave a client with nothing to exchange.
+	if got.Auth.OIDC == nil || got.Auth.OIDC.Issuer != "https://id.example/" {
+		t.Errorf("Auth.OIDC = %+v, want the registered sign-in block", got.Auth.OIDC)
+	}
+}
+
+// TestGet_NothingRegistered_BrokerInert mirrors the OIDC case: a caller that
+// ignores ok must not find a half-built broker block it might advertise.
+func TestGet_NothingRegistered_BrokerInert(t *testing.T) {
+	ResetForTest()
+
+	cfg, _ := Get()
+	if cfg.Auth.Broker != nil {
+		t.Errorf("zero Config Auth.Broker = %+v, want nil", cfg.Auth.Broker)
+	}
+}
+
+// TestRegisterFallback_OrderIndependent is the point of having a fallback at
+// all: two auth plugins in one binary, init order undefined, and the client
+// must be told the same thing either way.
+//
+// Without it, the plugin that is only right when alone has to either call
+// Register and hope the other one runs later — a coin flip the client reads —
+// or stay silent and let a build that enforces auth advertise "none".
+func TestRegisterFallback_OrderIndependent(t *testing.T) {
+	authoritative := Config{Auth: Auth{Type: AuthTypeOIDC, OIDC: &OIDC{Issuer: "https://idp.example/"}}}
+	onlyIfAlone := Config{Auth: Auth{
+		Type:   AuthTypeBrokered,
+		Broker: &Broker{URL: "https://broker.example", Kind: "example-broker"},
+	}}
+
+	t.Run("fallback first", func(t *testing.T) {
+		ResetForTest()
+		t.Cleanup(ResetForTest)
+		RegisterFallback(onlyIfAlone)
+		Register(authoritative)
+
+		got, ok := Get()
+		if !ok || got.Auth.Type != AuthTypeOIDC {
+			t.Errorf("Auth.Type = %q (ok=%v), want %q", got.Auth.Type, ok, AuthTypeOIDC)
+		}
+	})
+
+	t.Run("authoritative first", func(t *testing.T) {
+		ResetForTest()
+		t.Cleanup(ResetForTest)
+		Register(authoritative)
+		RegisterFallback(onlyIfAlone)
+
+		got, ok := Get()
+		if !ok || got.Auth.Type != AuthTypeOIDC {
+			t.Errorf("Auth.Type = %q (ok=%v), want %q — a fallback must never displace an authoritative config", got.Auth.Type, ok, AuthTypeOIDC)
+		}
+	})
+
+	t.Run("fallback alone is served", func(t *testing.T) {
+		ResetForTest()
+		t.Cleanup(ResetForTest)
+		RegisterFallback(onlyIfAlone)
+
+		got, ok := Get()
+		if !ok {
+			t.Fatalf("Get() ok = false with only a fallback; the deployment would advertise \"none\" while enforcing a token")
+		}
+		if got.Auth.Type != AuthTypeBrokered {
+			t.Errorf("Auth.Type = %q, want %q", got.Auth.Type, AuthTypeBrokered)
+		}
+	})
+
+	t.Run("ResetForTest clears both", func(t *testing.T) {
+		Register(authoritative)
+		RegisterFallback(onlyIfAlone)
+		ResetForTest()
+
+		if _, ok := Get(); ok {
+			t.Errorf("Get() ok = true after reset — a leaked fallback would bleed into the next test")
+		}
+	})
+}
