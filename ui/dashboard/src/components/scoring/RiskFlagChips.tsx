@@ -2,6 +2,7 @@
 
 import { Badge, Group } from '@mantine/core';
 import type { Scoring } from '@/lib/api';
+import { noShrink } from './badgeStyle';
 
 // The business-risk flags a finding carries: what KIND of risk it is, beside
 // the severity band that says how much it matters.
@@ -35,9 +36,19 @@ function humanise(id: string): string {
 export function RiskFlagChips({
   scoring,
   size = 'sm',
+  labels = 'words',
 }: {
   scoring: Scoring | undefined;
   size?: 'xs' | 'sm' | 'md';
+  /**
+   * How a category reads. `words` is the humanised form ("Operational cost"),
+   * which is right where the chip sits in prose -- the detail page and the
+   * derivation. `ids` is the category id as authored ("operational-cost"),
+   * which is right in a LIST, where the chip sits next to the analysis-area
+   * id and two spellings of the same kind of slug, one shouted and one not,
+   * read as two different kinds of thing.
+   */
+  labels?: 'words' | 'ids';
 }) {
   const flags = scoring?.risk_flags;
   if (!flags || flags.length === 0) {
@@ -47,8 +58,20 @@ export function RiskFlagChips({
   return (
     <Group gap="xs" data-testid="risk-flags">
       {flags.map((flag) => (
-        <Badge key={flag} variant="light" color="gray" size={size} data-testid={`risk-flag-${flag}`}>
-          {humanise(flag)}
+        <Badge
+          key={flag}
+          variant="light"
+          color="gray"
+          size={size}
+          // An id is quoted, not announced: uppercasing `operational-cost`
+          // would make it a third spelling rather than the one it is.
+          tt={labels === 'ids' ? 'none' : undefined}
+          // The label must not be squeezed by the cell it sits in -- see
+          // noShrink.
+          style={noShrink}
+          data-testid={`risk-flag-${flag}`}
+        >
+          {labels === 'ids' ? flag : humanise(flag)}
         </Badge>
       ))}
     </Group>

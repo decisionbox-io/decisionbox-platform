@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -195,5 +196,103 @@ func TestSchemaDiscovery_QualifiedName_FallsBackToTwoPartWhenNotImplemented(t *t
 
 	if _, ok := schemas["dbo.orders"]; !ok {
 		t.Errorf("expected plain two-part key %q in %v", "dbo.orders", schemas)
+	}
+}
+
+// listTablesFailingMock fails ListTablesInDataset for the datasets named in
+// failFor, and behaves like the shared mock for every other one. A refused
+// connection reaches schema discovery exactly here: the provider cannot list,
+// and the dataset is skipped.
+type listTablesFailingMock struct {
+	*testutil.MockWarehouseProvider
+	failFor map[string]error
+}
+
+func (l *listTablesFailingMock) ListTablesInDataset(ctx context.Context, dataset string) ([]string, error) {
+	if err, bad := l.failFor[dataset]; bad {
+		return nil, err
+	}
+	return l.MockWarehouseProvider.ListTablesInDataset(ctx, dataset)
+}
+
+func newSchemaDiscoveryOver(t *testing.T, wh gowarehouse.Provider, datasets ...string) *SchemaDiscovery {
+	t.Helper()
+	exec := queryexec.NewQueryExecutor(queryexec.QueryExecutorOptions{Warehouse: wh, MaxRetries: 0})
+	return NewSchemaDiscovery(SchemaDiscoveryOptions{
+		Warehouse: wh,
+		Executor:  exec,
+		ProjectID: "test-project",
+		Datasets:  datasets,
+	})
+}
+
+// TestDiscoverSchemas_EveryDatasetFailedIsReportedWithItsReason.
+//
+// The case this exists for is a real one: a project configured with
+// `sslmode=require` against a Postgres without TLS. The provider's error says
+// so exactly; discovery skipped the dataset, returned an empty map and a NIL
+// error, and the index reported "no tables discovered — check datasets and
+// warehouse permissions". The operator was sent to look at dataset names and
+// grants while the product was holding the answer.
+func TestDiscoverSchemas_EveryDatasetFailedIsReportedWithItsReason(t *testing.T) {
+	refused := errors.New("postgres: list tables failed: pq: SSL is not enabled on the server")
+	wh := &listTablesFailingMock{
+		MockWarehouseProvider: testutil.NewMockWarehouseProvider("public"),
+		failFor:               map[string]error{"public": refused},
+	}
+
+	schemas, err := newSchemaDiscoveryOver(t, wh, "public").DiscoverSchemas(context.Background())
+	if err == nil {
+		t.Fatalf("every dataset failed and DiscoverSchemas reported success with %d tables; "+
+			"the caller can then only guess at datasets and permissions", len(schemas))
+	}
+	if !strings.Contains(err.Error(), "SSL is not enabled") {
+		t.Errorf("the error does not carry the provider's own reason: %v", err)
+	}
+	if !strings.Contains(err.Error(), "public") {
+		t.Errorf("the error does not say which dataset failed: %v", err)
+	}
+	if schemas != nil {
+		t.Errorf("returned %d schemas alongside an error", len(schemas))
+	}
+}
+
+// TestDiscoverSchemas_OneFailedDatasetDoesNotLoseTheOthers — the skip is
+// deliberate when something else succeeds, and that behaviour is the reason
+// the failures are collected rather than returned on the spot.
+func TestDiscoverSchemas_OneFailedDatasetDoesNotLoseTheOthers(t *testing.T) {
+	wh := &listTablesFailingMock{
+		MockWarehouseProvider: testutil.NewMockWarehouseProvider("public"),
+		failFor:               map[string]error{"locked": errors.New("permission denied for schema locked")},
+	}
+
+	schemas, err := newSchemaDiscoveryOver(t, wh, "locked", "public").DiscoverSchemas(context.Background())
+	if err != nil {
+		t.Fatalf("a partial failure must still index what worked: %v", err)
+	}
+	if len(schemas) == 0 {
+		t.Fatal("the healthy dataset contributed no tables")
+	}
+	for name := range schemas {
+		if strings.HasPrefix(name, "locked.") {
+			t.Errorf("table %q came from the dataset that failed", name)
+		}
+	}
+}
+
+// TestDiscoverSchemas_AnEmptyWarehouseIsNotAFailure — a warehouse that really
+// holds no tables returns no error, so "no tables discovered — check datasets
+// and warehouse permissions" stays the right message for the one case it
+// describes.
+func TestDiscoverSchemas_AnEmptyWarehouseIsNotAFailure(t *testing.T) {
+	mock := testutil.NewMockWarehouseProvider("public")
+	mock.Tables = nil
+
+	schemas, err := newSchemaDiscoveryOver(t, mock, "public").DiscoverSchemas(context.Background())
+	if err != nil {
+		t.Fatalf("an empty warehouse is not an error: %v", err)
+	}
+	if len(schemas) != 0 {
+		t.Errorf("got %d schemas from a warehouse with no tables", len(schemas))
 	}
 }

@@ -4,6 +4,7 @@ import { Badge, HoverCard, Text } from '@mantine/core';
 import { toneToMantineColor } from '@/components/validation/statusMeta';
 import type { Scoring } from '@/lib/api';
 import { driverSummary, notQuantified, severityMeta } from './severityMeta';
+import { noShrink } from './badgeStyle';
 import { ScoringBreakdown } from './ScoringBreakdown';
 
 // The severity band, the figure that drove it, and the arithmetic behind both.
@@ -41,6 +42,7 @@ export function SeverityBadge({
             size={size}
             variant="light"
             color={toneToMantineColor(meta.tone)}
+            style={noShrink}
             data-testid="severity-band"
             data-band={scoring.severity_band ?? ''}
           >

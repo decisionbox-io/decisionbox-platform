@@ -23,6 +23,7 @@ import { ConfidenceCell } from '@/components/scoring/ConfidenceCell';
 import { SeverityCell } from '@/components/scoring/SeverityCell';
 import { PriorityCell } from '@/components/scoring/PriorityCell';
 import { TierTally } from '@/components/scoring/TierTally';
+import { RiskFlagChips } from '@/components/scoring/RiskFlagChips';
 import { priorityTierOrder, priorityMeta, TIER_ORDER } from '@/components/scoring/priorityMeta';
 import { severityBandOrder } from '@/components/scoring/severityMeta';
 import UnreadDot from '@/components/common/UnreadDot';
@@ -583,6 +584,11 @@ function InsightRow({ insight, projectId, runId, idx, isRead, feedback, onFeedba
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
         <AreaBadge area={insight.analysis_area} />
+        {/* The same chips the project insights list carries. They were added
+            to one list and not the other, so the kind of business risk a
+            finding carries was visible on a project's list and absent from
+            the run that produced it -- the same findings, two readings. */}
+        <RiskFlagChips scoring={insight.evidence_scoring} size="xs" labels="ids" />
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
         <InsightValidationBadge validation={insight.validation} />

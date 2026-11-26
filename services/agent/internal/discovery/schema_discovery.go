@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
@@ -66,6 +67,18 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 
 	allSchemas := make(map[string]models.TableSchema)
 
+	// Why the failures are collected rather than only logged: a dataset that
+	// cannot be listed is skipped so the others still index, which is right
+	// when one of several fails. It is not right when EVERY dataset fails --
+	// the caller then sees an empty map and a nil error, and reports "no
+	// tables discovered -- check datasets and warehouse permissions" for what
+	// was actually a refused connection. The reason reached a Warn line in the
+	// agent's container log and went no further: for a project configured with
+	// `sslmode=require` against a server without TLS, the operator was told to
+	// check dataset names and grants while the product held
+	// `pq: SSL is not enabled on the server`.
+	var datasetFailures []string
+
 	for _, dataset := range s.datasets {
 		logger.WithField("dataset", dataset).Info("Discovering schemas for dataset")
 
@@ -73,6 +86,7 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 		tables, err := s.warehouse.ListTablesInDataset(ctx, dataset)
 		if err != nil {
 			logger.WithFields(logger.Fields{"dataset": dataset, "error": err.Error()}).Warn("Failed to list tables, skipping dataset")
+			datasetFailures = append(datasetFailures, fmt.Sprintf("%s: %v", dataset, err))
 			continue
 		}
 
@@ -88,6 +102,7 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 				"dataset": dataset,
 				"error":   ferr.Error(),
 			}).Warn("ListTables filter failed, skipping dataset")
+			datasetFailures = append(datasetFailures, fmt.Sprintf("%s: %v", dataset, ferr))
 			continue
 		}
 		tables = filtered
@@ -148,6 +163,16 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 	}
 
 	logger.WithField("total_tables", len(allSchemas)).Info("All schema discovery complete")
+
+	// Nothing found AND something failed: the failures are the answer. A
+	// partial result still returns successfully with the datasets that worked,
+	// and a warehouse that genuinely holds no tables still returns an empty
+	// map and no error -- the caller's own "no tables discovered" message is
+	// the right one for that, and only for that.
+	if len(allSchemas) == 0 && len(datasetFailures) > 0 {
+		return nil, fmt.Errorf("no tables discovered; every dataset failed: %s",
+			strings.Join(datasetFailures, "; "))
+	}
 
 	return allSchemas, nil
 }

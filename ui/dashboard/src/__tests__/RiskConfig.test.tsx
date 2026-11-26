@@ -56,6 +56,32 @@ describe('RiskFlagChips', () => {
     expect(screen.getByTestId('risk-flag-player-churn')).toHaveTextContent('Player churn');
     expect(screen.getByTestId('risk-flag-compliance')).toHaveTextContent('Compliance');
   });
+
+  // In a LIST the chip sits next to the analysis-area id, and two spellings of
+  // the same kind of slug read as two different kinds of thing. `ids` quotes
+  // the category as authored; the humanised form stays where the chip sits in
+  // prose.
+  it('quotes the id verbatim when the caller asks for ids', () => {
+    wrap(<RiskFlagChips scoring={scored(['operational-cost', 'data_quality'])} labels="ids" />);
+    expect(screen.getByTestId('risk-flag-operational-cost')).toHaveTextContent('operational-cost');
+    expect(screen.getByTestId('risk-flag-data_quality')).toHaveTextContent('data_quality');
+  });
+
+  it('does not shout an id it was asked to quote', () => {
+    wrap(<RiskFlagChips scoring={scored(['operational-cost'])} labels="ids" />);
+    const chip = screen.getByTestId('risk-flag-operational-cost');
+    expect(chip).toHaveStyle({ textTransform: 'none' });
+  });
+
+  // The defect this guards: inside a table cell the chip is a flex item, so a
+  // narrow column shrank the badge and Mantine's label — which carries
+  // `overflow:hidden; text-overflow:ellipsis` — went with it. The second chip
+  // in a cell was measured at ZERO pixels: an empty grey oval with no text in
+  // it. A label that refuses to shrink pushes the width back onto the column.
+  it('keeps its label out of the shrink', () => {
+    wrap(<RiskFlagChips scoring={scored(['compliance'])} />);
+    expect(screen.getByTestId('risk-flag-compliance')).toHaveStyle({ flexShrink: '0' });
+  });
 });
 
 // --- The editor ------------------------------------------------------------

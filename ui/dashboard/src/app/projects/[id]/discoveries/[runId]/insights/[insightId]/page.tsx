@@ -2,9 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import {
-  Accordion, Badge, Box, Button, Card, Code, Drawer, Grid, Group, Loader, Stack, Table, Text, Title,
-} from '@mantine/core';
+import { Accordion, Badge, Box, Button, Card, Code, Drawer, Grid, Group, Loader, SimpleGrid, Stack, Table, Text, Title } from '@mantine/core';
 import {
   IconAlertTriangle, IconArrowLeft, IconCode, IconDatabase, IconSearch,
 } from '@tabler/icons-react';
@@ -264,7 +262,15 @@ export default function InsightDetailPage() {
             numbers right after the description. */}
         <Card withBorder p="lg">
           <Title order={4} mb="sm">Assessment</Title>
-          <Group gap="xl" align="flex-start">
+          {/* A grid, not a wrapping row. As a `Group` these five items were
+              content-sized inside a card that stays 679px wide at every
+              viewport, so the confidence REASON -- a sentence whose length
+              varies per finding -- decided where the row broke: the same
+              panel rendered in two ragged rows for one insight and three for
+              the next. Four fixed columns put each axis in the same place
+              every time, and the segment, which is prose, gets its own row
+              underneath rather than competing for one. */}
+          <SimpleGrid cols={{ base: 1, xs: 2, md: 4 }} spacing="xl" verticalSpacing="md">
             <div>
               <Text size="xs" c="dimmed">Severity</Text>
               {/* The band with the figure that drove it, and the derivation
@@ -297,13 +303,13 @@ export default function InsightDetailPage() {
               <Text size="xs" c="dimmed">Priority</Text>
               <PriorityCell scoring={insight.evidence_scoring} size="md" />
             </div>
-            {insight.target_segment && (
-              <div>
-                <Text size="xs" c="dimmed">Target Segment</Text>
-                <Text size="sm">{insight.target_segment}</Text>
-              </div>
-            )}
-          </Group>
+          </SimpleGrid>
+          {insight.target_segment && (
+            <div style={{ marginTop: 'var(--mantine-spacing-md)' }}>
+              <Text size="xs" c="dimmed">Target Segment</Text>
+              <Text size="sm">{insight.target_segment}</Text>
+            </div>
+          )}
         </Card>
 
         {/* How this was scored — the full derivation of all three labels, on

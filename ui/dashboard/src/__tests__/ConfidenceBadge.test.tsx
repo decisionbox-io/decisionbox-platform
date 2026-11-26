@@ -132,6 +132,21 @@ describe('a legacy document', () => {
     // And the stored number itself, unchanged — no document is rewritten.
     expect(screen.getByText('93%')).toBeInTheDocument();
   });
+
+  // The marker is the SECOND chip in its cell, so it was the one that lost:
+  // measured in the insights table, its label was rendered into 0px of the
+  // 12px it needs — an empty grey oval beside the number, with the hover card
+  // as the only way to learn what it meant. jsdom cannot measure that, so
+  // what is pinned here is the contract that prevents it.
+  it('does not let the marker be squeezed away', () => {
+    wrap(<ConfidenceCell scoring={undefined} confidence={0.93} />);
+    expect(screen.getByTestId('confidence-legacy')).toHaveStyle({ flexShrink: '0' });
+  });
+
+  it('keeps the band label whole as well', () => {
+    wrap(<ConfidenceCell scoring={{ confidence_band: 'high', confidence_score: 0.95, engine_version: 1 }} confidence={0.95} />);
+    expect(screen.getByTestId('confidence-band')).toHaveStyle({ flexShrink: '0' });
+  });
 });
 
 describe('the "How this was scored" breakdown', () => {

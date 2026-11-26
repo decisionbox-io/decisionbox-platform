@@ -4,6 +4,7 @@ import { Badge, HoverCard, Text } from '@mantine/core';
 import { toneToMantineColor } from '@/components/validation/statusMeta';
 import type { Scoring } from '@/lib/api';
 import { confidenceMeta } from './confidenceMeta';
+import { noShrink } from './badgeStyle';
 import { ScoringBreakdown } from './ScoringBreakdown';
 
 // The confidence band, its reason, and the breakdown behind both.
@@ -40,6 +41,7 @@ export function ConfidenceBadge({
             size={size}
             variant="light"
             color={toneToMantineColor(meta.tone)}
+            style={noShrink}
             data-testid="confidence-band"
             data-band={scoring.confidence_band ?? ''}
           >

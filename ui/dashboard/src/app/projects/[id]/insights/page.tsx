@@ -409,7 +409,7 @@ export default function InsightsListPage() {
                         declares no risk categories, and these say what kind
                         of thing the area finds. Renders nothing when there
                         are none. */}
-                    <RiskFlagChips scoring={insight.evidence_scoring} size="xs" />
+                    <RiskFlagChips scoring={insight.evidence_scoring} size="xs" labels="ids" />
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <InsightValidationBadge validation={insight.validation} />

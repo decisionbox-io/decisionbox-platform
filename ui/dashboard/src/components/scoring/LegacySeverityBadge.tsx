@@ -1,6 +1,7 @@
 'use client';
 
 import { Badge, HoverCard, Stack, Text } from '@mantine/core';
+import { noShrink } from './badgeStyle';
 import { SeverityBadge as SeverityWord } from '@/components/common/UIComponents';
 
 // A document written before severity was derived.
@@ -23,7 +24,7 @@ export function LegacySeverityBadge({ severity }: { severity: string }) {
       <HoverCard.Target>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'help' }}>
           <SeverityWord severity={severity} type="severity" />
-          <Badge size="xs" variant="light" color="gray" data-testid="severity-legacy">
+          <Badge size="xs" variant="light" color="gray" style={noShrink} data-testid="severity-legacy">
             legacy
           </Badge>
         </span>
