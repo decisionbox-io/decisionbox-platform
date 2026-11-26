@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.1] - 2026-11-26
+
 ### Added
 
 - **`brokered` auth mode in `GET /.well-known/decisionbox`.** Discovery could describe only two worlds: the API takes no token (`none`), or it takes the identity provider's own access token (`oidc`). A deployment whose API accepts neither had nothing honest to say about itself, and the closest available answer was a lie in the direction that costs a client the most — advertise `oidc`, and the client signs in, calls every route with the IdP's token and collects a `401` each time while the discovery document tells it that was correct.
