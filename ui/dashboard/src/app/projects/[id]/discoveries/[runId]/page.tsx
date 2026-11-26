@@ -161,8 +161,8 @@ export default function DiscoveryDetailPage() {
     });
   };
 
-  if (loading) return <Shell><Loader /></Shell>;
-  if (!discovery) return <Shell><Text>Discovery not found</Text></Shell>;
+  if (loading) return <Shell fullWidth><Loader /></Shell>;
+  if (!discovery) return <Shell fullWidth><Text>Discovery not found</Text></Shell>;
 
   // Restatements split out of both lists. This page is the record of one run,
   // so the toggle matters more here than on the project lists: hiding them

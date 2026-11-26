@@ -269,8 +269,14 @@ export default function InsightDetailPage() {
               panel rendered in two ragged rows for one insight and three for
               the next. Four fixed columns put each axis in the same place
               every time, and the segment, which is prose, gets its own row
-              underneath rather than competing for one. */}
-          <SimpleGrid cols={{ base: 1, xs: 2, md: 4 }} spacing="xl" verticalSpacing="md">
+              underneath rather than competing for one.
+
+              TWO columns, not four: this card is 679px, and the confidence
+              cell carries its badge AND the reason sentence inline -- about
+              390px between them. Four columns give it 136px, which puts the
+              badge over its own cell and the reason into the next one. Two
+              give each axis ~320px, and the axes land in a stable 2x2. */}
+          <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xl" verticalSpacing="md">
             <div>
               <Text size="xs" c="dimmed">Severity</Text>
               {/* The band with the figure that drove it, and the derivation

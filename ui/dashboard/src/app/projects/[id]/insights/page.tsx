@@ -138,7 +138,7 @@ export default function InsightsListPage() {
     return () => clearTimeout(timer);
   }, [search, hasEmbedding, id, severityFilter]);
 
-  if (loading) return <Shell><Loader /></Shell>;
+  if (loading) return <Shell fullWidth><Loader /></Shell>;
 
   // Filters first, then the restatement split — in that order, because a row
   // is hidden only when the row it restates is one the reader can see in this

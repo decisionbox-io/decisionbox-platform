@@ -102,7 +102,14 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 				"dataset": dataset,
 				"error":   ferr.Error(),
 			}).Warn("ListTables filter failed, skipping dataset")
-			datasetFailures = append(datasetFailures, fmt.Sprintf("%s: %v", dataset, ferr))
+			// NOT collected into datasetFailures, unlike a list failure. A
+			// filter is the deployment's own scope plugin saying this dataset
+			// is out of bounds, and `TestSchemaDiscovery_FilterErrorSkipsDataset`
+			// pins that it skips without bubbling -- a scope that excludes
+			// everything leaves a warehouse with nothing in scope, which is
+			// what the caller's "no tables discovered" message describes. A
+			// list failure is the different fact: the warehouse was never
+			// reached at all.
 			continue
 		}
 		tables = filtered
@@ -170,7 +177,7 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 	// map and no error -- the caller's own "no tables discovered" message is
 	// the right one for that, and only for that.
 	if len(allSchemas) == 0 && len(datasetFailures) > 0 {
-		return nil, fmt.Errorf("no tables discovered; every dataset failed: %s",
+		return nil, fmt.Errorf("no tables discovered; every dataset failed to list: %s",
 			strings.Join(datasetFailures, "; "))
 	}
 
