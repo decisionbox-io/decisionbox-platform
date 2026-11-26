@@ -283,7 +283,9 @@ export default function InsightsListPage() {
       {shownSemanticResults && shownSemanticResults.length > 0 && (
         <div style={{
           background: 'var(--db-bg-white)', border: '1px solid var(--db-border-default)',
-          borderRadius: 'var(--db-radius-lg)', overflow: 'hidden',
+          borderRadius: 'var(--db-radius-lg)',
+          // See the note on the main table below: scroll rather than clip.
+          overflowX: 'auto',
         }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
@@ -349,7 +351,13 @@ export default function InsightsListPage() {
           background: 'var(--db-bg-white)',
           border: '1px solid var(--db-border-default)',
           borderRadius: 'var(--db-radius-lg)',
-          overflow: 'hidden',
+          // Scroll, do not clip. The band labels hold their width now, so on a
+          // narrow window the table can want more than the card has -- and a
+          // card that hides the difference drops whole columns off the right
+          // edge with nothing to say it did. Feedback and half of Discovery
+          // went that way at 1280px. `hidden` was here for the rounded
+          // corners, which `auto` keeps.
+          overflowX: 'auto',
         }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>

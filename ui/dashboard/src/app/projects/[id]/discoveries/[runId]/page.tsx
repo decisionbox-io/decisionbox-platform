@@ -337,7 +337,11 @@ export default function DiscoveryDetailPage() {
             background: 'var(--db-bg-white)',
             border: '1px solid var(--db-border-default)',
             borderRadius: 'var(--db-radius-lg)',
-            overflow: 'hidden',
+            // Scroll, do not clip — the same card as the project insights
+            // list. With the band labels holding their width, a narrow window
+            // can leave the table wider than the card, and `hidden` drops the
+            // right-hand columns with nothing to say it did.
+            overflowX: 'auto',
             marginBottom: 24,
           }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
