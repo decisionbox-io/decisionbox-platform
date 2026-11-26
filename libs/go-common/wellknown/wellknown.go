@@ -18,6 +18,14 @@
 // why. Keeping both in one init() makes the advertised mode and the
 // enforced mode impossible to diverge.
 //
+// Two auth plugins can be linked into one binary (an API that accepts both a
+// brokered token and an identity provider's own), and Go does not define the
+// order their init()s run in. Whichever of them is the authoritative answer
+// for the deployment calls Register; a plugin that is only right when nobody
+// better spoke up calls RegisterFallback. Get prefers the authoritative one
+// whichever ran first, so neither plugin has to know about the other and
+// reordering the imports cannot change what a client is told.
+//
 // The registry mirrors the codebase's other init()-time registries
 // (systeminfo, askoverride, the auth/policy/sources providers): a leaf
 // package any build that composes the API can fill from init(), read by a
@@ -117,11 +125,12 @@ type Config struct {
 var (
 	mu         sync.RWMutex
 	registered *Config
+	fallback   *Config
 )
 
-// Register installs the deployment's discovery config. Intended for
-// init()-time registration by a build that composes the API. A later call
-// replaces the earlier one (last writer wins); this is a
+// Register installs the deployment's discovery config as the authoritative
+// answer. Intended for init()-time registration by a build that composes the
+// API. A later Register replaces an earlier one (last writer wins); this is a
 // programmer-controlled process global, not a per-request value.
 func Register(c Config) {
 	mu.Lock()
@@ -130,16 +139,38 @@ func Register(c Config) {
 	registered = &cp
 }
 
-// Get returns the registered config and whether one was set. When ok is
-// false the caller treats the deployment as unauthenticated (auth type
+// RegisterFallback installs a config to serve only when nothing authoritative
+// is registered — for a plugin that describes the deployment correctly on its
+// own, but would be the wrong answer next to a plugin that accepts another
+// kind of token.
+//
+// It exists so such a plugin does not have to guess whether the other one is
+// linked, or run first. Calling Register and hoping to be overwritten makes
+// the served document depend on init order; calling neither leaves a build
+// that enforces auth advertising "none", which is the failure the invariant
+// above is about.
+func RegisterFallback(c Config) {
+	mu.Lock()
+	defer mu.Unlock()
+	cp := c
+	fallback = &cp
+}
+
+// Get returns the config to serve — the authoritative one when a plugin
+// registered one, else a fallback — and whether there is one at all. When ok
+// is false the caller treats the deployment as unauthenticated (auth type
 // "none").
 func Get() (Config, bool) {
 	mu.RLock()
 	defer mu.RUnlock()
-	if registered == nil {
+	switch {
+	case registered != nil:
+		return *registered, true
+	case fallback != nil:
+		return *fallback, true
+	default:
 		return Config{}, false
 	}
-	return *registered, true
 }
 
 // ResetForTest clears the registry. Test-only; production code MUST NOT
@@ -148,4 +179,5 @@ func ResetForTest() {
 	mu.Lock()
 	defer mu.Unlock()
 	registered = nil
+	fallback = nil
 }

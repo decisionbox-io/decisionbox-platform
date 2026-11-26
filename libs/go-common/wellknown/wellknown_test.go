@@ -232,3 +232,66 @@ func TestGet_NothingRegistered_BrokerInert(t *testing.T) {
 		t.Errorf("zero Config Auth.Broker = %+v, want nil", cfg.Auth.Broker)
 	}
 }
+
+// TestRegisterFallback_OrderIndependent is the point of having a fallback at
+// all: two auth plugins in one binary, init order undefined, and the client
+// must be told the same thing either way.
+//
+// Without it, the plugin that is only right when alone has to either call
+// Register and hope the other one runs later — a coin flip the client reads —
+// or stay silent and let a build that enforces auth advertise "none".
+func TestRegisterFallback_OrderIndependent(t *testing.T) {
+	authoritative := Config{Auth: Auth{Type: AuthTypeOIDC, OIDC: &OIDC{Issuer: "https://idp.example/"}}}
+	onlyIfAlone := Config{Auth: Auth{
+		Type:   AuthTypeBrokered,
+		Broker: &Broker{URL: "https://broker.example", Kind: "example-broker"},
+	}}
+
+	t.Run("fallback first", func(t *testing.T) {
+		ResetForTest()
+		t.Cleanup(ResetForTest)
+		RegisterFallback(onlyIfAlone)
+		Register(authoritative)
+
+		got, ok := Get()
+		if !ok || got.Auth.Type != AuthTypeOIDC {
+			t.Errorf("Auth.Type = %q (ok=%v), want %q", got.Auth.Type, ok, AuthTypeOIDC)
+		}
+	})
+
+	t.Run("authoritative first", func(t *testing.T) {
+		ResetForTest()
+		t.Cleanup(ResetForTest)
+		Register(authoritative)
+		RegisterFallback(onlyIfAlone)
+
+		got, ok := Get()
+		if !ok || got.Auth.Type != AuthTypeOIDC {
+			t.Errorf("Auth.Type = %q (ok=%v), want %q — a fallback must never displace an authoritative config", got.Auth.Type, ok, AuthTypeOIDC)
+		}
+	})
+
+	t.Run("fallback alone is served", func(t *testing.T) {
+		ResetForTest()
+		t.Cleanup(ResetForTest)
+		RegisterFallback(onlyIfAlone)
+
+		got, ok := Get()
+		if !ok {
+			t.Fatalf("Get() ok = false with only a fallback; the deployment would advertise \"none\" while enforcing a token")
+		}
+		if got.Auth.Type != AuthTypeBrokered {
+			t.Errorf("Auth.Type = %q, want %q", got.Auth.Type, AuthTypeBrokered)
+		}
+	})
+
+	t.Run("ResetForTest clears both", func(t *testing.T) {
+		Register(authoritative)
+		RegisterFallback(onlyIfAlone)
+		ResetForTest()
+
+		if _, ok := Get(); ok {
+			t.Errorf("Get() ok = true after reset — a leaked fallback would bleed into the next test")
+		}
+	})
+}
