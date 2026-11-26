@@ -178,3 +178,57 @@ func TestConcurrentRegisterAndGet(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestRegister_BrokeredRoundTrips covers the brokered descriptor: both blocks
+// survive registration, because a client needs the issuer to sign in AND the
+// broker to turn that identity into the token the API accepts.
+func TestRegister_BrokeredRoundTrips(t *testing.T) {
+	ResetForTest()
+	t.Cleanup(ResetForTest)
+
+	Register(Config{Auth: Auth{
+		Type: AuthTypeBrokered,
+		OIDC: &OIDC{Issuer: "https://id.example/", MobileClientID: "mobile"},
+		Broker: &Broker{
+			URL:          "https://broker.example",
+			DeploymentID: "6a5e9999169725e95aa71f1d",
+			Kind:         "example-broker",
+		},
+	}})
+
+	got, ok := Get()
+	if !ok {
+		t.Fatalf("Get() ok = false after Register, want true")
+	}
+	if got.Auth.Type != AuthTypeBrokered {
+		t.Errorf("Auth.Type = %q, want %q", got.Auth.Type, AuthTypeBrokered)
+	}
+	if got.Auth.Broker == nil {
+		t.Fatalf("Auth.Broker = nil, wanted the registered block")
+	}
+	if got.Auth.Broker.URL != "https://broker.example" {
+		t.Errorf("Broker.URL = %q", got.Auth.Broker.URL)
+	}
+	if got.Auth.Broker.DeploymentID != "6a5e9999169725e95aa71f1d" {
+		t.Errorf("Broker.DeploymentID = %q", got.Auth.Broker.DeploymentID)
+	}
+	if got.Auth.Broker.Kind != "example-broker" {
+		t.Errorf("Broker.Kind = %q", got.Auth.Broker.Kind)
+	}
+	// The sign-in block must survive too: a brokered deployment that
+	// advertised no issuer would leave a client with nothing to exchange.
+	if got.Auth.OIDC == nil || got.Auth.OIDC.Issuer != "https://id.example/" {
+		t.Errorf("Auth.OIDC = %+v, want the registered sign-in block", got.Auth.OIDC)
+	}
+}
+
+// TestGet_NothingRegistered_BrokerInert mirrors the OIDC case: a caller that
+// ignores ok must not find a half-built broker block it might advertise.
+func TestGet_NothingRegistered_BrokerInert(t *testing.T) {
+	ResetForTest()
+
+	cfg, _ := Get()
+	if cfg.Auth.Broker != nil {
+		t.Errorf("zero Config Auth.Broker = %+v, want nil", cfg.Auth.Broker)
+	}
+}

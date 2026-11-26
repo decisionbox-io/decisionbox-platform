@@ -72,11 +72,12 @@ type discoveryAuth struct {
 // this before it has any credentials or any knowledge of the platform's
 // conventions, so the payload is a plain, self-describing object.
 type discoveryResponse struct {
-	APIVersion string          `json:"api_version"`
-	Features   []string        `json:"features"`
-	Auth       discoveryAuth   `json:"auth"`
-	OIDC       *wellknown.OIDC `json:"oidc,omitempty"`
-	Branding   json.RawMessage `json:"branding,omitempty"`
+	APIVersion string            `json:"api_version"`
+	Features   []string          `json:"features"`
+	Auth       discoveryAuth     `json:"auth"`
+	OIDC       *wellknown.OIDC   `json:"oidc,omitempty"`
+	Broker     *wellknown.Broker `json:"broker,omitempty"`
+	Branding   json.RawMessage   `json:"branding,omitempty"`
 }
 
 // WellKnown serves the unauthenticated deployment discovery document. It is
@@ -87,8 +88,14 @@ type discoveryResponse struct {
 // installs an auth provider fills at init(). With nothing registered — the
 // built-in NoAuth platform — the endpoint reports an explicit auth type of
 // "none" rather than omitting the field, so a client never has to infer the
-// mode from an absence. The `oidc` sibling is present iff the type is
-// "oidc".
+// mode from an absence.
+//
+// The siblings carry the details for the advertised mode: `oidc` says where
+// to sign in and is present for both "oidc" and "brokered"; `broker` says
+// where to exchange that identity for a deployment-scoped token and is
+// present only for "brokered". A mode a client does not recognise must make
+// it stop and say so — which is why the type is always explicit and the
+// details never arrive without it.
 //
 // GET /.well-known/decisionbox
 func WellKnown(w http.ResponseWriter, _ *http.Request) {
@@ -102,8 +109,12 @@ func WellKnown(w http.ResponseWriter, _ *http.Request) {
 		if cfg.Auth.Type != "" {
 			resp.Auth.Type = cfg.Auth.Type
 		}
-		if resp.Auth.Type == wellknown.AuthTypeOIDC {
+		switch resp.Auth.Type {
+		case wellknown.AuthTypeOIDC:
 			resp.OIDC = cfg.Auth.OIDC
+		case wellknown.AuthTypeBrokered:
+			resp.OIDC = cfg.Auth.OIDC
+			resp.Broker = cfg.Auth.Broker
 		}
 		resp.Branding = cfg.Branding
 	}
