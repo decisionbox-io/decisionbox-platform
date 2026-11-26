@@ -238,7 +238,7 @@ export default function DiscoveryDetailPage() {
   const recEmptyReason = recommendationEmptyReason(recLog);
 
   return (
-    <Shell breadcrumb={breadcrumb}>
+    <Shell breadcrumb={breadcrumb} fullWidth>
       {/* Run Header */}
       <div style={{ marginBottom: 20 }}>
         {project && (

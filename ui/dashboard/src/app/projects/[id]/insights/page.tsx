@@ -237,7 +237,7 @@ export default function InsightsListPage() {
   ];
 
   return (
-    <Shell breadcrumb={breadcrumb}>
+    <Shell breadcrumb={breadcrumb} fullWidth>
       <SectionHeader title="All Insights" count={shownSemanticResults ? shownSemanticResults.length : filtered.length} right={
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <SearchInput value={search} onChange={v => { setSearch(v); setPage(1); }}
