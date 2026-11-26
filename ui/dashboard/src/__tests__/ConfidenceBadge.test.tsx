@@ -140,12 +140,12 @@ describe('a legacy document', () => {
   // what is pinned here is the contract that prevents it.
   it('does not let the marker be squeezed away', () => {
     wrap(<ConfidenceCell scoring={undefined} confidence={0.93} />);
-    expect(screen.getByTestId('confidence-legacy')).toHaveStyle({ flexShrink: '0' });
+    expect(screen.getByTestId('confidence-legacy')).toHaveStyle({ flexShrink: '0', minWidth: 'max-content' });
   });
 
   it('keeps the band label whole as well', () => {
     wrap(<ConfidenceCell scoring={{ confidence_band: 'high', confidence_score: 0.95, engine_version: 1 }} confidence={0.95} />);
-    expect(screen.getByTestId('confidence-band')).toHaveStyle({ flexShrink: '0' });
+    expect(screen.getByTestId('confidence-band')).toHaveStyle({ flexShrink: '0', minWidth: 'max-content' });
   });
 });
 

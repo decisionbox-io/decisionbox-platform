@@ -80,7 +80,7 @@ describe('RiskFlagChips', () => {
   // it. A label that refuses to shrink pushes the width back onto the column.
   it('keeps its label out of the shrink', () => {
     wrap(<RiskFlagChips scoring={scored(['compliance'])} />);
-    expect(screen.getByTestId('risk-flag-compliance')).toHaveStyle({ flexShrink: '0' });
+    expect(screen.getByTestId('risk-flag-compliance')).toHaveStyle({ flexShrink: '0', minWidth: 'max-content' });
   });
 });
 

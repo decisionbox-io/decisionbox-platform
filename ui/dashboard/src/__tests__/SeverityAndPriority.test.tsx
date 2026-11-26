@@ -126,17 +126,17 @@ beforeEach(() => {
 describe('a band label is not what gives way in a narrow column', () => {
   it('severity', () => {
     wrap(<SeverityCell scoring={shareBanded()} severity="high" />);
-    expect(screen.getByTestId('severity-band')).toHaveStyle({ flexShrink: '0' });
+    expect(screen.getByTestId('severity-band')).toHaveStyle({ flexShrink: '0', minWidth: 'max-content' });
   });
 
   it('priority', () => {
     wrap(<PriorityCell scoring={shareBanded()} />);
-    expect(screen.getByTestId('priority-tier')).toHaveStyle({ flexShrink: '0' });
+    expect(screen.getByTestId('priority-tier')).toHaveStyle({ flexShrink: '0', minWidth: 'max-content' });
   });
 
   it('the legacy severity marker', () => {
     wrap(<SeverityCell scoring={undefined} severity="critical" />);
-    expect(screen.getByTestId('severity-legacy')).toHaveStyle({ flexShrink: '0' });
+    expect(screen.getByTestId('severity-legacy')).toHaveStyle({ flexShrink: '0', minWidth: 'max-content' });
   });
 });
 
