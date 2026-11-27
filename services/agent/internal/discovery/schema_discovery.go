@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -222,14 +223,35 @@ const (
 	maxFailureDiagnosticBytes  = 8 * 1024
 )
 
-// clipFailure formats one dataset's failure, clipped so that no single
-// provider message — a response body, a stack — can carry the whole budget.
+// clipFailure formats one dataset's failure for a record an operator reads.
+//
+// The FIRST LINE only, and then a byte clip. This text is persisted on the
+// schema-index run and served from `/schema-index/runs`, which a viewer can
+// read — and a warehouse SDK's error is not a sentence it wrote for us: the
+// BigQuery client, among others, appends the raw HTTP response body, which can
+// carry rows or whatever else the endpoint returned. The first line is where
+// every driver puts the part that is actually actionable (`pq: SSL is not
+// enabled on the server`), and dropping the rest keeps upstream payloads out
+// of a durable, lower-privilege surface. The whole error is still in the
+// agent's own warning for that dataset.
 func clipFailure(dataset string, err error) string {
-	msg := fmt.Sprintf("%s: %v", dataset, err)
-	if len(msg) > maxFailureDiagnosticBytes/maxReportedDatasetFailures {
-		msg = msg[:maxFailureDiagnosticBytes/maxReportedDatasetFailures] + "…"
+	first, _, _ := strings.Cut(err.Error(), "\n")
+	return clipRunes(fmt.Sprintf("%s: %s", dataset, strings.TrimSpace(first)),
+		maxFailureDiagnosticBytes/maxReportedDatasetFailures)
+}
+
+// clipRunes cuts to at most n bytes WITHOUT splitting a character. A byte
+// slice through a multibyte rune leaves invalid UTF-8, and this string is
+// written to MongoDB: the driver accepts it and the document is then reported
+// as nonconformant BSON, which is a worse failure than a long message.
+func clipRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	return msg
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }
 
 // boundedFailures renders the messages that were kept, clipped to
@@ -237,7 +259,7 @@ func clipFailure(dataset string, err error) string {
 func boundedFailures(kept []string, total int) string {
 	joined := strings.Join(kept, "; ")
 	if len(joined) > maxFailureDiagnosticBytes {
-		joined = joined[:maxFailureDiagnosticBytes] + "… (truncated)"
+		joined = clipRunes(joined, maxFailureDiagnosticBytes) + " (truncated)"
 	}
 	if total > len(kept) {
 		joined += fmt.Sprintf("; and %d more (see the agent log)", total-len(kept))

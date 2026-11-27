@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/queryexec"
@@ -305,6 +306,30 @@ func TestDiscoverSchemas_TheDiagnosticIsBoundedBothWays(t *testing.T) {
 		one := clipFailure("public", errors.New(strings.Repeat("a response body ", 5000)))
 		if len(one) > maxFailureDiagnosticBytes/maxReportedDatasetFailures+8 {
 			t.Errorf("a single provider message kept %d bytes; one failure must not spend the whole budget", len(one))
+		}
+	})
+
+	// The record this lands on is served from /schema-index/runs, which a
+	// viewer can read. A warehouse SDK's error is not a sentence written for
+	// us — BigQuery's appends the raw HTTP response body — so only the line
+	// that is actually actionable is persisted.
+	t.Run("the upstream body does not travel with the reason", func(t *testing.T) {
+		got := clipFailure("public", errors.New(
+			"googleapi: Error 403: Access Denied\n{\"rows\":[{\"customer_email\":\"a@b.c\"}]}"))
+		if !strings.Contains(got, "Access Denied") {
+			t.Errorf("dropped the actionable part: %q", got)
+		}
+		if strings.Contains(got, "customer_email") {
+			t.Errorf("carried the upstream response body into a durable record: %q", got)
+		}
+	})
+
+	// A byte slice through a multibyte rune leaves invalid UTF-8, which Mongo
+	// accepts and then reports the document as nonconformant BSON.
+	t.Run("a cut never splits a character", func(t *testing.T) {
+		got := clipRunes(strings.Repeat("é", 400), 51)
+		if !utf8.ValidString(got) {
+			t.Errorf("clip produced invalid UTF-8: %q", got)
 		}
 	})
 

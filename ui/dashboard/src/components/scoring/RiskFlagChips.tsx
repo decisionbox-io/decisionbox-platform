@@ -72,7 +72,13 @@ export function RiskFlagChips({
           // ran 100px past the card's right edge in the assessment panel.
           // These wrap inside the cell instead, so a long id costs a line
           // rather than disappearing.
-          style={{ height: 'auto', whiteSpace: 'normal' }}
+          // A pill is a shape for one line. Mantine's badge radius is
+          // effectively `height/2`, so the moment an id wraps the curve eats
+          // the ends of the first and last lines — and the root clips, so what
+          // it eats is gone rather than overflowing visibly. A rounded
+          // rectangle with real vertical padding is the shape for a label
+          // whose length is a pack author's choice.
+          style={{ height: 'auto', whiteSpace: 'normal', borderRadius: 'var(--db-radius)', paddingTop: 2, paddingBottom: 2 }}
           styles={{ label: { whiteSpace: 'normal', overflow: 'visible', textOverflow: 'clip', overflowWrap: 'anywhere' } }}
           data-testid={`risk-flag-${flag}`}
         >
