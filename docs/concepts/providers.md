@@ -191,6 +191,25 @@ Each provider also declares a short dialect label as `ProviderMeta.Dialect` (`Bi
 | `HealthCheck(ctx)` | Check warehouse connectivity |
 | `Close()` | Clean up connections |
 
+**Query language and shape are separate.** `Capability.Shape` says whether a source has tables (`entities`) or is a metric/dimension `cube`; `Capability.QueryLanguage` says whether its queries are SQL. A source can have tables and still not be queried in SQL. `warehouse.NonSQLLanguageOf(slug)` answers the language question from the registry, and every prompt surface branches on it rather than on shape:
+
+| | SQL | Not SQL |
+|---|---|---|
+| **entities** (tables) | every warehouse | e.g. a BI tool's app: tables, `lookup_schema` and sampling apply; queries in the source's own language |
+| **cube** (no tables) | — | e.g. a web-analytics property: no tables, `search_tables` lists its metrics and dimensions |
+
+A non-SQL source may declare `Capability.QueryGuide`, a short reference for its request format that is shown beside the language name wherever a model writes a query.
+
+**Optional capabilities:**
+
+| Interface | Purpose |
+|-----------|---------|
+| `QueryRunner` | Run a query in the source's own language (a non-SQL source implements it; SQL providers are adapted by `AsQueryRunner`). |
+| `SampleQueryBuilder` | Build a "sample N rows" query in the source's language; found through middleware with `SampleQueryBuilderOf`. |
+| `RowCapInspector` / `RowOffsetInspector` | Read the row cap / offset a query carries, so a capped or paged result is reported as such. |
+| `CatalogSource` | Describe a source with no tables by its catalog of metrics and dimensions; indexed instead of tables. |
+| `DefinitionSource` | The source's own named measures and dimensions with their formulas; indexed beside its tables and returned by `search_tables` with their kind. |
+
 See [Adding Warehouse Providers](../guides/adding-warehouse-providers.md) to implement your own.
 
 ### Secret Providers
@@ -303,6 +322,8 @@ warehouse.RegisterMiddleware("my-plugin", func(p warehouse.Provider) warehouse.P
 The agent applies all registered middleware after creating the warehouse provider via `warehouse.ApplyMiddleware(provider)`.
 
 Use cases: query logging, access controls, cost tracking, result redaction.
+
+A wrapper only has to satisfy `Provider`, so it erases every optional capability of the provider it wraps unless it re-declares it. Expose `Unwrap() warehouse.Provider` returning the wrapped provider: `warehouse.FindCapability` walks that chain to reach capabilities that run nothing (the sample builder, the row-cap and row-offset inspectors, business definitions). Execution never goes through `Unwrap` — `AsQueryRunner` deliberately does not unwrap — so the wrapper's own `Query` / `RunQuery` stays the only way a query runs. When a wrapper changes a `QueryResult`, keep its `Quality` caveats.
 
 ### HTTP Middleware
 

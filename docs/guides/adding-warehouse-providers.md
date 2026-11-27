@@ -232,6 +232,20 @@ The `SQLFixPrompt()` is crucial. When the AI writes invalid SQL, the agent feeds
 - Type casting syntax
 - Date function differences
 
+## Sources whose queries are not SQL
+
+A source can have real tables — listed, looked up, sampled and schema-indexed — and still be queried in its own language (a BI tool's app read through its engine, for example). Such a source is still a `Provider` registered with `RegisterWithMeta`; what differs:
+
+- **Declare the language.** Set `Capability.QueryLanguage` (and the same string as `Dialect`) with `Shape: ShapeEntities`. `warehouse.NonSQLLanguageOf(slug)` then reports it, and every prompt that would tell the model "SQL" — Ask, exploration, validation, pack generation — names your language instead. A turn that reaches only SQL sources is unchanged.
+- **Declare the format.** Set `Capability.QueryGuide` to a short reference for writing one query: the request's shape and the rules a model would otherwise guess. It is shown beside the language name wherever the model writes a query, so the first query is written in your format rather than learned from a failed one.
+- **Implement `QueryRunner`.** `RunQuery`, `QueryLanguage` and `QueryFixPrompt` (return the same template from `SQLFixPrompt`). Carry the query as `NativeQuery.Text` so the repair loop can rewrite it; the fixer accepts a JSON request as well as SQL.
+- **`ValidateSQL`** compiles a query in your language without executing it.
+- **`SampleQueryBuilder`** returns a sample request in your language — the builder is "a read-only sample-N-rows request", not SQL-only. Schema discovery finds it through middleware (`SampleQueryBuilderOf`).
+- **`RowCapInspector`** reads the row cap from your request, so a capped result is reported as capped.
+- **`DefinitionSource`** (optional): if the source carries the customer's own named measures and dimensions, return them from `BusinessDefinitions`. They are indexed beside the tables and returned by `search_tables` with the kind `defined measure` / `defined dimension`. Unlike `CatalogSource`, which is indexed *instead of* tables, definitions are additive.
+- **No tenant filter.** The executor enforces a tenant filter by checking the query text for its predicate, which it cannot do in your language, so it refuses every query on a non-SQL source that has one. Scope the source through its credential.
+- **Table names.** The schema index keys a table as `dataset.table`; leave out of `ListTables` any table whose name would make that key ambiguous.
+
 ## Step 3: Register and Test
 
 Same pattern as LLM providers:
@@ -257,6 +271,7 @@ Same pattern as LLM providers:
 - [ ] Imported in agent + API, replace directives, Dockerfile COPY
 - [ ] Unit tests: auth method registration, factory validation, unsupported method error
 - [ ] Integration tests (skip without credentials, opt-in via `INTEGRATION_TEST_*` env vars)
+- [ ] For a non-SQL source: `QueryLanguage` and `QueryGuide` declared, `QueryRunner`, `SampleQueryBuilder` and `RowCapInspector` implemented in that language (see above)
 
 ## Next Steps
 
