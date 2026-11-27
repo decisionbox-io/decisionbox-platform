@@ -210,3 +210,26 @@ func TestSearch_KeepsDefinitionHitsOfIndexedDatasources(t *testing.T) {
 		t.Fatalf("hits = %+v, want only the definition whose datasource has tables", hits)
 	}
 }
+
+// A datasource whose tables all share names with another's keeps no entry in
+// the deduplicated TableWarehouse map; its definitions are still admitted
+// because it is named as having tables.
+func TestSearch_DefinitionsOfADatasourceWhoseTablesCollide(t *testing.T) {
+	searcher := &fakeVectorSearcher{hits: []schema_retrieve.Hit{
+		{Blurb: schema_retrieve.TableBlurb{Table: "Revenue", Kind: gowarehouse.DefinitionMeasure, WarehouseID: "second"}, Score: 0.9},
+	}}
+	p, err := NewCacheSchemaProvider(CacheSchemaProviderOptions{
+		Schemas:          sampleSchemas(),
+		TableWarehouse:   map[string]string{"events.users": "first"},
+		TableDatasources: []string{"first", "second"},
+		Embedder:         &fakeEmbedder{dim: 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.searcher = searcher
+	hits, err := p.Search(context.Background(), "revenue", 10)
+	if err != nil || len(hits) != 1 {
+		t.Fatalf("hits = %+v, err = %v", hits, err)
+	}
+}

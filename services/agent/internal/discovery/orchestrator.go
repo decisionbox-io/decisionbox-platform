@@ -1303,20 +1303,27 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// index payload, and query_data routes per datasource_id.
 	schemaSearchWarehouseID := o.warehouseID
 	var tableWarehouse map[string]string
+	var tableDatasources []string
 	if dc != nil {
 		schemaSearchWarehouseID = ""
 		tableWarehouse = dc.tableWarehouse
+		for id, schemas := range dc.schemasByDS {
+			if len(schemas) > 0 {
+				tableDatasources = append(tableDatasources, id)
+			}
+		}
 	}
 	o.runCatalogRefs = o.catalogRefsByDatasource(dc)
 	schemaProvider, spErr := NewCacheSchemaProvider(CacheSchemaProviderOptions{
-		ProjectID:      o.projectID,
-		WarehouseID:    schemaSearchWarehouseID,
-		Datasets:       o.datasets,
-		Schemas:        schemas,
-		CatalogRefs:    o.runCatalogRefs,
-		TableWarehouse: tableWarehouse,
-		Retriever:      o.schemaRetriever,
-		Embedder:       o.embedder,
+		ProjectID:        o.projectID,
+		WarehouseID:      schemaSearchWarehouseID,
+		Datasets:         o.datasets,
+		Schemas:          schemas,
+		CatalogRefs:      o.runCatalogRefs,
+		TableWarehouse:   tableWarehouse,
+		TableDatasources: tableDatasources,
+		Retriever:        o.schemaRetriever,
+		Embedder:         o.embedder,
 	})
 	if spErr != nil {
 		// This is a wiring bug — the schema cache lookup above already

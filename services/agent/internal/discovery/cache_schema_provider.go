@@ -136,10 +136,16 @@ type CacheSchemaProviderOptions struct {
 	// Set on a multi-warehouse run so Lookup can attribute each table to
 	// its datasource; nil on single-warehouse.
 	TableWarehouse map[string]string
-	Retriever      *schema_retrieve.Retriever
-	Embedder       Embedder
-	SampleLimit    int
-	ColumnLimit    int
+	// TableDatasources names every datasource that has tables indexed, on a
+	// multi-warehouse run. TableWarehouse keeps one owner per table name, so
+	// a datasource whose tables all share names with another's would vanish
+	// from it — and with it the authority for that datasource's business
+	// definitions. Nil on single-warehouse.
+	TableDatasources []string
+	Retriever        *schema_retrieve.Retriever
+	Embedder         Embedder
+	SampleLimit      int
+	ColumnLimit      int
 }
 
 const (
@@ -197,6 +203,9 @@ func NewCacheSchemaProvider(opts CacheSchemaProviderOptions) (*CacheSchemaProvid
 			owner = wh
 		}
 		p.tablesFrom[normDatasourceID(owner)] = true
+	}
+	for _, id := range opts.TableDatasources {
+		p.tablesFrom[normDatasourceID(id)] = true
 	}
 	return p, nil
 }
