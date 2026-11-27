@@ -140,6 +140,20 @@ describe('a band label is not what gives way in a narrow column', () => {
   });
 });
 
+// A column headed SEVERITY does not need every cell to say "severity" again,
+// and the repetition costs the column width the figure underneath could use.
+describe('the short label form', () => {
+  it('drops the axis word for severity', () => {
+    wrap(<SeverityCell scoring={shareBanded()} severity="high" labelForm="short" />);
+    expect(screen.getByTestId('severity-band')).toHaveTextContent(/^High$/);
+  });
+
+  it('keeps the full label by default, for surfaces with no column header', () => {
+    wrap(<SeverityCell scoring={shareBanded()} severity="high" />);
+    expect(screen.getByTestId('severity-band')).toHaveTextContent('High severity');
+  });
+});
+
 describe('SeverityCell', () => {
   it('renders the band with the number beside it', () => {
     wrap(<SeverityCell scoring={shareBanded()} severity="high" />);

@@ -24,12 +24,15 @@ export function ConfidenceBadge({
   scoring,
   size = 'sm',
   showReason = false,
+  labelForm = 'full',
 }: {
   scoring: Scoring;
   size?: 'xs' | 'sm' | 'md';
   // Dense surfaces (a table row) show the pill alone and keep the reason in
   // the breakdown; a detail card shows it beside the pill.
   showReason?: boolean;
+  /** `short` drops the axis word for a surface that already names it. */
+  labelForm?: 'full' | 'short';
 }) {
   const meta = confidenceMeta(scoring.confidence_band);
 
@@ -45,7 +48,7 @@ export function ConfidenceBadge({
             data-testid="confidence-band"
             data-band={scoring.confidence_band ?? ''}
           >
-            {meta.label}
+            {labelForm === 'short' ? meta.short : meta.label}
           </Badge>
           {showReason && scoring.confidence_reason && (
             <Text size="xs" c="dimmed" data-testid="confidence-reason">

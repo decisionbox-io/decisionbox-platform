@@ -13,9 +13,16 @@ interface ShellProps {
   breadcrumb?: { label: string; href?: string }[];
   actions?: ReactNode;
   fullWidth?: boolean;
+  /**
+   * A wider cap for pages whose content is a table. Distinct from `fullWidth`,
+   * which is for surfaces that genuinely want the whole viewport (the chat
+   * column, the schema editor's master-detail): a table that follows the
+   * window without a bound is not more readable, it is just longer.
+   */
+  wide?: boolean;
 }
 
-export default function Shell({ children, breadcrumb, actions, fullWidth }: ShellProps) {
+export default function Shell({ children, breadcrumb, actions, fullWidth, wide }: ShellProps) {
   const pathname = usePathname();
   const params = useParams<{ id?: string }>();
   const projectId = params?.id;
@@ -188,7 +195,7 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
 
         {/* Content */}
         <main style={{
-          maxWidth: fullWidth ? '100%' : 'var(--db-content-max-width)',
+          maxWidth: fullWidth ? '100%' : wide ? 'var(--db-content-max-width-wide)' : 'var(--db-content-max-width)',
           padding: 'var(--db-content-padding)',
           width: '100%',
         }}>

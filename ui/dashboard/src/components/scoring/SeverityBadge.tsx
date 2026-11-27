@@ -23,12 +23,15 @@ export function SeverityBadge({
   scoring,
   size = 'sm',
   showDriver = true,
+  labelForm = 'full',
 }: {
   scoring: Scoring;
   size?: 'xs' | 'sm' | 'md';
   // Dense surfaces can drop the driver and keep it in the breakdown; every
   // surface that has room shows it, because the number is the point.
   showDriver?: boolean;
+  /** `short` drops the axis word for a surface that already names it. */
+  labelForm?: 'full' | 'short';
 }) {
   const meta = severityMeta(scoring.severity_band);
   const driver = driverSummary(scoring.severity_driver);
@@ -53,7 +56,7 @@ export function SeverityBadge({
             data-testid="severity-band"
             data-band={scoring.severity_band ?? ''}
           >
-            {meta.label}
+            {labelForm === 'short' ? meta.short : meta.label}
           </Badge>
           {showDriver && driver !== '' && (
             <Text

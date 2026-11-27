@@ -124,6 +124,23 @@ describe('the confidence band', () => {
   });
 });
 
+describe('the short label form', () => {
+  it('drops the axis word for a degree', () => {
+    wrap(<ConfidenceCell scoring={{ confidence_band: 'high', confidence_score: 0.95, engine_version: 1 }} confidence={0.95} labelForm="short" />);
+    expect(screen.getByTestId('confidence-band')).toHaveTextContent(/^High$/);
+  });
+
+  // "Not confirmed" and "Unverifiable" are states, not degrees: there is no
+  // axis word to drop, and shortening them would change what they say.
+  it.each([
+    ['not_confirmed', 'Not confirmed'],
+    ['unverifiable', 'Unverifiable'],
+  ])('leaves %s alone', (band, text) => {
+    wrap(<ConfidenceCell scoring={{ confidence_band: band, confidence_score: 0.2, engine_version: 1 }} confidence={0.2} labelForm="short" />);
+    expect(screen.getByTestId('confidence-band')).toHaveTextContent(text);
+  });
+});
+
 describe('a legacy document', () => {
   it('shows its stored number marked legacy, not a band', () => {
     wrap(<ConfidenceCell scoring={undefined} confidence={0.93} />);

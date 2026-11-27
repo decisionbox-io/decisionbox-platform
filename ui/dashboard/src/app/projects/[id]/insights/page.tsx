@@ -138,7 +138,7 @@ export default function InsightsListPage() {
     return () => clearTimeout(timer);
   }, [search, hasEmbedding, id, severityFilter]);
 
-  if (loading) return <Shell fullWidth><Loader /></Shell>;
+  if (loading) return <Shell wide><Loader /></Shell>;
 
   // Filters first, then the restatement split — in that order, because a row
   // is hidden only when the row it restates is one the reader can see in this
@@ -237,7 +237,7 @@ export default function InsightsListPage() {
   ];
 
   return (
-    <Shell breadcrumb={breadcrumb} fullWidth>
+    <Shell breadcrumb={breadcrumb} wide>
       <SectionHeader title="All Insights" count={shownSemanticResults ? shownSemanticResults.length : filtered.length} right={
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <SearchInput value={search} onChange={v => { setSearch(v); setPage(1); }}
@@ -407,7 +407,7 @@ export default function InsightsListPage() {
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <SeverityCell scoring={insight.evidence_scoring} severity={insight.severity}
-                      showDriver={false} />
+                      showDriver={false} labelForm="short" />
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <AreaBadge area={insight.analysis_area} />
@@ -426,7 +426,7 @@ export default function InsightsListPage() {
                     {insight.affected_count > 0 ? insight.affected_count.toLocaleString() : '—'}
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
-                    <ConfidenceCell scoring={insight.evidence_scoring} confidence={insight.confidence} />
+                    <ConfidenceCell scoring={insight.evidence_scoring} confidence={insight.confidence} labelForm="short" />
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <Link href={`/projects/${id}/discoveries/${insight.discoveryId}`}

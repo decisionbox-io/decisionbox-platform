@@ -21,14 +21,17 @@ export function SeverityCell({
   severity,
   size = 'sm',
   showDriver = true,
+  labelForm = 'full',
 }: {
   scoring: Scoring | undefined;
   severity: string;
   size?: 'xs' | 'sm' | 'md';
   showDriver?: boolean;
+  /** Passed to the badge: `short` drops the axis word. */
+  labelForm?: 'full' | 'short';
 }) {
   if (scoring?.severity_band) {
-    return <SeverityBadge scoring={scoring} size={size} showDriver={showDriver} />;
+    return <SeverityBadge scoring={scoring} size={size} showDriver={showDriver} labelForm={labelForm} />;
   }
   return <LegacySeverityBadge severity={severity} />;
 }

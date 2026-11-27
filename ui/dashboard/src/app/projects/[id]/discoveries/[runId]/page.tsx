@@ -161,8 +161,8 @@ export default function DiscoveryDetailPage() {
     });
   };
 
-  if (loading) return <Shell fullWidth><Loader /></Shell>;
-  if (!discovery) return <Shell fullWidth><Text>Discovery not found</Text></Shell>;
+  if (loading) return <Shell wide><Loader /></Shell>;
+  if (!discovery) return <Shell wide><Text>Discovery not found</Text></Shell>;
 
   // Restatements split out of both lists. This page is the record of one run,
   // so the toggle matters more here than on the project lists: hiding them
@@ -238,7 +238,7 @@ export default function DiscoveryDetailPage() {
   const recEmptyReason = recommendationEmptyReason(recLog);
 
   return (
-    <Shell breadcrumb={breadcrumb} fullWidth>
+    <Shell breadcrumb={breadcrumb} wide>
       {/* Run Header */}
       <div style={{ marginBottom: 20 }}>
         {project && (
@@ -584,7 +584,7 @@ function InsightRow({ insight, projectId, runId, idx, isRead, feedback, onFeedba
         <PriorityCell scoring={insight.evidence_scoring} />
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
-        <SeverityCell scoring={insight.evidence_scoring} severity={insight.severity} />
+        <SeverityCell scoring={insight.evidence_scoring} severity={insight.severity} labelForm="short" />
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
         <AreaBadge area={insight.analysis_area} />
@@ -601,7 +601,7 @@ function InsightRow({ insight, projectId, runId, idx, isRead, feedback, onFeedba
         {insight.affected_count > 0 ? insight.affected_count.toLocaleString() : '—'}
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
-        <ConfidenceCell scoring={insight.evidence_scoring} confidence={insight.confidence} />
+        <ConfidenceCell scoring={insight.evidence_scoring} confidence={insight.confidence} labelForm="short" />
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
         <FeedbackButtons projectId={projectId} discoveryId={runId} targetType="insight"
