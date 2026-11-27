@@ -177,8 +177,13 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 	// map and no error -- the caller's own "no tables discovered" message is
 	// the right one for that, and only for that.
 	if len(allSchemas) == 0 && len(datasetFailures) > 0 {
-		return nil, fmt.Errorf("no tables discovered; every dataset failed to list: %s",
-			strings.Join(datasetFailures, "; "))
+		// How many of how many, rather than "every": one dataset can fail to
+		// list while another lists fine and is simply empty, or has had every
+		// table filtered out of scope. Both end with nothing discovered, and
+		// an operator reading "every dataset failed" about a half-failure
+		// would go looking for a problem with the healthy one too.
+		return nil, fmt.Errorf("no tables discovered; %d of %d dataset(s) failed to list: %s",
+			len(datasetFailures), len(s.datasets), strings.Join(datasetFailures, "; "))
 	}
 
 	return allSchemas, nil

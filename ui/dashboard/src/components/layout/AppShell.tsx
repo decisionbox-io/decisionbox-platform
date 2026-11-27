@@ -196,6 +196,13 @@ export default function Shell({ children, breadcrumb, actions, fullWidth, wide }
         {/* Content */}
         <main style={{
           maxWidth: fullWidth ? '100%' : wide ? 'var(--db-content-max-width-wide)' : 'var(--db-content-max-width)',
+          // A flex item's automatic minimum is its content, so a child that
+          // refuses to shrink -- a wide table, an unbroken token -- can push
+          // this past the viewport and make the whole PAGE pan sideways while
+          // the scroll container inside it has nothing left to scroll. Keeping
+          // the floor at zero leaves the overflow where it belongs: with the
+          // element that owns the horizontal scroll.
+          minWidth: 0,
           padding: 'var(--db-content-padding)',
           width: '100%',
         }}>

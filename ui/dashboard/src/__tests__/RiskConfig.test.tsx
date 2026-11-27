@@ -73,14 +73,19 @@ describe('RiskFlagChips', () => {
     expect(chip).toHaveStyle({ textTransform: 'none' });
   });
 
-  // The defect this guards: inside a table cell the chip is a flex item, so a
-  // narrow column shrank the badge and Mantine's label — which carries
-  // `overflow:hidden; text-overflow:ellipsis` — went with it. The second chip
-  // in a cell was measured at ZERO pixels: an empty grey oval with no text in
-  // it. A label that refuses to shrink pushes the width back onto the column.
-  it('keeps its label out of the shrink', () => {
-    wrap(<RiskFlagChips scoring={scored(['compliance'])} />);
-    expect(screen.getByTestId('risk-flag-compliance')).toHaveStyle({ flexShrink: '0', minWidth: 'max-content' });
+  // A category id is NOT a band label, and the two want opposite things.
+  //
+  // The bands are a closed vocabulary of short words, so a width floor is safe
+  // and is what stops `HIGH CONFIDENCE` rendering as `HIGH CO…`. A category id
+  // is whatever a pack's author wrote: given the same floor, one long enough
+  // simply overflowed — `customer_identity_and_access_management` ran 100px
+  // past the right edge of the assessment card and was clipped there. These
+  // wrap instead, so a long id costs a line of height rather than its tail.
+  it('wraps a long id rather than overflowing its cell', () => {
+    wrap(<RiskFlagChips scoring={scored(['customer_identity_and_access_management'])} />);
+    const chip = screen.getByTestId('risk-flag-customer_identity_and_access_management');
+    expect(chip).toHaveStyle({ whiteSpace: 'normal', height: 'auto' });
+    expect(chip).not.toHaveStyle({ minWidth: 'max-content' });
   });
 });
 

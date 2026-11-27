@@ -280,6 +280,31 @@ func TestDiscoverSchemas_OneFailedDatasetDoesNotLoseTheOthers(t *testing.T) {
 	}
 }
 
+// TestDiscoverSchemas_AMixedFailureSaysHowManyFailed. One dataset cannot be
+// listed and another lists fine but holds nothing: the run still ends with no
+// schemas, and the honest report is one of two rather than "every". An
+// operator told every dataset failed goes looking for a problem with the
+// healthy one as well.
+func TestDiscoverSchemas_AMixedFailureSaysHowManyFailed(t *testing.T) {
+	mock := testutil.NewMockWarehouseProvider("public")
+	mock.Tables = nil // the dataset that lists fine and is simply empty
+	wh := &listTablesFailingMock{
+		MockWarehouseProvider: mock,
+		failFor:               map[string]error{"locked": errors.New("permission denied for schema locked")},
+	}
+
+	schemas, err := newSchemaDiscoveryOver(t, wh, "locked", "public").DiscoverSchemas(context.Background())
+	if err == nil {
+		t.Fatalf("a dataset that could not be listed must still be reported; got %d schemas", len(schemas))
+	}
+	if !strings.Contains(err.Error(), "1 of 2") {
+		t.Errorf("the error does not say how many datasets failed: %v", err)
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("the error dropped the provider's reason: %v", err)
+	}
+}
+
 // TestDiscoverSchemas_AnEmptyWarehouseIsNotAFailure — a warehouse that really
 // holds no tables returns no error, so "no tables discovered — check datasets
 // and warehouse permissions" stays the right message for the one case it

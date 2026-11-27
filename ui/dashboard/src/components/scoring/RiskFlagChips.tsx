@@ -2,7 +2,6 @@
 
 import { Badge, Group } from '@mantine/core';
 import type { Scoring } from '@/lib/api';
-import { noShrink } from './badgeStyle';
 
 // The business-risk flags a finding carries: what KIND of risk it is, beside
 // the severity band that says how much it matters.
@@ -66,9 +65,15 @@ export function RiskFlagChips({
           // An id is quoted, not announced: uppercasing `operational-cost`
           // would make it a third spelling rather than the one it is.
           tt={labels === 'ids' ? 'none' : undefined}
-          // The label must not be squeezed by the cell it sits in -- see
-          // noShrink.
-          style={noShrink}
+          // NOT the band labels' width floor. Those are a closed vocabulary
+          // of short words, so a floor is safe; a category id is whatever a
+          // pack's author wrote, and one long enough overflows its cell
+          // instead of giving way -- `customer_identity_and_access_management`
+          // ran 100px past the card's right edge in the assessment panel.
+          // These wrap inside the cell instead, so a long id costs a line
+          // rather than disappearing.
+          style={{ height: 'auto', whiteSpace: 'normal' }}
+          styles={{ label: { whiteSpace: 'normal', overflow: 'visible', textOverflow: 'clip', overflowWrap: 'anywhere' } }}
           data-testid={`risk-flag-${flag}`}
         >
           {labels === 'ids' ? flag : humanise(flag)}
