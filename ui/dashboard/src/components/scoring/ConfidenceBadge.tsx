@@ -39,7 +39,13 @@ export function ConfidenceBadge({
   return (
     <HoverCard width="auto" shadow="md" withinPortal position="bottom-start" openDelay={120}>
       <HoverCard.Target>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'help' }}>
+        {/* The reason sits UNDER the band, for the same reason the severity
+            figure does — and here it is a sentence, so beside the badge it is
+            the widest thing in its column. Measured at 768px on the detail
+            page: the badge took 131px of a 213px cell and left the
+            explanation 76px, which wrapped it to twelve lines. Stacked, it
+            gets the cell. */}
+        <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2, cursor: 'help' }}>
           <Badge
             size={size}
             variant="light"

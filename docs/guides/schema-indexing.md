@@ -247,6 +247,33 @@ usually trips them on a single account.)
 
 Indexing runs are all-or-nothing: on failure the collection is left dropped and the next user-triggered retry starts from a clean slate. Partial progress is thrown away. A 30-min rebuild that dies at minute 25 costs roughly $0.60 + 6 min to redo on a representative ERP warehouse — the simplicity of full rebuilds is worth the occasional redo. The failure is still recorded in the per-datasource run history (status `failed` with the error), so the audit trail shows the attempt even though the index itself was rolled back.
 
+### Reading a "no tables discovered" failure
+
+Two different situations end with an empty index, and the error says which.
+
+```
+no tables discovered — check datasets and warehouse permissions
+```
+
+The warehouse was reached and genuinely had nothing to index: every configured
+dataset listed successfully and returned no tables, or a discovery-scope plugin
+filtered them all out of scope. Check the dataset names and the scope rules.
+
+```
+no tables discovered; 1 of 2 dataset(s) failed to list: public: postgres: \
+  list tables failed: pq: SSL is not enabled on the server
+```
+
+At least one dataset could not be listed at all, and the provider's own reason
+is quoted. This is the form to expect for a connection problem — wrong host,
+refused credentials, a TLS setting the server does not offer — and it names the
+dataset so a half-failure is not read as a total one.
+
+A dataset that cannot be listed does **not** stop the others: if another
+dataset contributes tables, indexing completes with what it found and no error
+is raised. The failure count is only reported when nothing was discovered
+anywhere, because that is the only case where the failure is the whole story.
+
 ## Qdrant is required
 
 Qdrant is a hard dependency for the platform. Without `QDRANT_URL` set, schema indexing fails and discovery stays blocked until the index is ready; vector search and `/ask` return `503 Service Unavailable` with an explicit error body. The API server logs a warning at startup when `QDRANT_URL` is not set.
