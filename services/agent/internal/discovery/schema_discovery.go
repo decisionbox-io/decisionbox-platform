@@ -77,7 +77,13 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 	// `sslmode=require` against a server without TLS, the operator was told to
 	// check dataset names and grants while the product held
 	// `pq: SSL is not enabled on the server`.
+	// Collected under the same bound the error is rendered with, rather than
+	// kept in full and trimmed at the end: a healthy dataset means none of this
+	// is ever returned, and holding a formatted copy of every provider response
+	// until the scan finishes is memory spent on a string nobody will read.
+	// The COUNT is kept whole, because that is what the message reports.
 	var datasetFailures []string
+	datasetFailureCount := 0
 
 	for _, dataset := range s.datasets {
 		logger.WithField("dataset", dataset).Info("Discovering schemas for dataset")
@@ -86,7 +92,10 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 		tables, err := s.warehouse.ListTablesInDataset(ctx, dataset)
 		if err != nil {
 			logger.WithFields(logger.Fields{"dataset": dataset, "error": err.Error()}).Warn("Failed to list tables, skipping dataset")
-			datasetFailures = append(datasetFailures, fmt.Sprintf("%s: %v", dataset, err))
+			datasetFailureCount++
+			if len(datasetFailures) < maxReportedDatasetFailures {
+				datasetFailures = append(datasetFailures, clipFailure(dataset, err))
+			}
 			continue
 		}
 
@@ -191,7 +200,7 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 		// the worker waits for it. The count is the part an operator acts on;
 		// every message is in the dataset warnings above regardless.
 		return nil, fmt.Errorf("no tables discovered; %d of %d dataset(s) failed to list: %s",
-			len(datasetFailures), len(s.datasets), boundedFailures(datasetFailures))
+			datasetFailureCount, len(s.datasets), boundedFailures(datasetFailures, datasetFailureCount))
 	}
 
 	return allSchemas, nil
@@ -213,20 +222,27 @@ const (
 	maxFailureDiagnosticBytes  = 8 * 1024
 )
 
-// boundedFailures renders at most maxReportedDatasetFailures messages, clipped
-// to maxFailureDiagnosticBytes, saying what it left out in both directions.
-func boundedFailures(failures []string) string {
-	shown := failures
-	suffix := ""
-	if len(shown) > maxReportedDatasetFailures {
-		shown = shown[:maxReportedDatasetFailures]
-		suffix = fmt.Sprintf("; and %d more (see the agent log)", len(failures)-maxReportedDatasetFailures)
+// clipFailure formats one dataset's failure, clipped so that no single
+// provider message — a response body, a stack — can carry the whole budget.
+func clipFailure(dataset string, err error) string {
+	msg := fmt.Sprintf("%s: %v", dataset, err)
+	if len(msg) > maxFailureDiagnosticBytes/maxReportedDatasetFailures {
+		msg = msg[:maxFailureDiagnosticBytes/maxReportedDatasetFailures] + "…"
 	}
-	joined := strings.Join(shown, "; ")
+	return msg
+}
+
+// boundedFailures renders the messages that were kept, clipped to
+// maxFailureDiagnosticBytes in total, and says how many were left out.
+func boundedFailures(kept []string, total int) string {
+	joined := strings.Join(kept, "; ")
 	if len(joined) > maxFailureDiagnosticBytes {
 		joined = joined[:maxFailureDiagnosticBytes] + "… (truncated)"
 	}
-	return joined + suffix
+	if total > len(kept) {
+		joined += fmt.Sprintf("; and %d more (see the agent log)", total-len(kept))
+	}
+	return joined
 }
 
 // perTableTimeout bounds how long a single table's schema + sample can

@@ -287,12 +287,12 @@ func TestDiscoverSchemas_OneFailedDatasetDoesNotLoseTheOthers(t *testing.T) {
 // while the indexing worker waits for it. Neither a long list of datasets nor
 // one provider error carrying a whole response body may get near it.
 func TestDiscoverSchemas_TheDiagnosticIsBoundedBothWays(t *testing.T) {
-	t.Run("by count", func(t *testing.T) {
-		var many []string
-		for i := 0; i < 50; i++ {
-			many = append(many, fmt.Sprintf("ds%d: refused", i))
+	t.Run("by count, with the total still reported", func(t *testing.T) {
+		var kept []string
+		for i := 0; i < maxReportedDatasetFailures; i++ {
+			kept = append(kept, fmt.Sprintf("ds%d: refused", i))
 		}
-		got := boundedFailures(many)
+		got := boundedFailures(kept, 50)
 		if strings.Count(got, "refused") > maxReportedDatasetFailures {
 			t.Errorf("carried more than %d messages: %q", maxReportedDatasetFailures, got)
 		}
@@ -301,9 +301,16 @@ func TestDiscoverSchemas_TheDiagnosticIsBoundedBothWays(t *testing.T) {
 		}
 	})
 
-	t.Run("by bytes", func(t *testing.T) {
+	t.Run("by bytes, per message as it is collected", func(t *testing.T) {
+		one := clipFailure("public", errors.New(strings.Repeat("a response body ", 5000)))
+		if len(one) > maxFailureDiagnosticBytes/maxReportedDatasetFailures+8 {
+			t.Errorf("a single provider message kept %d bytes; one failure must not spend the whole budget", len(one))
+		}
+	})
+
+	t.Run("by bytes, in total", func(t *testing.T) {
 		huge := []string{"public: " + strings.Repeat("a response body ", 5000)}
-		got := boundedFailures(huge)
+		got := boundedFailures(huge, 1)
 		if len(got) > maxFailureDiagnosticBytes+64 {
 			t.Errorf("diagnostic is %d bytes, past the %d-byte bound", len(got), maxFailureDiagnosticBytes)
 		}

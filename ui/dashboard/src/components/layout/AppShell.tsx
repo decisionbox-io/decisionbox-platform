@@ -139,7 +139,13 @@ export default function Shell({ children, breadcrumb, actions, fullWidth, wide }
       </aside>
 
       {/* Main area */}
-      <div style={{ marginLeft: 'var(--db-sidebar-width)', flex: 1, display: 'flex', flexDirection: 'column' }}>
+      {/* `minWidth: 0` because this is a flex item: its automatic minimum is
+          its content, so a wide table inside it would make this column grow
+          rather than let the table's own wrapper scroll — and the whole page
+          pans sideways while the scrollbar that should have moved sits idle.
+          The same floor is on <main> below; this is the one that holds it,
+          because this is the item the flex row sizes. */}
+      <div style={{ marginLeft: 'var(--db-sidebar-width)', flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         {/* Top bar */}
         <header style={{
           height: 'var(--db-topbar-height)',
