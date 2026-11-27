@@ -45,8 +45,25 @@ func init() {
 	// only the language does.
 	gowarehouse.RegisterWithMeta(testNativeRowsSlug, factory, gowarehouse.ProviderMeta{
 		Name:       "Lang native rows",
-		Capability: gowarehouse.Capability{QueryLanguage: "Object Query Language"},
+		Capability: gowarehouse.Capability{QueryLanguage: "Object Query Language", QueryGuide: "Write one object.\nName fields exactly."},
 	})
+}
+
+// On a multi-datasource run there is no single language to state once, so a
+// non-SQL datasource's own request format is rendered under its own entry —
+// and nothing is added for a SQL one.
+func TestDatasourcesSection_RendersEachDatasourcesQueryGuide(t *testing.T) {
+	dc := &datasourceContext{descriptors: []datasourceDescriptor{
+		{id: "default", label: "Sales", provider: testSQLSlug, tableCount: 3},
+		{id: "wh_obj", label: "Records", provider: testNativeRowsSlug, tableCount: 2},
+	}}
+	got := buildDatasourcesPromptSection(dc, correlationGuidance{})
+	if !strings.Contains(got, "  - How to write a query against this datasource:\n    Write one object.\n    Name fields exactly.\n") {
+		t.Errorf("the non-SQL datasource's guide is missing:\n%s", got)
+	}
+	if strings.Count(got, "How to write a query") != 1 {
+		t.Errorf("a guide was rendered for a datasource that declared none:\n%s", got)
+	}
 }
 
 // sqlOnlyContext is the all-SQL multi-datasource run: the shape every

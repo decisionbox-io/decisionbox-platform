@@ -157,3 +157,20 @@ func TestQueryGuide_IsShownUnderTheLanguage(t *testing.T) {
 		t.Errorf("a guide heading was rendered for a source with no guide:\n%s", none.String())
 	}
 }
+
+// A cube that declares a guide gets it too, on both the single and the
+// catalog paths.
+func TestQueryGuide_IsShownForACube(t *testing.T) {
+	d := cubeDatasource("ga_1")
+	d.QueryGuide = "Pick metrics and dimensions."
+	var single strings.Builder
+	writeWarehouseSection(&single, d)
+	if !strings.Contains(single.String(), "  How to write a query in Report Request (JSON):\n  Pick metrics and dimensions.\n") {
+		t.Errorf("cube block lacks the guide:\n%s", single.String())
+	}
+	var line strings.Builder
+	writeLanguageCatalogLine(&line, d)
+	if !strings.Contains(line.String(), "    Pick metrics and dimensions.\n") {
+		t.Errorf("cube catalog line lacks the guide:\n%s", line.String())
+	}
+}

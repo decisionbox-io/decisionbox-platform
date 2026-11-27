@@ -452,7 +452,7 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		si.recordErr(ctx, opts.ProjectID, "qdrant upsert: "+err.Error())
 		return partialStats(), fmt.Errorf("schema_indexer: qdrant upsert: %w", err)
 	}
-	definitions := si.indexDefinitions(ctx, opts, refs[kept[0].i].dataset)
+	definitions := si.indexDefinitions(ctx, opts)
 	embeddingDur := time.Since(embedStart)
 	applog.WithFields(applog.Fields{
 		"tables":           len(items),
@@ -479,14 +479,15 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 }
 
 // indexDefinitions embeds and upserts the source's business definitions beside
-// its tables, attached to dataset so search admits them exactly when it admits
-// that dataset's tables. Returns how many were indexed.
+// its tables. A definition belongs to the datasource as a whole, not to one of
+// its datasets, so search admits it while the datasource has tables (see
+// SearchAdmits). Returns how many were indexed.
 //
 // Best-effort. The tables are the index and the definitions enrich it: a
 // failure to read or store them is logged and the build carries on, because
 // failing it would leave the datasource "not ready" over context it can do
 // without.
-func (si *SchemaIndexer) indexDefinitions(ctx context.Context, opts IndexOptions, dataset string) int {
+func (si *SchemaIndexer) indexDefinitions(ctx context.Context, opts IndexOptions) int {
 	if si.Definitions == nil {
 		return 0
 	}
@@ -518,7 +519,6 @@ func (si *SchemaIndexer) indexDefinitions(ctx context.Context, opts IndexOptions
 		items[i] = schema_retrieve.UpsertItem{
 			Blurb: schema_retrieve.TableBlurb{
 				Table:          d.Name,
-				Dataset:        dataset,
 				Kind:           d.Kind,
 				Blurb:          texts[i],
 				Keywords:       opts.Keywords,

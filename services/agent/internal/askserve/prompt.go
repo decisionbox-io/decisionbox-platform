@@ -412,6 +412,7 @@ func writeCubeSection(b *strings.Builder, d DatasourceInfo) {
 	// format the prompt cannot show would be worse than naming the language and
 	// letting the model use what it knows about it.
 	fmt.Fprintf(b, "- Queries are written as: %s — not SQL, which this source rejects.\n", d.Language())
+	writeQueryGuide(b, "  ", d)
 	b.WriteString("- Use search_tables to find the metrics and dimensions this source offers — each result says whether it is a metric or a dimension. Do not call lookup_schema against this source; it has no columns.\n")
 	b.WriteString("- The source is READ-ONLY.\n")
 	writeTenantScope(b, "- ", d)
@@ -578,6 +579,7 @@ func writeJoinsOnForm(b *strings.Builder) {
 func writeLanguageCatalogLine(b *strings.Builder, d DatasourceInfo) {
 	if isCube(d) {
 		fmt.Fprintf(b, "  NO TABLES — a metric/dimension cube. Query language: %s (not SQL). lookup_schema does not apply; search_tables lists its metrics and dimensions.\n", d.Language())
+		writeQueryGuide(b, "    ", d)
 		return
 	}
 	fmt.Fprintf(b, "  Query language: %s (not SQL). It has tables; search_tables and lookup_schema apply.\n", d.NonSQLLanguage)
@@ -592,7 +594,11 @@ func writeQueryGuide(b *strings.Builder, indent string, d DatasourceInfo) {
 	if guide == "" {
 		return
 	}
-	fmt.Fprintf(b, "%sHow to write a query in %s:\n", indent, d.NonSQLLanguage)
+	lang := d.NonSQLLanguage
+	if lang == "" {
+		lang = d.Language()
+	}
+	fmt.Fprintf(b, "%sHow to write a query in %s:\n", indent, lang)
 	for _, line := range strings.Split(guide, "\n") {
 		b.WriteString(indent + line + "\n")
 	}

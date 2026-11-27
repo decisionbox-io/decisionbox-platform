@@ -183,21 +183,30 @@ func TestSearch_CatalogRefsAreScopedToTheirDatasource(t *testing.T) {
 	}
 }
 
-// TestSearch_KeepsDefinitionHitsOfIndexedDatasets: a business definition is
-// indexed beside its dataset's tables and has no catalog entry, so the
-// catalog filter must not drop it — it is admitted while its dataset still
-// has tables in the schemas map, and dropped once it has none.
-func TestSearch_KeepsDefinitionHitsOfIndexedDatasets(t *testing.T) {
+// TestSearch_KeepsDefinitionHitsOfIndexedDatasources: a business definition is
+// indexed with its datasource's tables and has no catalog entry, so the
+// catalog filter must not drop it — it is admitted while its datasource has
+// tables in the schemas map, and dropped when that datasource has none (a
+// removed datasource whose points linger in the shared collection).
+func TestSearch_KeepsDefinitionHitsOfIndexedDatasources(t *testing.T) {
 	searcher := &fakeVectorSearcher{hits: []schema_retrieve.Hit{
-		{Blurb: schema_retrieve.TableBlurb{Table: "Revenue", Kind: gowarehouse.DefinitionMeasure, Dataset: "events", Blurb: "defined measure \"Revenue\""}, Score: 0.9},
-		{Blurb: schema_retrieve.TableBlurb{Table: "Stale", Kind: gowarehouse.DefinitionMeasure, Dataset: "removed_app", Blurb: "from a dataset no longer indexed"}, Score: 0.8},
+		{Blurb: schema_retrieve.TableBlurb{Table: "Revenue", Kind: gowarehouse.DefinitionMeasure, WarehouseID: "app", Blurb: "defined measure \"Revenue\""}, Score: 0.9},
+		{Blurb: schema_retrieve.TableBlurb{Table: "Stale", Kind: gowarehouse.DefinitionMeasure, WarehouseID: "removed", Blurb: "from a datasource no longer indexed"}, Score: 0.8},
 	}}
-	p := providerWithSearcher(t, searcher, &fakeEmbedder{dim: 4})
+	p, err := NewCacheSchemaProvider(CacheSchemaProviderOptions{
+		Schemas:        sampleSchemas(),
+		TableWarehouse: map[string]string{"events.users": "app"},
+		Embedder:       &fakeEmbedder{dim: 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.searcher = searcher
 	hits, err := p.Search(context.Background(), "revenue", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(hits) != 1 || hits[0].Table != "Revenue" || hits[0].Kind != gowarehouse.DefinitionMeasure {
-		t.Fatalf("hits = %+v, want only the definition whose dataset has tables", hits)
+		t.Fatalf("hits = %+v, want only the definition whose datasource has tables", hits)
 	}
 }

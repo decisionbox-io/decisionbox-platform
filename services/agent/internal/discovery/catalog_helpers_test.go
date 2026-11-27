@@ -104,25 +104,25 @@ func TestSearchAuthority_EitherHalfMayBeEmpty(t *testing.T) {
 	}
 }
 
-// TestSearchAdmits_Definitions: a business definition is indexed beside its
-// dataset's tables and admitted exactly while that dataset has a table in the
-// authority — so it disappears with them rather than outliving them.
+// TestSearchAdmits_Definitions: a business definition belongs to its
+// datasource and is admitted exactly while that datasource has tables
+// indexed — so it disappears with them rather than outliving them.
 func TestSearchAdmits_Definitions(t *testing.T) {
 	authority := SearchAuthority(map[string]models.TableSchema{"app1.Orders": {}}, []string{"sessions"})
 	for _, tc := range []struct {
-		kind, ref, dataset string
-		want               bool
+		kind, ref string
+		hasTables bool
+		want      bool
 	}{
-		{gowarehouse.ItemKindTable, "app1.Orders", "app1", true},
-		{gowarehouse.ItemKindTable, "app1.Gone", "app1", false},
-		{gowarehouse.ItemKindMetric, "sessions", "", true},
-		{gowarehouse.DefinitionMeasure, "Revenue", "app1", true},
-		{gowarehouse.DefinitionDimension, "Customer", "app1", true},
-		{gowarehouse.DefinitionMeasure, "Revenue", "app2", false}, // its dataset has no tables here
-		{gowarehouse.DefinitionMeasure, "Revenue", "", false},
+		{gowarehouse.ItemKindTable, "app1.Orders", true, true},
+		{gowarehouse.ItemKindTable, "app1.Gone", true, false},
+		{gowarehouse.ItemKindMetric, "sessions", false, true},
+		{gowarehouse.DefinitionMeasure, "Revenue", true, true},
+		{gowarehouse.DefinitionDimension, "Customer", true, true},
+		{gowarehouse.DefinitionMeasure, "Revenue", false, false}, // the datasource has no tables (any more)
 	} {
-		if got := SearchAdmits(authority, tc.kind, tc.ref, tc.dataset); got != tc.want {
-			t.Errorf("SearchAdmits(%q, %q, %q) = %v, want %v", tc.kind, tc.ref, tc.dataset, got, tc.want)
+		if got := SearchAdmits(authority, tc.hasTables, tc.kind, tc.ref); got != tc.want {
+			t.Errorf("SearchAdmits(%q, %q, tables=%v) = %v, want %v", tc.kind, tc.ref, tc.hasTables, got, tc.want)
 		}
 	}
 }

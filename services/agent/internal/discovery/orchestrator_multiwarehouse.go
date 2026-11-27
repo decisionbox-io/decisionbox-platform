@@ -263,6 +263,14 @@ func buildDatasourcesPromptSection(dc *datasourceContext, guidance correlationGu
 		if areas := datasourceFocusAreas(d.prompts); areas != "" {
 			fmt.Fprintf(&b, "  - Focus areas (this datasource's domain pack): %s\n", areas)
 		}
+		// The datasource's own request format, under its own entry: on a
+		// multi-datasource run there is no single language to state once.
+		if guide := strings.TrimSpace(gowarehouse.QueryGuideOf(d.provider)); guide != "" {
+			b.WriteString("  - How to write a query against this datasource:\n")
+			for _, line := range strings.Split(guide, "\n") {
+				b.WriteString("    " + line + "\n")
+			}
+		}
 	}
 	return b.String()
 }
