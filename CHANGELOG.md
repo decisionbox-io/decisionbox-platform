@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`warehouse.DefinitionSource`.** A source's own named measures and dimensions (a BI tool's master items, a semantic layer's metrics), indexed beside its tables and returned by `search_tables` with the kind `defined measure` / `defined dimension`. Search admits them exactly while their dataset's tables are indexed.
 - **`warehouse.FindCapability`.** One bounded walk of a middleware's `Unwrap` chain, for capabilities that run nothing.
 
+- **A tenant filter on a non-SQL datasource is refused at project create and edit.** The executor checks a filter by reading its predicate in the query text, which it cannot do in another language, so such a datasource refused every query. It is now refused when saved, with the reason.
+
 ### Fixed
 
 - **A capped result lost its truncation caveat behind a middleware that re-exposes `QueryRunner`.** The row-cap check now looks through the wrapper, as the row-offset check already did.
