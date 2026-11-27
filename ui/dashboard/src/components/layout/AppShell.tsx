@@ -13,9 +13,16 @@ interface ShellProps {
   breadcrumb?: { label: string; href?: string }[];
   actions?: ReactNode;
   fullWidth?: boolean;
+  /**
+   * A wider cap for pages whose content is a table. Distinct from `fullWidth`,
+   * which is for surfaces that genuinely want the whole viewport (the chat
+   * column, the schema editor's master-detail): a table that follows the
+   * window without a bound is not more readable, it is just longer.
+   */
+  wide?: boolean;
 }
 
-export default function Shell({ children, breadcrumb, actions, fullWidth }: ShellProps) {
+export default function Shell({ children, breadcrumb, actions, fullWidth, wide }: ShellProps) {
   const pathname = usePathname();
   const params = useParams<{ id?: string }>();
   const projectId = params?.id;
@@ -132,7 +139,13 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
       </aside>
 
       {/* Main area */}
-      <div style={{ marginLeft: 'var(--db-sidebar-width)', flex: 1, display: 'flex', flexDirection: 'column' }}>
+      {/* `minWidth: 0` because this is a flex item: its automatic minimum is
+          its content, so a wide table inside it would make this column grow
+          rather than let the table's own wrapper scroll — and the whole page
+          pans sideways while the scrollbar that should have moved sits idle.
+          The same floor is on <main> below; this is the one that holds it,
+          because this is the item the flex row sizes. */}
+      <div style={{ marginLeft: 'var(--db-sidebar-width)', flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         {/* Top bar */}
         <header style={{
           height: 'var(--db-topbar-height)',
@@ -188,7 +201,14 @@ export default function Shell({ children, breadcrumb, actions, fullWidth }: Shel
 
         {/* Content */}
         <main style={{
-          maxWidth: fullWidth ? '100%' : 'var(--db-content-max-width)',
+          maxWidth: fullWidth ? '100%' : wide ? 'var(--db-content-max-width-wide)' : 'var(--db-content-max-width)',
+          // A flex item's automatic minimum is its content, so a child that
+          // refuses to shrink -- a wide table, an unbroken token -- can push
+          // this past the viewport and make the whole PAGE pan sideways while
+          // the scroll container inside it has nothing left to scroll. Keeping
+          // the floor at zero leaves the overflow where it belongs: with the
+          // element that owns the horizontal scroll.
+          minWidth: 0,
           padding: 'var(--db-content-padding)',
           width: '100%',
         }}>

@@ -35,6 +35,11 @@
   --db-sidebar-width: 220px;
   --db-topbar-height: 52px;
   --db-content-max-width: 960px;
+  /* For a page whose content is a wide table rather than prose. Bounded, not
+     100%: a table allowed to follow a 3440px monitor puts its first and last
+     column an arm's length apart, and the row stops being scannable. 1600px
+     fits the insight tables whole with their labels unclipped. */
+  --db-content-max-width-wide: 1600px;
   --db-content-padding: 24px;
 
   /* Severity badge colors */

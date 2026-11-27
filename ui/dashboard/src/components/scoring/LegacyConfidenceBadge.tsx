@@ -1,6 +1,7 @@
 'use client';
 
 import { Badge, HoverCard, Stack, Text } from '@mantine/core';
+import { noShrink } from './badgeStyle';
 import { ConfidenceBar } from '@/components/common/UIComponents';
 
 // A document written before confidence was derived.
@@ -22,7 +23,7 @@ export function LegacyConfidenceBadge({ confidence }: { confidence: number }) {
       <HoverCard.Target>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'help' }}>
           <ConfidenceBar confidence={confidence} />
-          <Badge size="xs" variant="light" color="gray" data-testid="confidence-legacy">
+          <Badge size="xs" variant="light" color="gray" style={noShrink} data-testid="confidence-legacy">
             legacy
           </Badge>
         </span>

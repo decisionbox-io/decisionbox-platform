@@ -24,8 +24,17 @@ const PAGE_TITLE = 'Playbook';
 // The detail card is a flex column that fills the master–detail row's height so
 // the editor stretches down instead of leaving dead space; editorFillStyle lets
 // the MDEditor (height="100%") fill the remaining space under the header/inputs.
-const detailCardStyle: CSSProperties = { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' };
-const editorFillStyle: CSSProperties = { flex: 1, minHeight: 0 };
+//
+// `overflowY: auto` and the editor's own floor are what make that safe on a
+// short window. The page itself does not scroll — the row is pinned to the
+// viewport and the area list has its own scroller — so when the fields above
+// the editor grow past the available height, a card that only clips has no
+// way back: measured at 1280x700 the card held 663px of content in 548px and
+// the editor, free to shrink, was rendered ONE pixel tall. The floor keeps it
+// usable and the card scrolls to reach it; on a tall window nothing changes,
+// because the content fits and `flex: 1` still stretches the editor.
+const detailCardStyle: CSSProperties = { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflowY: 'auto' };
+const editorFillStyle: CSSProperties = { flex: 1, minHeight: 240 };
 
 export default function PromptsPage() {
   const { id } = useParams<{ id: string }>();

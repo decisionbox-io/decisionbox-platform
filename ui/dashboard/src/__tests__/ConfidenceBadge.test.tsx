@@ -96,18 +96,19 @@ describe('the confidence band', () => {
     ['low', 'Low confidence'],
     ['not_confirmed', 'Not confirmed'],
     ['unverifiable', 'Unverifiable'],
-  ])('renders %s as %s with its reason', (band, label) => {
+  ])('renders %s as %s', (band, label) => {
     wrap(
       <ConfidenceCell
         scoring={scored({ confidence_band: band as Scoring['confidence_band'], confidence_reason: 'REASON-FROM-THE-ENGINE' })}
         confidence={0.65}
-        showReason
       />,
     );
     expect(screen.getByTestId('confidence-band')).toHaveTextContent(label);
-    // The reason is rendered verbatim off the document — the dashboard holds
-    // no second wording for it.
-    expect(screen.getByTestId('confidence-reason')).toHaveTextContent('REASON-FROM-THE-ENGINE');
+    // The badge states the band and nothing else. The reason belongs to the
+    // breakdown, which the badge opens and the detail page renders in full:
+    // printed beside the badge as well it was the same sentence twice on one
+    // screen, three times counting the hover.
+    expect(screen.queryByTestId('confidence-reason')).not.toBeInTheDocument();
   });
 
   it('renders unverifiable as its own state rather than as low confidence', () => {
@@ -124,6 +125,23 @@ describe('the confidence band', () => {
   });
 });
 
+describe('the short label form', () => {
+  it('drops the axis word for a degree', () => {
+    wrap(<ConfidenceCell scoring={{ confidence_band: 'high', confidence_score: 0.95, engine_version: 1 }} confidence={0.95} labelForm="short" />);
+    expect(screen.getByTestId('confidence-band')).toHaveTextContent(/^High$/);
+  });
+
+  // "Not confirmed" and "Unverifiable" are states, not degrees: there is no
+  // axis word to drop, and shortening them would change what they say.
+  it.each([
+    ['not_confirmed', 'Not confirmed'],
+    ['unverifiable', 'Unverifiable'],
+  ])('leaves %s alone', (band, text) => {
+    wrap(<ConfidenceCell scoring={{ confidence_band: band, confidence_score: 0.2, engine_version: 1 }} confidence={0.2} labelForm="short" />);
+    expect(screen.getByTestId('confidence-band')).toHaveTextContent(text);
+  });
+});
+
 describe('a legacy document', () => {
   it('shows its stored number marked legacy, not a band', () => {
     wrap(<ConfidenceCell scoring={undefined} confidence={0.93} />);
@@ -132,9 +150,32 @@ describe('a legacy document', () => {
     // And the stored number itself, unchanged — no document is rewritten.
     expect(screen.getByText('93%')).toBeInTheDocument();
   });
+
+  // The marker is the SECOND chip in its cell, so it was the one that lost:
+  // measured in the insights table, its label was rendered into 0px of the
+  // 12px it needs — an empty grey oval beside the number, with the hover card
+  // as the only way to learn what it meant. jsdom cannot measure that, so
+  // what is pinned here is the contract that prevents it.
+  it('does not let the marker be squeezed away', () => {
+    wrap(<ConfidenceCell scoring={undefined} confidence={0.93} />);
+    expect(screen.getByTestId('confidence-legacy')).toHaveStyle({ flexShrink: '0', minWidth: 'max-content' });
+  });
+
+  it('keeps the band label whole as well', () => {
+    wrap(<ConfidenceCell scoring={{ confidence_band: 'high', confidence_score: 0.95, engine_version: 1 }} confidence={0.95} />);
+    expect(screen.getByTestId('confidence-band')).toHaveStyle({ flexShrink: '0', minWidth: 'max-content' });
+  });
 });
 
 describe('the "How this was scored" breakdown', () => {
+  // The reason is rendered verbatim off the document — the dashboard holds no
+  // second wording for it. Asserted here because this is where it now lives.
+  it('states the reason verbatim, with no second wording', async () => {
+    wrap(<ConfidenceCell scoring={scored({ confidence_band: 'high', confidence_reason: 'REASON-FROM-THE-ENGINE' })} confidence={0.95} />);
+    await userEvent.hover(screen.getByTestId('confidence-band'));
+    expect(await screen.findByText('REASON-FROM-THE-ENGINE')).toBeInTheDocument();
+  });
+
   it('shows base, every dock with its amount, the final, the cutoff crossed and the engine version', async () => {
     wrap(<ScoringBreakdown scoring={scored({})} />);
 

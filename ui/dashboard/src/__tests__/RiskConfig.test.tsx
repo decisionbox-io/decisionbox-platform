@@ -56,6 +56,37 @@ describe('RiskFlagChips', () => {
     expect(screen.getByTestId('risk-flag-player-churn')).toHaveTextContent('Player churn');
     expect(screen.getByTestId('risk-flag-compliance')).toHaveTextContent('Compliance');
   });
+
+  // In a LIST the chip sits next to the analysis-area id, and two spellings of
+  // the same kind of slug read as two different kinds of thing. `ids` quotes
+  // the category as authored; the humanised form stays where the chip sits in
+  // prose.
+  it('quotes the id verbatim when the caller asks for ids', () => {
+    wrap(<RiskFlagChips scoring={scored(['operational-cost', 'data_quality'])} labels="ids" />);
+    expect(screen.getByTestId('risk-flag-operational-cost')).toHaveTextContent('operational-cost');
+    expect(screen.getByTestId('risk-flag-data_quality')).toHaveTextContent('data_quality');
+  });
+
+  it('does not shout an id it was asked to quote', () => {
+    wrap(<RiskFlagChips scoring={scored(['operational-cost'])} labels="ids" />);
+    const chip = screen.getByTestId('risk-flag-operational-cost');
+    expect(chip).toHaveStyle({ textTransform: 'none' });
+  });
+
+  // A category id is NOT a band label, and the two want opposite things.
+  //
+  // The bands are a closed vocabulary of short words, so a width floor is safe
+  // and is what stops `HIGH CONFIDENCE` rendering as `HIGH CO…`. A category id
+  // is whatever a pack's author wrote: given the same floor, one long enough
+  // simply overflowed — `customer_identity_and_access_management` ran 100px
+  // past the right edge of the assessment card and was clipped there. These
+  // wrap instead, so a long id costs a line of height rather than its tail.
+  it('wraps a long id rather than overflowing its cell', () => {
+    wrap(<RiskFlagChips scoring={scored(['customer_identity_and_access_management'])} />);
+    const chip = screen.getByTestId('risk-flag-customer_identity_and_access_management');
+    expect(chip).toHaveStyle({ whiteSpace: 'normal', height: 'auto' });
+    expect(chip).not.toHaveStyle({ minWidth: 'max-content' });
+  });
 });
 
 // --- The editor ------------------------------------------------------------

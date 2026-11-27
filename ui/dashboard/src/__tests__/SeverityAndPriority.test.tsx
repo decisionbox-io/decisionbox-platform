@@ -117,6 +117,43 @@ beforeEach(() => {
 
 // --- The band and its driver -----------------------------------------------
 
+// Every band label in the insights table was being clipped by its column —
+// `ACT NOW` rendered into 34px of the 53px it needs, `HIGH SEVERITY` into 35px
+// of 80. Mantine's badge label carries `overflow:hidden; text-overflow:
+// ellipsis`, so a shrunk badge is a truncated word and the reader cannot tell
+// one tier from another without opening the row. These pin the contract that
+// stops it; the pixel measurement itself is beyond jsdom.
+describe('a band label is not what gives way in a narrow column', () => {
+  it('severity', () => {
+    wrap(<SeverityCell scoring={shareBanded()} severity="high" />);
+    expect(screen.getByTestId('severity-band')).toHaveStyle({ flexShrink: '0', minWidth: 'max-content' });
+  });
+
+  it('priority', () => {
+    wrap(<PriorityCell scoring={shareBanded()} />);
+    expect(screen.getByTestId('priority-tier')).toHaveStyle({ flexShrink: '0', minWidth: 'max-content' });
+  });
+
+  it('the legacy severity marker', () => {
+    wrap(<SeverityCell scoring={undefined} severity="critical" />);
+    expect(screen.getByTestId('severity-legacy')).toHaveStyle({ flexShrink: '0', minWidth: 'max-content' });
+  });
+});
+
+// A column headed SEVERITY does not need every cell to say "severity" again,
+// and the repetition costs the column width the figure underneath could use.
+describe('the short label form', () => {
+  it('drops the axis word for severity', () => {
+    wrap(<SeverityCell scoring={shareBanded()} severity="high" labelForm="short" />);
+    expect(screen.getByTestId('severity-band')).toHaveTextContent(/^High$/);
+  });
+
+  it('keeps the full label by default, for surfaces with no column header', () => {
+    wrap(<SeverityCell scoring={shareBanded()} severity="high" />);
+    expect(screen.getByTestId('severity-band')).toHaveTextContent('High severity');
+  });
+});
+
 describe('SeverityCell', () => {
   it('renders the band with the number beside it', () => {
     wrap(<SeverityCell scoring={shareBanded()} severity="high" />);

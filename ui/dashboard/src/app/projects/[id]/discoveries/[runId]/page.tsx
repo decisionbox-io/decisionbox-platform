@@ -23,6 +23,7 @@ import { ConfidenceCell } from '@/components/scoring/ConfidenceCell';
 import { SeverityCell } from '@/components/scoring/SeverityCell';
 import { PriorityCell } from '@/components/scoring/PriorityCell';
 import { TierTally } from '@/components/scoring/TierTally';
+import { RiskFlagChips } from '@/components/scoring/RiskFlagChips';
 import { priorityTierOrder, priorityMeta, TIER_ORDER } from '@/components/scoring/priorityMeta';
 import { severityBandOrder } from '@/components/scoring/severityMeta';
 import UnreadDot from '@/components/common/UnreadDot';
@@ -160,8 +161,8 @@ export default function DiscoveryDetailPage() {
     });
   };
 
-  if (loading) return <Shell><Loader /></Shell>;
-  if (!discovery) return <Shell><Text>Discovery not found</Text></Shell>;
+  if (loading) return <Shell wide><Loader /></Shell>;
+  if (!discovery) return <Shell wide><Text>Discovery not found</Text></Shell>;
 
   // Restatements split out of both lists. This page is the record of one run,
   // so the toggle matters more here than on the project lists: hiding them
@@ -237,7 +238,7 @@ export default function DiscoveryDetailPage() {
   const recEmptyReason = recommendationEmptyReason(recLog);
 
   return (
-    <Shell breadcrumb={breadcrumb}>
+    <Shell breadcrumb={breadcrumb} wide>
       {/* Run Header */}
       <div style={{ marginBottom: 20 }}>
         {project && (
@@ -336,7 +337,11 @@ export default function DiscoveryDetailPage() {
             background: 'var(--db-bg-white)',
             border: '1px solid var(--db-border-default)',
             borderRadius: 'var(--db-radius-lg)',
-            overflow: 'hidden',
+            // Scroll, do not clip — the same card as the project insights
+            // list. With the band labels holding their width, a narrow window
+            // can leave the table wider than the card, and `hidden` drops the
+            // right-hand columns with nothing to say it did.
+            overflowX: 'auto',
             marginBottom: 24,
           }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -579,10 +584,15 @@ function InsightRow({ insight, projectId, runId, idx, isRead, feedback, onFeedba
         <PriorityCell scoring={insight.evidence_scoring} />
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
-        <SeverityCell scoring={insight.evidence_scoring} severity={insight.severity} />
+        <SeverityCell scoring={insight.evidence_scoring} severity={insight.severity} labelForm="short" />
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
         <AreaBadge area={insight.analysis_area} />
+        {/* The same chips the project insights list carries. They were added
+            to one list and not the other, so the kind of business risk a
+            finding carries was visible on a project's list and absent from
+            the run that produced it -- the same findings, two readings. */}
+        <RiskFlagChips scoring={insight.evidence_scoring} size="xs" labels="ids" />
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
         <InsightValidationBadge validation={insight.validation} />
@@ -591,7 +601,7 @@ function InsightRow({ insight, projectId, runId, idx, isRead, feedback, onFeedba
         {insight.affected_count > 0 ? insight.affected_count.toLocaleString() : '—'}
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
-        <ConfidenceCell scoring={insight.evidence_scoring} confidence={insight.confidence} />
+        <ConfidenceCell scoring={insight.evidence_scoring} confidence={insight.confidence} labelForm="short" />
       </td>
       <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
         <FeedbackButtons projectId={projectId} discoveryId={runId} targetType="insight"

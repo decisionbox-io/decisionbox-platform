@@ -16,15 +16,16 @@ export function ConfidenceCell({
   scoring,
   confidence,
   size = 'sm',
-  showReason = false,
+  labelForm = 'full',
 }: {
   scoring: Scoring | undefined;
   confidence: number;
   size?: 'xs' | 'sm' | 'md';
-  showReason?: boolean;
+  /** Passed to the badge: `short` drops the axis word. */
+  labelForm?: 'full' | 'short';
 }) {
   if (scoring) {
-    return <ConfidenceBadge scoring={scoring} size={size} showReason={showReason} />;
+    return <ConfidenceBadge scoring={scoring} size={size} labelForm={labelForm} />;
   }
   return <LegacyConfidenceBadge confidence={confidence} />;
 }

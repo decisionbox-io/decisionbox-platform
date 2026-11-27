@@ -21,6 +21,13 @@ export type ConfidenceBand =
 
 export interface ConfidenceMeta {
   label: string;
+  /**
+   * The band alone, for a surface that already names the axis. Note that two
+   * of these are unchanged: "Not confirmed" and "Unverifiable" are states
+   * rather than degrees of confidence, so there is no axis word to drop and
+   * shortening them would change what they say.
+   */
+  short: string;
   // A short gloss on what the BAND means, independent of the document. The
   // document's own reason says why this document is in it.
   gloss: string;
@@ -30,16 +37,19 @@ export interface ConfidenceMeta {
 const META: Record<string, ConfidenceMeta> = {
   high: {
     label: 'High confidence',
+    short: 'High',
     gloss: 'Checked against warehouse rows and held up.',
     tone: 'green',
   },
   medium: {
     label: 'Medium confidence',
+    short: 'Medium',
     gloss: 'Checked, with something against it.',
     tone: 'amber',
   },
   low: {
     label: 'Low confidence',
+    short: 'Low',
     gloss: 'Checked, and the evidence is weak or contradicts it.',
     tone: 'red',
   },
@@ -47,11 +57,13 @@ const META: Record<string, ConfidenceMeta> = {
   // different statement from something having been checked and found weak.
   not_confirmed: {
     label: 'Not confirmed',
+    short: 'Not confirmed',
     gloss: 'Not checked against warehouse rows.',
     tone: 'grey',
   },
   unverifiable: {
     label: 'Unverifiable',
+    short: 'Unverifiable',
     gloss: 'Nothing in the cited evidence could check this.',
     tone: 'grey',
   },
@@ -59,6 +71,7 @@ const META: Record<string, ConfidenceMeta> = {
 
 const FALLBACK: ConfidenceMeta = {
   label: 'Unknown',
+    short: 'Unknown',
   gloss: 'Band not recognised — this document was scored by a newer version.',
   tone: 'grey',
 };

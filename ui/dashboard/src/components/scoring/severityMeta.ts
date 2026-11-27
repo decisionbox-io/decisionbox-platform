@@ -17,6 +17,14 @@ import type { SeverityBand, SeverityDriver, SeverityFigure } from '@/lib/api';
 
 export interface SeverityMeta {
   label: string;
+  /**
+   * The band alone, for a surface that already names the axis. A table column
+   * headed SEVERITY does not need every cell to repeat the word, and the
+   * repetition costs the column the width the figure underneath could use.
+   * Declared per band rather than trimmed off `label`, so a band whose name is
+   * not "<word> severity" cannot be mangled by a string rule.
+   */
+  short: string;
   // A short gloss on what the BAND means, independent of the document. The
   // document's own reason says why this document is in it.
   gloss: string;
@@ -26,16 +34,19 @@ export interface SeverityMeta {
 const META: Record<string, SeverityMeta> = {
   high: {
     label: 'High severity',
+    short: 'High',
     gloss: 'The checked figures behind this put it near the top of what a run finds.',
     tone: 'red',
   },
   medium: {
     label: 'Medium severity',
+    short: 'Medium',
     gloss: 'Material, on the figures the platform re-checked.',
     tone: 'amber',
   },
   low: {
     label: 'Low severity',
+    short: 'Low',
     gloss: 'Small, on the figures the platform re-checked.',
     tone: 'green',
   },
@@ -43,6 +54,7 @@ const META: Record<string, SeverityMeta> = {
 
 const FALLBACK: SeverityMeta = {
   label: 'Unknown severity',
+    short: 'Unknown',
   gloss: 'Band not recognised — this document was scored by a newer version.',
   tone: 'grey',
 };

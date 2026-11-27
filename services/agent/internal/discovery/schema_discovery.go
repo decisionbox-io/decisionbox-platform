@@ -3,7 +3,9 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	logger "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
@@ -66,6 +68,24 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 
 	allSchemas := make(map[string]models.TableSchema)
 
+	// Why the failures are collected rather than only logged: a dataset that
+	// cannot be listed is skipped so the others still index, which is right
+	// when one of several fails. It is not right when EVERY dataset fails --
+	// the caller then sees an empty map and a nil error, and reports "no
+	// tables discovered -- check datasets and warehouse permissions" for what
+	// was actually a refused connection. The reason reached a Warn line in the
+	// agent's container log and went no further: for a project configured with
+	// `sslmode=require` against a server without TLS, the operator was told to
+	// check dataset names and grants while the product held
+	// `pq: SSL is not enabled on the server`.
+	// Collected under the same bound the error is rendered with, rather than
+	// kept in full and trimmed at the end: a healthy dataset means none of this
+	// is ever returned, and holding a formatted copy of every provider response
+	// until the scan finishes is memory spent on a string nobody will read.
+	// The COUNT is kept whole, because that is what the message reports.
+	var datasetFailures []string
+	datasetFailureCount := 0
+
 	for _, dataset := range s.datasets {
 		logger.WithField("dataset", dataset).Info("Discovering schemas for dataset")
 
@@ -73,6 +93,10 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 		tables, err := s.warehouse.ListTablesInDataset(ctx, dataset)
 		if err != nil {
 			logger.WithFields(logger.Fields{"dataset": dataset, "error": err.Error()}).Warn("Failed to list tables, skipping dataset")
+			datasetFailureCount++
+			if len(datasetFailures) < maxReportedDatasetFailures {
+				datasetFailures = append(datasetFailures, clipFailure(dataset, err))
+			}
 			continue
 		}
 
@@ -88,6 +112,14 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 				"dataset": dataset,
 				"error":   ferr.Error(),
 			}).Warn("ListTables filter failed, skipping dataset")
+			// NOT collected into datasetFailures, unlike a list failure. A
+			// filter is the deployment's own scope plugin saying this dataset
+			// is out of bounds, and `TestSchemaDiscovery_FilterErrorSkipsDataset`
+			// pins that it skips without bubbling -- a scope that excludes
+			// everything leaves a warehouse with nothing in scope, which is
+			// what the caller's "no tables discovered" message describes. A
+			// list failure is the different fact: the warehouse was never
+			// reached at all.
 			continue
 		}
 		tables = filtered
@@ -149,7 +181,90 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 
 	logger.WithField("total_tables", len(allSchemas)).Info("All schema discovery complete")
 
+	// Nothing found AND something failed: the failures are the answer. A
+	// partial result still returns successfully with the datasets that worked,
+	// and a warehouse that genuinely holds no tables still returns an empty
+	// map and no error -- the caller's own "no tables discovered" message is
+	// the right one for that, and only for that.
+	if len(allSchemas) == 0 && len(datasetFailures) > 0 {
+		// How many of how many, rather than "every": one dataset can fail to
+		// list while another lists fine and is simply empty, or has had every
+		// table filtered out of scope. Both end with nothing discovered, and
+		// an operator reading "every dataset failed" about a half-failure
+		// would go looking for a problem with the healthy one too.
+		// Bounded, because this error is carried back as a single stderr line
+		// and the subprocess runner reads one with a 512 KiB cap
+		// (`scanner.Buffer` in services/api/internal/runner/subprocess.go). A
+		// warehouse with many datasets failing at once could exceed that even
+		// with every individual message well under it, and a scanner that
+		// stops reading mid-line leaves the agent blocked on the write while
+		// the worker waits for it. The count is the part an operator acts on;
+		// every message is in the dataset warnings above regardless.
+		return nil, fmt.Errorf("no tables discovered; %d of %d dataset(s) failed to list: %s",
+			datasetFailureCount, len(s.datasets), boundedFailures(datasetFailures, datasetFailureCount))
+	}
+
 	return allSchemas, nil
+}
+
+// The returned error crosses a runner boundary that reads it as ONE line with
+// a 512 KiB cap (`scanner.Buffer` in services/api/internal/runner/subprocess.go),
+// and a scanner that stops mid-line leaves the agent blocked on the write while
+// the worker waits for it. So the diagnostic is bounded twice over: by how many
+// messages it carries, and by how many bytes they come to -- a provider error
+// can embed a whole response body, so three of them is not a size.
+//
+// Three is enough to show the SHAPE of the failure: the same refusal on every
+// dataset, or three different ones. 8 KiB leaves room for the log escaping
+// applied downstream and is still two orders of magnitude under the cap. The
+// full set is in the per-dataset warnings either way.
+const (
+	maxReportedDatasetFailures = 3
+	maxFailureDiagnosticBytes  = 8 * 1024
+)
+
+// clipFailure formats one dataset's failure for a record an operator reads.
+//
+// The FIRST LINE only, and then a byte clip. This text is persisted on the
+// schema-index run and served from `/schema-index/runs`, which a viewer can
+// read — and a warehouse SDK's error is not a sentence it wrote for us: the
+// BigQuery client, among others, appends the raw HTTP response body, which can
+// carry rows or whatever else the endpoint returned. The first line is where
+// every driver puts the part that is actually actionable (`pq: SSL is not
+// enabled on the server`), and dropping the rest keeps upstream payloads out
+// of a durable, lower-privilege surface. The whole error is still in the
+// agent's own warning for that dataset.
+func clipFailure(dataset string, err error) string {
+	first, _, _ := strings.Cut(err.Error(), "\n")
+	return clipRunes(fmt.Sprintf("%s: %s", dataset, strings.TrimSpace(first)),
+		maxFailureDiagnosticBytes/maxReportedDatasetFailures)
+}
+
+// clipRunes cuts to at most n bytes WITHOUT splitting a character. A byte
+// slice through a multibyte rune leaves invalid UTF-8, and this string is
+// written to MongoDB: the driver accepts it and the document is then reported
+// as nonconformant BSON, which is a worse failure than a long message.
+func clipRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
+}
+
+// boundedFailures renders the messages that were kept, clipped to
+// maxFailureDiagnosticBytes in total, and says how many were left out.
+func boundedFailures(kept []string, total int) string {
+	joined := strings.Join(kept, "; ")
+	if len(joined) > maxFailureDiagnosticBytes {
+		joined = clipRunes(joined, maxFailureDiagnosticBytes) + " (truncated)"
+	}
+	if total > len(kept) {
+		joined += fmt.Sprintf("; and %d more (see the agent log)", total-len(kept))
+	}
+	return joined
 }
 
 // perTableTimeout bounds how long a single table's schema + sample can

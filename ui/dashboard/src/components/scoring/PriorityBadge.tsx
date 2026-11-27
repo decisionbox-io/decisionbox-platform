@@ -4,6 +4,7 @@ import { Badge, HoverCard } from '@mantine/core';
 import { toneToMantineColor } from '@/components/validation/statusMeta';
 import type { Scoring } from '@/lib/api';
 import { priorityMeta } from './priorityMeta';
+import { noShrink } from './badgeStyle';
 import { ScoringBreakdown } from './ScoringBreakdown';
 
 // The priority tier, with the matrix cell that selected it one hover away.
@@ -31,6 +32,7 @@ export function PriorityBadge({
             size={size}
             variant="light"
             color={toneToMantineColor(meta.tone)}
+            style={noShrink}
             data-testid="priority-tier"
             data-tier={scoring.priority_tier ?? ''}
           >

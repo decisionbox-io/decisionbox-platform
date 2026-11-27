@@ -138,7 +138,7 @@ export default function InsightsListPage() {
     return () => clearTimeout(timer);
   }, [search, hasEmbedding, id, severityFilter]);
 
-  if (loading) return <Shell><Loader /></Shell>;
+  if (loading) return <Shell wide><Loader /></Shell>;
 
   // Filters first, then the restatement split — in that order, because a row
   // is hidden only when the row it restates is one the reader can see in this
@@ -237,7 +237,7 @@ export default function InsightsListPage() {
   ];
 
   return (
-    <Shell breadcrumb={breadcrumb}>
+    <Shell breadcrumb={breadcrumb} wide>
       <SectionHeader title="All Insights" count={shownSemanticResults ? shownSemanticResults.length : filtered.length} right={
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <SearchInput value={search} onChange={v => { setSearch(v); setPage(1); }}
@@ -283,7 +283,9 @@ export default function InsightsListPage() {
       {shownSemanticResults && shownSemanticResults.length > 0 && (
         <div style={{
           background: 'var(--db-bg-white)', border: '1px solid var(--db-border-default)',
-          borderRadius: 'var(--db-radius-lg)', overflow: 'hidden',
+          borderRadius: 'var(--db-radius-lg)',
+          // See the note on the main table below: scroll rather than clip.
+          overflowX: 'auto',
         }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
@@ -349,7 +351,13 @@ export default function InsightsListPage() {
           background: 'var(--db-bg-white)',
           border: '1px solid var(--db-border-default)',
           borderRadius: 'var(--db-radius-lg)',
-          overflow: 'hidden',
+          // Scroll, do not clip. The band labels hold their width now, so on a
+          // narrow window the table can want more than the card has -- and a
+          // card that hides the difference drops whole columns off the right
+          // edge with nothing to say it did. Feedback and half of Discovery
+          // went that way at 1280px. `hidden` was here for the rounded
+          // corners, which `auto` keeps.
+          overflowX: 'auto',
         }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
@@ -399,7 +407,7 @@ export default function InsightsListPage() {
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <SeverityCell scoring={insight.evidence_scoring} severity={insight.severity}
-                      showDriver={false} />
+                      showDriver={false} labelForm="short" />
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <AreaBadge area={insight.analysis_area} />
@@ -409,7 +417,7 @@ export default function InsightsListPage() {
                         declares no risk categories, and these say what kind
                         of thing the area finds. Renders nothing when there
                         are none. */}
-                    <RiskFlagChips scoring={insight.evidence_scoring} size="xs" />
+                    <RiskFlagChips scoring={insight.evidence_scoring} size="xs" labels="ids" />
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <InsightValidationBadge validation={insight.validation} />
@@ -418,7 +426,7 @@ export default function InsightsListPage() {
                     {insight.affected_count > 0 ? insight.affected_count.toLocaleString() : '—'}
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
-                    <ConfidenceCell scoring={insight.evidence_scoring} confidence={insight.confidence} />
+                    <ConfidenceCell scoring={insight.evidence_scoring} confidence={insight.confidence} labelForm="short" />
                   </td>
                   <td style={{ padding: '10px 12px', verticalAlign: 'top' }}>
                     <Link href={`/projects/${id}/discoveries/${insight.discoveryId}`}

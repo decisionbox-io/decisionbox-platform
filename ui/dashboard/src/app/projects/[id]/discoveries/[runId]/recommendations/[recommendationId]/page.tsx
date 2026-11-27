@@ -212,7 +212,6 @@ export default function RecommendationDetailPage() {
                   <ConfidenceCell
                     scoring={recommendation.evidence_scoring}
                     confidence={recommendation.confidence}
-                    showReason
                   />
                 </div>
               )}

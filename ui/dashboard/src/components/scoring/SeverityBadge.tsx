@@ -4,6 +4,7 @@ import { Badge, HoverCard, Text } from '@mantine/core';
 import { toneToMantineColor } from '@/components/validation/statusMeta';
 import type { Scoring } from '@/lib/api';
 import { driverSummary, notQuantified, severityMeta } from './severityMeta';
+import { noShrink } from './badgeStyle';
 import { ScoringBreakdown } from './ScoringBreakdown';
 
 // The severity band, the figure that drove it, and the arithmetic behind both.
@@ -22,12 +23,15 @@ export function SeverityBadge({
   scoring,
   size = 'sm',
   showDriver = true,
+  labelForm = 'full',
 }: {
   scoring: Scoring;
   size?: 'xs' | 'sm' | 'md';
   // Dense surfaces can drop the driver and keep it in the breakdown; every
   // surface that has room shows it, because the number is the point.
   showDriver?: boolean;
+  /** `short` drops the axis word for a surface that already names it. */
+  labelForm?: 'full' | 'short';
 }) {
   const meta = severityMeta(scoring.severity_band);
   const driver = driverSummary(scoring.severity_driver);
@@ -36,15 +40,23 @@ export function SeverityBadge({
   return (
     <HoverCard width="auto" shadow="md" withinPortal position="bottom-start" openDelay={120}>
       <HoverCard.Target>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'help' }}>
+        {/* The figure sits UNDER the band, not beside it. Beside, the two
+            compete for one column's width in a list whose rows are already
+            two or three lines tall for the headline — so the column had to be
+            wide enough for a band plus `$2,033` on one line, and bought
+            nothing with the vertical space it was already using. Stacked, the
+            column is as narrow as its widest single element and the figure
+            reads as what it is: the measurement behind the band above it. */}
+        <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2, cursor: 'help' }}>
           <Badge
             size={size}
             variant="light"
             color={toneToMantineColor(meta.tone)}
+            style={noShrink}
             data-testid="severity-band"
             data-band={scoring.severity_band ?? ''}
           >
-            {meta.label}
+            {labelForm === 'short' ? meta.short : meta.label}
           </Badge>
           {showDriver && driver !== '' && (
             <Text

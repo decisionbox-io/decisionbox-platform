@@ -4,6 +4,7 @@ import { Badge, HoverCard, Text } from '@mantine/core';
 import { toneToMantineColor } from '@/components/validation/statusMeta';
 import type { Scoring } from '@/lib/api';
 import { confidenceMeta } from './confidenceMeta';
+import { noShrink } from './badgeStyle';
 import { ScoringBreakdown } from './ScoringBreakdown';
 
 // The confidence band, its reason, and the breakdown behind both.
@@ -22,34 +23,29 @@ import { ScoringBreakdown } from './ScoringBreakdown';
 export function ConfidenceBadge({
   scoring,
   size = 'sm',
-  showReason = false,
+  labelForm = 'full',
 }: {
   scoring: Scoring;
   size?: 'xs' | 'sm' | 'md';
-  // Dense surfaces (a table row) show the pill alone and keep the reason in
-  // the breakdown; a detail card shows it beside the pill.
-  showReason?: boolean;
+  /** `short` drops the axis word for a surface that already names it. */
+  labelForm?: 'full' | 'short';
 }) {
   const meta = confidenceMeta(scoring.confidence_band);
 
   return (
     <HoverCard width="auto" shadow="md" withinPortal position="bottom-start" openDelay={120}>
       <HoverCard.Target>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'help' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', cursor: 'help' }}>
           <Badge
             size={size}
             variant="light"
             color={toneToMantineColor(meta.tone)}
+            style={noShrink}
             data-testid="confidence-band"
             data-band={scoring.confidence_band ?? ''}
           >
-            {meta.label}
+            {labelForm === 'short' ? meta.short : meta.label}
           </Badge>
-          {showReason && scoring.confidence_reason && (
-            <Text size="xs" c="dimmed" data-testid="confidence-reason">
-              {scoring.confidence_reason}
-            </Text>
-          )}
         </span>
       </HoverCard.Target>
       <HoverCard.Dropdown>

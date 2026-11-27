@@ -2,9 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import {
-  Accordion, Badge, Box, Button, Card, Code, Drawer, Grid, Group, Loader, Stack, Table, Text, Title,
-} from '@mantine/core';
+import { Accordion, Badge, Box, Button, Card, Code, Drawer, Grid, Group, Loader, SimpleGrid, Stack, Table, Text, Title } from '@mantine/core';
 import {
   IconAlertTriangle, IconArrowLeft, IconCode, IconDatabase, IconSearch,
 } from '@tabler/icons-react';
@@ -264,7 +262,19 @@ export default function InsightDetailPage() {
             numbers right after the description. */}
         <Card withBorder p="lg">
           <Title order={4} mb="sm">Assessment</Title>
-          <Group gap="xl" align="flex-start">
+          {/* A grid, not a wrapping row. As a `Group` these items were
+              content-sized inside a card that stays 679px wide at every
+              viewport, so the longest of them decided where the row broke and
+              the same panel rendered in two ragged rows for one insight and
+              three for the next. A grid puts each axis in the same place every
+              time, and the segment, which is prose, gets its own row
+              underneath rather than competing for one.
+
+              Business risk is LAST because it is the one axis a document can
+              lack: anywhere earlier, its absence slides the axes after it into
+              each other's places, so two findings side by side would carry
+              confidence and priority in different corners. */}
+          <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xl" verticalSpacing="md">
             <div>
               <Text size="xs" c="dimmed">Severity</Text>
               {/* The band with the figure that drove it, and the derivation
@@ -272,6 +282,18 @@ export default function InsightDetailPage() {
                   its stored word marked legacy instead — nothing is
                   recalculated. */}
               <SeverityCell scoring={insight.evidence_scoring} severity={insight.severity} size="md" />
+            </div>
+            <div>
+              <Text size="xs" c="dimmed">Confidence</Text>
+              <ConfidenceCell
+                scoring={insight.evidence_scoring}
+                confidence={insight.confidence}
+                size="md"
+              />
+            </div>
+            <div>
+              <Text size="xs" c="dimmed">Priority</Text>
+              <PriorityCell scoring={insight.evidence_scoring} size="md" />
             </div>
             {/* What KIND of risk this is, beside how much it matters. Derived
                 from the analysis area's risk categories, so it renders
@@ -284,26 +306,13 @@ export default function InsightDetailPage() {
                 <RiskFlagChips scoring={insight.evidence_scoring} size="md" />
               </div>
             ) : null}
-            <div>
-              <Text size="xs" c="dimmed">Confidence</Text>
-              <ConfidenceCell
-                scoring={insight.evidence_scoring}
-                confidence={insight.confidence}
-                size="md"
-                showReason
-              />
+          </SimpleGrid>
+          {insight.target_segment && (
+            <div style={{ marginTop: 'var(--mantine-spacing-md)' }}>
+              <Text size="xs" c="dimmed">Target Segment</Text>
+              <Text size="sm">{insight.target_segment}</Text>
             </div>
-            <div>
-              <Text size="xs" c="dimmed">Priority</Text>
-              <PriorityCell scoring={insight.evidence_scoring} size="md" />
-            </div>
-            {insight.target_segment && (
-              <div>
-                <Text size="xs" c="dimmed">Target Segment</Text>
-                <Text size="sm">{insight.target_segment}</Text>
-              </div>
-            )}
-          </Group>
+          )}
         </Card>
 
         {/* How this was scored — the full derivation of all three labels, on

@@ -35,9 +35,19 @@ function humanise(id: string): string {
 export function RiskFlagChips({
   scoring,
   size = 'sm',
+  labels = 'words',
 }: {
   scoring: Scoring | undefined;
   size?: 'xs' | 'sm' | 'md';
+  /**
+   * How a category reads. `words` is the humanised form ("Operational cost"),
+   * which is right where the chip sits in prose -- the detail page and the
+   * derivation. `ids` is the category id as authored ("operational-cost"),
+   * which is right in a LIST, where the chip sits next to the analysis-area
+   * id and two spellings of the same kind of slug, one shouted and one not,
+   * read as two different kinds of thing.
+   */
+  labels?: 'words' | 'ids';
 }) {
   const flags = scoring?.risk_flags;
   if (!flags || flags.length === 0) {
@@ -47,8 +57,32 @@ export function RiskFlagChips({
   return (
     <Group gap="xs" data-testid="risk-flags">
       {flags.map((flag) => (
-        <Badge key={flag} variant="light" color="gray" size={size} data-testid={`risk-flag-${flag}`}>
-          {humanise(flag)}
+        <Badge
+          key={flag}
+          variant="light"
+          color="gray"
+          size={size}
+          // An id is quoted, not announced: uppercasing `operational-cost`
+          // would make it a third spelling rather than the one it is.
+          tt={labels === 'ids' ? 'none' : undefined}
+          // NOT the band labels' width floor. Those are a closed vocabulary
+          // of short words, so a floor is safe; a category id is whatever a
+          // pack's author wrote, and one long enough overflows its cell
+          // instead of giving way -- `customer_identity_and_access_management`
+          // ran 100px past the card's right edge in the assessment panel.
+          // These wrap inside the cell instead, so a long id costs a line
+          // rather than disappearing.
+          // A pill is a shape for one line. Mantine's badge radius is
+          // effectively `height/2`, so the moment an id wraps the curve eats
+          // the ends of the first and last lines — and the root clips, so what
+          // it eats is gone rather than overflowing visibly. A rounded
+          // rectangle with real vertical padding is the shape for a label
+          // whose length is a pack author's choice.
+          style={{ height: 'auto', whiteSpace: 'normal', borderRadius: 'var(--db-radius)', paddingTop: 2, paddingBottom: 2 }}
+          styles={{ label: { whiteSpace: 'normal', overflow: 'visible', textOverflow: 'clip', overflowWrap: 'anywhere' } }}
+          data-testid={`risk-flag-${flag}`}
+        >
+          {labels === 'ids' ? flag : humanise(flag)}
         </Badge>
       ))}
     </Group>
