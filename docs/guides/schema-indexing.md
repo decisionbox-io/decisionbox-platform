@@ -273,6 +273,18 @@ A dataset that cannot be listed does **not** stop the others: if another
 dataset contributes tables, indexing completes with what it found and no error
 is raised. The failure count is only reported when nothing was discovered
 anywhere, because that is the only case where the failure is the whole story.
+Only the first three provider messages travel in the error — the rest are in
+the agent's per-dataset warnings, because this text crosses a runner boundary
+that reads it as a single bounded line.
+
+One more path ends at the **generic** message: a dataset can list its tables
+successfully and then fail to read every one of them — a permission that
+covers the catalog but not the tables, a sampling query the warehouse refuses.
+Those per-table failures are logged and skipped individually rather than
+collected, so the run ends with nothing discovered and no listing failure to
+report. If the generic message appears and the datasets are plainly correct,
+read the agent log for `Failed to discover table, skipping` before concluding
+the warehouse is empty.
 
 ## Qdrant is required
 

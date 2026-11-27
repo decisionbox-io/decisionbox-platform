@@ -24,9 +24,17 @@ describe('both insight lists carry the same per-finding chips', () => {
     expect(readFileSync(path, 'utf8')).toContain('AreaBadge');
   });
 
-  it.each(Object.entries(pages))('%s renders the business-risk flags', (_name, path) => {
+  // Wired to the row, not merely present: `RiskFlagChips` renders null when it
+  // has no scoring, so a list could carry the tag and still show nothing. The
+  // chips' own rendering -- including that `labels="ids"` quotes the category
+  // verbatim -- is covered in RiskConfig.test.tsx; what cannot be covered
+  // there is whether a page calls it at all, which is the defect this guards.
+  it.each(Object.entries(pages))('%s renders the business-risk flags from the row', (_name, path) => {
     const src = readFileSync(path, 'utf8');
-    expect(src).toContain('<RiskFlagChips');
+    const chip = src.slice(src.indexOf('<RiskFlagChips'));
+    const props = chip.slice(0, chip.indexOf('/>'));
+    expect(props).toContain('<RiskFlagChips');
+    expect(props).toMatch(/scoring=\{[A-Za-z]+\.evidence_scoring\}/);
   });
 
   // And reads them the same way. A list is where the chip sits beside the

@@ -269,7 +269,11 @@ export default function InsightDetailPage() {
               panel rendered in two ragged rows for one insight and three for
               the next. Four fixed columns put each axis in the same place
               every time, and the segment, which is prose, gets its own row
-              underneath rather than competing for one.
+              underneath rather than competing for one. Business risk is LAST
+              for the same reason: it is the one axis a document can lack, and
+              anywhere earlier its absence slides the axes after it into each
+              other's places -- so two findings side by side would carry
+              confidence and priority in different corners.
 
               TWO columns, not four: this card is 679px, and the confidence
               cell carries its badge AND the reason sentence inline -- about
@@ -285,17 +289,6 @@ export default function InsightDetailPage() {
                   recalculated. */}
               <SeverityCell scoring={insight.evidence_scoring} severity={insight.severity} size="md" />
             </div>
-            {/* What KIND of risk this is, beside how much it matters. Derived
-                from the analysis area's risk categories, so it renders
-                nothing at all on a deployment whose pack declares none —
-                rather than an empty row that would read as "no business
-                risk". */}
-            {insight.evidence_scoring?.risk_flags?.length ? (
-              <div>
-                <Text size="xs" c="dimmed">Business risk</Text>
-                <RiskFlagChips scoring={insight.evidence_scoring} size="md" />
-              </div>
-            ) : null}
             <div>
               <Text size="xs" c="dimmed">Confidence</Text>
               <ConfidenceCell
@@ -308,6 +301,17 @@ export default function InsightDetailPage() {
               <Text size="xs" c="dimmed">Priority</Text>
               <PriorityCell scoring={insight.evidence_scoring} size="md" />
             </div>
+            {/* What KIND of risk this is, beside how much it matters. Derived
+                from the analysis area's risk categories, so it renders
+                nothing at all on a deployment whose pack declares none —
+                rather than an empty row that would read as "no business
+                risk". */}
+            {insight.evidence_scoring?.risk_flags?.length ? (
+              <div>
+                <Text size="xs" c="dimmed">Business risk</Text>
+                <RiskFlagChips scoring={insight.evidence_scoring} size="md" />
+              </div>
+            ) : null}
           </SimpleGrid>
           {insight.target_segment && (
             <div style={{ marginTop: 'var(--mantine-spacing-md)' }}>

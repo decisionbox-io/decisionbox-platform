@@ -182,12 +182,32 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 		// table filtered out of scope. Both end with nothing discovered, and
 		// an operator reading "every dataset failed" about a half-failure
 		// would go looking for a problem with the healthy one too.
-		return nil, fmt.Errorf("no tables discovered; %d of %d dataset(s) failed to list: %s",
-			len(datasetFailures), len(s.datasets), strings.Join(datasetFailures, "; "))
+		// Bounded, because this error is carried back as a single stderr line
+		// and the subprocess runner reads one with a 512 KiB cap
+		// (`scanner.Buffer` in services/api/internal/runner/subprocess.go). A
+		// warehouse with many datasets failing at once could exceed that even
+		// with every individual message well under it, and a scanner that
+		// stops reading mid-line leaves the agent blocked on the write while
+		// the worker waits for it. The count is the part an operator acts on;
+		// every message is in the dataset warnings above regardless.
+		shown := datasetFailures
+		suffix := ""
+		if len(shown) > maxReportedDatasetFailures {
+			shown = shown[:maxReportedDatasetFailures]
+			suffix = fmt.Sprintf("; and %d more (see the agent log)", len(datasetFailures)-maxReportedDatasetFailures)
+		}
+		return nil, fmt.Errorf("no tables discovered; %d of %d dataset(s) failed to list: %s%s",
+			len(datasetFailures), len(s.datasets), strings.Join(shown, "; "), suffix)
 	}
 
 	return allSchemas, nil
 }
+
+// maxReportedDatasetFailures caps how many provider messages travel in the
+// returned error. Three is enough to show the shape of the failure -- the same
+// refusal on every dataset, or three different ones -- and the full set is in
+// the per-dataset warnings either way.
+const maxReportedDatasetFailures = 3
 
 // perTableTimeout bounds how long a single table's schema + sample can
 // take. A rogue MSSQL catalog view or a pathological linked-server table
