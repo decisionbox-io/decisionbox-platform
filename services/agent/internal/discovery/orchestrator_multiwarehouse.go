@@ -604,10 +604,12 @@ func (o *Orchestrator) buildValidationRouting(dc *datasourceContext, schemaProvi
 			continue
 		}
 		whByDS[id] = verifier.WarehouseInfo{
-			Dialect:     prov.SQLDialect(),
-			Dataset:     prov.GetDataset(),
-			FilterField: wh.FilterField,
-			FilterValue: wh.FilterValue,
+			Dialect:       prov.SQLDialect(),
+			QueryLanguage: gowarehouse.NonSQLLanguageOf(wh.Provider),
+			QueryGuide:    gowarehouse.QueryGuideOf(wh.Provider),
+			Dataset:       prov.GetDataset(),
+			FilterField:   wh.FilterField,
+			FilterValue:   wh.FilterValue,
 		}
 		exByDS[id] = &verifier.DefaultExecutor{
 			SchemaProvider:      schemaProvider,

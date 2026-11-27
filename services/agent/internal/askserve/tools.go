@@ -22,19 +22,20 @@ import (
 // single-datasource / pinned turn the argument is omitted so behaviour is
 // identical to the single-warehouse path.
 //
-// hasCube says whether any datasource the turn can reach has no tables. The
-// tool description is the most concrete instruction the model gets — more
-// concrete than the system prompt, and it arrives attached to the argument it
-// governs — so a description that says "SELECT / CTE only" is not softened by
-// prose elsewhere saying otherwise. It is branched rather than generalised so a
-// turn of only SQL datasources sends a byte-identical definition.
-func toolQueryData(multi, hasCube bool) gollm.ToolDefinition {
+// shapes says what the turn can reach. The tool description is the most
+// concrete instruction the model gets — more concrete than the system prompt,
+// and it arrives attached to the argument it governs — so a description that
+// says "SELECT / CTE only" is not softened by prose elsewhere saying
+// otherwise. It is branched rather than generalised so a turn of only SQL
+// datasources sends a byte-identical definition.
+func toolQueryData(multi bool, shapes sourceShapes) gollm.ToolDefinition {
 	desc := "Run one read-only SQL query (SELECT / CTE only) against the data warehouse and observe a summary of the result " +
 		"(row count, columns, and a small row preview). This is how you gather evidence. For totals, counts, or distributions write " +
 		"aggregate SQL (COUNT/SUM/AVG/GROUP BY) rather than paging raw rows. If you don't yet know the tables, start with a discovery " +
 		"query against INFORMATION_SCHEMA."
 	queryDesc := "The read-only SQL to execute."
-	if hasCube {
+	switch {
+	case shapes.anyCube:
 		desc = "Run one read-only query against a datasource and observe a summary of the result " +
 			"(row count, columns, and a small row preview). This is how you gather evidence. Write it in that datasource's own query " +
 			"language — not every datasource here is SQL, and the datasource block in the system prompt states which language each one " +
@@ -42,6 +43,13 @@ func toolQueryData(multi, hasCube bool) gollm.ToolDefinition {
 			"(COUNT/SUM/AVG/GROUP BY) rather than paging raw rows; if you don't yet know its tables, start with a discovery query " +
 			"against INFORMATION_SCHEMA. A datasource marked NO TABLES accepts no SQL at all — use search_tables to see the metrics " +
 			"and dimensions it offers."
+		queryDesc = "The read-only query to execute, written in the target datasource's query language."
+	case shapes.nonSQL():
+		desc = "Run one read-only query against a datasource and observe a summary of the result " +
+			"(row count, columns, and a small row preview). This is how you gather evidence. Write it in that datasource's own query " +
+			"language, as the datasource block in the system prompt states — not every datasource is SQL. Make the datasource aggregate " +
+			"for totals, counts, or distributions rather than paging raw rows; against a SQL datasource that means SELECT / CTE only, " +
+			"with COUNT/SUM/AVG/GROUP BY. If you don't yet know the tables, use search_tables and lookup_schema."
 		queryDesc = "The read-only query to execute, written in the target datasource's query language."
 	}
 	props := map[string]interface{}{
@@ -268,7 +276,7 @@ func toolDecline() gollm.ToolDefinition {
 // and withholds lookup_schema entirely when none of them has tables for it to
 // look up.
 func toolsForPhase(grounded, hasSchema, hasInsights, hasKnowledge, multi bool, shapes sourceShapes, chartsEnabled, hasChartableQuery bool, mutations []gollm.ToolDefinition) []gollm.ToolDefinition {
-	tools := []gollm.ToolDefinition{toolQueryData(multi, shapes.anyCube)}
+	tools := []gollm.ToolDefinition{toolQueryData(multi, shapes)}
 	if hasSchema {
 		// lookup_schema returns columns, so it can only fail when nothing
 		// reachable has any. Leaving it advertised is not merely untidy: while

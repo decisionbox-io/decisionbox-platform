@@ -153,36 +153,44 @@ func (r sqlRunner) RowCap(query string) (int, bool) {
 // the consequence is that a deployment with middleware registered silently stops
 // attaching row-cap caveats, and a capped result looks like the whole population
 // again, which is the defect that motivated the interface.
-//
-// Unwrapping past a wrapper is safe for THIS capability specifically: RowCap
-// inspects a query string and returns a number. It opens no connection, runs
-// nothing, and can bypass no control a middleware imposes, so reaching the
-// dialect knowledge behind the wrapper cannot reach anything else.
-//
-// A strict improvement rather than a guarantee: a middleware that neither
-// implements RowCapInspector nor exposes Unwrap still yields no caveat, exactly as
-// before. The durable fix is for the middleware contract to require forwarding,
-// which cannot be imposed from here.
 func rowCapInspectorOf(p Provider) (RowCapInspector, bool) {
-	// Bounded so a wrapper that returns itself cannot spin.
+	return FindCapability[RowCapInspector](p)
+}
+
+// FindCapability finds the nearest value in v's Unwrap chain that implements
+// T: v itself, then each Provider reached through Unwrap() Provider.
+//
+// It exists for the optional capabilities a middleware erases by wrapping —
+// the wrapper only has to satisfy Provider. Use it ONLY for a capability that
+// runs nothing: one that inspects a query string, builds one, or lists what
+// the source already describes (RowCapInspector, RowOffsetInspector,
+// SampleQueryBuilder, DefinitionSource). Reaching past a wrapper for such a
+// capability bypasses no control the wrapper imposes. Never use it to reach
+// Query, RunQuery or anything else that executes: that would be a way around
+// the middleware, which is why AsQueryRunner deliberately does not unwrap.
+//
+// Bounded, so a wrapper that returns itself cannot spin. A wrapper that
+// neither implements T nor exposes Unwrap still ends the search, as before.
+func FindCapability[T any](v any) (T, bool) {
+	var zero T
 	for range 16 {
-		if p == nil {
-			return nil, false
+		if v == nil {
+			return zero, false
 		}
-		if i, ok := p.(RowCapInspector); ok {
-			return i, true
+		if c, ok := v.(T); ok {
+			return c, true
 		}
-		u, ok := p.(interface{ Unwrap() Provider })
+		u, ok := v.(interface{ Unwrap() Provider })
 		if !ok {
-			return nil, false
+			return zero, false
 		}
 		next := u.Unwrap()
-		if next == p {
-			return nil, false
+		if next == nil || any(next) == v {
+			return zero, false
 		}
-		p = next
+		v = next
 	}
-	return nil, false
+	return zero, false
 }
 
 // Unwrap exposes the adapted Provider so callers that still need the
@@ -256,6 +264,17 @@ func NonSQLLanguageOf(providerSlug string) string {
 	return "this source's own query format"
 }
 
+// QueryGuideOf returns the query guide a non-SQL provider declared, by slug,
+// or "" for a SQL provider, an unregistered slug, or a source that declared
+// none.
+func QueryGuideOf(providerSlug string) string {
+	if NonSQLLanguageOf(providerSlug) == "" {
+		return ""
+	}
+	meta, _ := GetProviderMeta(providerSlug)
+	return meta.QueryGuide
+}
+
 // Anchoring returns a pointer to v, for declaring ProviderMeta.CanAnchor.
 //
 // Only a provider that cannot anchor needs to say so:
@@ -285,6 +304,14 @@ type Capability struct {
 	// itself. Nil resolves to true via Anchors(); declare it only to say false,
 	// using Anchoring(false).
 	CanAnchor *bool `json:"can_anchor,omitempty"`
+
+	// QueryGuide is a short reference for writing one query in QueryLanguage:
+	// the request's format and the rules a model would otherwise have to guess.
+	// Shown beside the language name wherever a model writes a query against
+	// this source. A language name alone does not say how to write in it, and
+	// a source whose language is its own request format is otherwise learned
+	// one failed query at a time. Empty for SQL, which needs no guide.
+	QueryGuide string `json:"query_guide,omitempty"`
 }
 
 // Language returns the declared query language, defaulting to "SQL".

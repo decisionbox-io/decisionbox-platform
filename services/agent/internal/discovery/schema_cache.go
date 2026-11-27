@@ -79,6 +79,29 @@ func SearchAuthority(schemas map[string]models.TableSchema, catalogRefs []string
 	return set
 }
 
+// SearchAdmits reports whether a search hit is one the datasource whose
+// authority set this is may return.
+//
+// A table or catalog item must be named in the set. A business definition is
+// indexed beside its dataset's tables and has no list of its own: it is
+// admitted exactly when its dataset still has a table in the set, so it goes
+// when they go — a removed datasource, or a dataset scoped out — and is
+// rewritten with them on every index run.
+func SearchAdmits(authority map[string]bool, kind, ref, dataset string) bool {
+	if !warehouse.IsDefinitionKind(kind) {
+		return authority[ref]
+	}
+	if dataset == "" {
+		return false
+	}
+	for table := range authority {
+		if datasetFromQualified(table) == dataset {
+			return true
+		}
+	}
+	return false
+}
+
 // WarehouseConfigHash is warehouse.ConfigHash for this package's config type.
 //
 // The hash itself moved to the warehouse package because the collection it

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -100,5 +101,28 @@ func TestSearchAuthority_EitherHalfMayBeEmpty(t *testing.T) {
 	neither := SearchAuthority(nil, nil)
 	if len(neither) != 0 {
 		t.Errorf("empty authority = %v, want nothing authorised", neither)
+	}
+}
+
+// TestSearchAdmits_Definitions: a business definition is indexed beside its
+// dataset's tables and admitted exactly while that dataset has a table in the
+// authority — so it disappears with them rather than outliving them.
+func TestSearchAdmits_Definitions(t *testing.T) {
+	authority := SearchAuthority(map[string]models.TableSchema{"app1.Orders": {}}, []string{"sessions"})
+	for _, tc := range []struct {
+		kind, ref, dataset string
+		want               bool
+	}{
+		{gowarehouse.ItemKindTable, "app1.Orders", "app1", true},
+		{gowarehouse.ItemKindTable, "app1.Gone", "app1", false},
+		{gowarehouse.ItemKindMetric, "sessions", "", true},
+		{gowarehouse.DefinitionMeasure, "Revenue", "app1", true},
+		{gowarehouse.DefinitionDimension, "Customer", "app1", true},
+		{gowarehouse.DefinitionMeasure, "Revenue", "app2", false}, // its dataset has no tables here
+		{gowarehouse.DefinitionMeasure, "Revenue", "", false},
+	} {
+		if got := SearchAdmits(authority, tc.kind, tc.ref, tc.dataset); got != tc.want {
+			t.Errorf("SearchAdmits(%q, %q, %q) = %v, want %v", tc.kind, tc.ref, tc.dataset, got, tc.want)
+		}
 	}
 }

@@ -77,6 +77,10 @@ type CacheSchemaProvider struct {
 	// than trusted blindly.
 	catalogRefs map[string]map[string]bool
 
+	// tableDatasets is every dataset with a table in schemas: the authority
+	// for business-definition hits, which are indexed with those tables.
+	tableDatasets map[string]bool
+
 	// tableWarehouse maps a canonical "dataset.table" key to the
 	// datasource (warehouse) id that owns it. Set only on a multi-
 	// warehouse run so Lookup can tell the model which datasource_id to
@@ -186,6 +190,10 @@ func NewCacheSchemaProvider(opts CacheSchemaProviderOptions) (*CacheSchemaProvid
 		p.columnLimit = defaultLookupColumnLimit
 	}
 	p.refIndex = buildRefIndex(opts.Schemas)
+	p.tableDatasets = make(map[string]bool)
+	for table := range opts.Schemas {
+		p.tableDatasets[datasetFromQualified(table)] = true
+	}
 	return p, nil
 }
 
@@ -297,11 +305,18 @@ func (p *CacheSchemaProvider) Search(ctx context.Context, query string, k int) (
 		// return items from a datasource that has since been removed, because
 		// the shared vector collection keeps points until something overwrites
 		// them.
-		if h.Blurb.Kind == gowarehouse.ItemKindTable {
+		switch {
+		case h.Blurb.Kind == gowarehouse.ItemKindTable:
 			if _, ok := p.schemas[h.Blurb.Table]; !ok {
 				continue
 			}
-		} else if !p.catalogOffers(h.Blurb.WarehouseID, h.Blurb.Table) {
+		case gowarehouse.IsDefinitionKind(h.Blurb.Kind):
+			// Indexed beside its dataset's tables; admitted with them (see
+			// SearchAdmits).
+			if !p.tableDatasets[h.Blurb.Dataset] {
+				continue
+			}
+		case !p.catalogOffers(h.Blurb.WarehouseID, h.Blurb.Table):
 			continue
 		}
 		out = append(out, ai.SearchHit{

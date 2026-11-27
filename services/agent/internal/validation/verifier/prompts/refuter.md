@@ -40,11 +40,7 @@ Use `read_step_rows` first (verifier-vetted snapshot), then `query_warehouse` fo
 
 Same four keys as the verifier — `lookup_schema`, `query_warehouse`, `read_step_rows`, `submit_verdict`. One key per response. Same shape rules:
 
-```json
-{"query_warehouse": "SELECT * FROM `dataset.table` WHERE …"}
-```
-
-`query_warehouse` is a BARE SQL STRING. Not an object, not nested. Just the SQL.
+{{QUERY_CONTRACT}}
 
 ```json
 {"read_step_rows": {"step_id": 39, "offset": 0, "limit": 50}}

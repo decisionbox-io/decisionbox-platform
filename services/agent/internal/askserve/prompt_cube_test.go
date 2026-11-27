@@ -57,7 +57,7 @@ func promptsFor(routing turnRouting) map[string]string {
 	return map[string]string{
 		"text prompt":   buildSystemPrompt(rt, routing, cfg, false, nil),
 		"tools prompt":  buildSystemPromptForTools(rt, routing, cfg, false, false, nil),
-		"query_data":    toolQueryData(routing.multi, routing.shapes().anyCube).Description,
+		"query_data":    toolQueryData(routing.multi, routing.shapes()).Description,
 		"search_tables": toolSearchTables(routing.shapes().anyCube).Description,
 	}
 }
@@ -664,7 +664,7 @@ func toolFor(t *testing.T, name string, multi, hasCube bool) gollm.ToolDefinitio
 	t.Helper()
 	switch name {
 	case string(actQuery):
-		return toolQueryData(multi, hasCube)
+		return toolQueryData(multi, sourceShapes{anyCube: hasCube})
 	case string(actSearch):
 		return toolSearchTables(hasCube)
 	}
@@ -687,7 +687,7 @@ func topKDescription(t *testing.T, td gollm.ToolDefinition) string {
 // elsewhere cannot soften.
 func TestToolQueryData_DescribesWhatTheSourceAccepts(t *testing.T) {
 	for _, multi := range []bool{false, true} {
-		sqlTool := toolQueryData(multi, false)
+		sqlTool := toolQueryData(multi, sourceShapes{})
 		if !strings.HasPrefix(sqlTool.Description, "Run one read-only SQL query (SELECT / CTE only) against the data warehouse") {
 			t.Errorf("multi=%v: the SQL tool description changed: %q", multi, sqlTool.Description)
 		}
@@ -695,7 +695,7 @@ func TestToolQueryData_DescribesWhatTheSourceAccepts(t *testing.T) {
 			t.Errorf("multi=%v: SQL query argument described as %q", multi, got)
 		}
 
-		cubeTool := toolQueryData(multi, true)
+		cubeTool := toolQueryData(multi, sourceShapes{anyCube: true})
 		if strings.Contains(cubeTool.Description, "Run one read-only SQL query (SELECT / CTE only)") {
 			t.Errorf("multi=%v: the tool still demands SQL of a source with no tables: %q", multi, cubeTool.Description)
 		}

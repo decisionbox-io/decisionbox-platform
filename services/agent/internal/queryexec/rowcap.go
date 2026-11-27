@@ -16,7 +16,9 @@ import (
 // Returns the caveats unchanged when the runner cannot recognise a cap, when
 // the query has none, or when fewer rows came back than the cap allowed.
 func appendRowCapCaveat(caveats []gowarehouse.QualityCaveat, runner gowarehouse.QueryRunner, query string, rowCount int) []gowarehouse.QualityCaveat {
-	inspector, ok := runner.(gowarehouse.RowCapInspector)
+	// Through the unwrap chain: a middleware that re-exposes QueryRunner
+	// still hides the inspector of the provider it wraps.
+	inspector, ok := gowarehouse.FindCapability[gowarehouse.RowCapInspector](runner)
 	if !ok {
 		return caveats
 	}
@@ -49,32 +51,5 @@ func appendRowCapCaveat(caveats []gowarehouse.QualityCaveat, runner gowarehouse.
 // through the same unwrap chain RowCap uses -- middleware erases an optional
 // capability unless it re-exposes it.
 func rowOffsetInspectorOf(runner gowarehouse.QueryRunner) (gowarehouse.RowOffsetInspector, bool) {
-	if i, ok := runner.(gowarehouse.RowOffsetInspector); ok {
-		return i, true
-	}
-	type unwrapper interface{ Unwrap() gowarehouse.Provider }
-	var p gowarehouse.Provider
-	if u, ok := runner.(unwrapper); ok {
-		p = u.Unwrap()
-	} else {
-		return nil, false
-	}
-	for range 16 {
-		if p == nil {
-			return nil, false
-		}
-		if i, ok := p.(gowarehouse.RowOffsetInspector); ok {
-			return i, true
-		}
-		u, ok := p.(unwrapper)
-		if !ok {
-			return nil, false
-		}
-		next := u.Unwrap()
-		if next == p {
-			return nil, false
-		}
-		p = next
-	}
-	return nil, false
+	return gowarehouse.FindCapability[gowarehouse.RowOffsetInspector](runner)
 }

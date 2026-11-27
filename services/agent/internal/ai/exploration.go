@@ -72,6 +72,7 @@ type ExplorationEngine struct {
 	// nonSQLLanguage / cubeSource describe the sole routable datasource
 	// when it is not SQL (see ExplorationEngineOptions.NonSQLLanguage).
 	nonSQLLanguage string
+	queryGuide     string
 	cubeSource     bool
 	// tableDatasource maps a canonical qualified "dataset.table" → the
 	// datasource id that owns it, on a multi-warehouse run. Used to reject
@@ -338,7 +339,11 @@ type ExplorationEngineOptions struct {
 	// the action format the engine states, so a non-SQL source is never shown
 	// a SQL example.
 	NonSQLLanguage string
-	CubeSource     bool
+	// QueryGuide is that language's format reference
+	// (warehouse.QueryGuideOf), or empty. Stated in the opening message so
+	// the first query is written in the source's format, not guessed.
+	QueryGuide string
+	CubeSource bool
 
 	// SchemaProvider serves on-demand schema actions issued by the LLM
 	// during a run (lookup_schema for L1 detail, search_tables for
@@ -529,6 +534,7 @@ func NewExplorationEngine(opts ExplorationEngineOptions) *ExplorationEngine {
 		primaryDatasource: primaryDS,
 		datasourceIDs:     datasourceIDs,
 		nonSQLLanguage:    opts.NonSQLLanguage,
+		queryGuide:        opts.QueryGuide,
 		cubeSource:        opts.CubeSource,
 		tableDatasource:   opts.TableDatasource,
 		maxSteps:          opts.MaxSteps,
@@ -2041,6 +2047,7 @@ func (e *ExplorationEngine) buildInitialMessage(explorationCtx ExplorationContex
 	fmt.Fprintf(&msg, "You have up to %d exploration steps. Follow the rules in the system prompt.\n", e.maxSteps)
 	menu, _ := explorationActionMenu(e.correlationsOffered(), e.menuSource())
 	msg.WriteString("Every reply is the next action: " + menu + "\n")
+	msg.WriteString(nonSQLContract(e.menuSource(), e.queryGuide))
 
 	if e.schemaProvider != nil {
 		fmt.Fprintf(&msg,
@@ -2061,6 +2068,26 @@ func (e *ExplorationEngine) buildInitialMessage(explorationCtx ExplorationContex
 	}
 
 	return msg.String()
+}
+
+// nonSQLContract states, once and from the engine, how queries are written
+// when the run's only datasource is not SQL. It is engine-owned because the
+// system prompt is a domain pack — shipped, generated, or edited per project —
+// and packs routinely carry a SQL dialect line and SELECT examples. This block
+// tells the model those are guidance on WHAT to analyse, not syntax, and
+// gives it the source's own format. Empty for a SQL run, which leaves the
+// opening message as it was.
+func nonSQLContract(src actionMenuSource, guide string) string {
+	if src.multi || src.nonSQL == "" {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\nQUERY LANGUAGE: this datasource's queries are written in %s, not SQL — it rejects SQL. "+
+		"Where the instructions above name a SQL dialect or show SQL examples, read them as guidance on what to analyse, never as syntax.\n", src.nonSQL)
+	if guide != "" {
+		fmt.Fprintf(&b, "How to write a query in %s:\n%s\n", src.nonSQL, strings.TrimSpace(guide))
+	}
+	return b.String()
 }
 
 // normaliseRefs canonicalises and dedupes the table refs an LLM emits

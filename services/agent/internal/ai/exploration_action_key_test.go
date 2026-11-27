@@ -139,3 +139,26 @@ func TestActionMenu_SoleNonSQLSourceIsNotTaughtSQL(t *testing.T) {
 		t.Errorf("a SQL source keeps the SQL example:\n%s", msg)
 	}
 }
+
+// The engine states the query contract and the source's own format in the
+// opening message, because the system prompt is a domain pack that may carry
+// a SQL dialect line and SQL examples. A SQL run's opening message is
+// unchanged.
+func TestInitialMessage_NonSQLContract(t *testing.T) {
+	src := NewExplorationEngine(ExplorationEngineOptions{MaxSteps: 7, NonSQLLanguage: "Hypercube request", QueryGuide: "Write one JSON object."})
+	msg := src.buildInitialMessage(ExplorationContext{})
+	for _, want := range []string{"QUERY LANGUAGE: this datasource's queries are written in Hypercube request, not SQL", "How to write a query in Hypercube request:\nWrite one JSON object."} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("opening message lacks %q:\n%s", want, msg)
+		}
+	}
+	sql := NewExplorationEngine(ExplorationEngineOptions{MaxSteps: 7, QueryGuide: "ignored for SQL"})
+	if msg := sql.buildInitialMessage(ExplorationContext{}); strings.Contains(msg, "QUERY LANGUAGE") || strings.Contains(msg, "ignored for SQL") {
+		t.Errorf("a SQL run's opening message changed:\n%s", msg)
+	}
+	multi := NewExplorationEngine(ExplorationEngineOptions{MaxSteps: 7, NonSQLLanguage: "Hypercube request"})
+	multi.datasourceIDs = []string{"a", "b"}
+	if msg := multi.buildInitialMessage(ExplorationContext{}); strings.Contains(msg, "QUERY LANGUAGE") {
+		t.Errorf("a multi-datasource run must not be told one language for all:\n%s", msg)
+	}
+}

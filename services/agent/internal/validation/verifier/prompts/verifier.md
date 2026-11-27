@@ -24,11 +24,7 @@ Emit EXACTLY ONE of the following four keys per response, with EXACTLY the paylo
 {"lookup_schema": ["dataset.table_a", "dataset.table_b"]}
 ```
 
-```json
-{"query_warehouse": "SELECT col, COUNT(*) AS n FROM `dataset.table` GROUP BY col"}
-```
-
-`query_warehouse` is a BARE SQL STRING. NOT `{"sql": "..."}`, NOT `{"query": "..."}`. Just the SQL.
+{{QUERY_CONTRACT}}
 
 ```json
 {"read_step_rows": {"step_id": 25, "offset": 0, "limit": 50}}

@@ -240,7 +240,7 @@ func (s *SchemaDiscovery) getSampleData(ctx context.Context, dataset, tableName 
 	// remains potentially non-portable (T-SQL uses TOP — providers that
 	// need it implement SampleQueryBuilder explicitly).
 	var query string
-	if b, ok := s.warehouse.(gowarehouse.SampleQueryBuilder); ok {
+	if b, ok := gowarehouse.SampleQueryBuilderOf(s.warehouse); ok {
 		query = b.SampleQuery(dataset, tableName, s.filter, sampleRowLimit)
 	} else {
 		query = fmt.Sprintf("SELECT * FROM %s %s LIMIT %d", s.warehouse.QuoteRef(dataset, tableName), s.filter, sampleRowLimit)

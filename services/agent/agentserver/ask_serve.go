@@ -235,7 +235,7 @@ func runAskServe(cfg *config.Config) error {
 						wid = models.DefaultWarehouseID
 					}
 					tset, known := whTables[wid]
-					if !known || !tset[h.Blurb.Table] {
+					if !known || !discovery.SearchAdmits(tset, h.Blurb.Kind, h.Blurb.Table, h.Blurb.Dataset) {
 						// Stale index for a removed/unindexed datasource, or a
 						// table no longer in the cached schema — treat the cache
 						// as the authority so search and lookup stay consistent.
@@ -297,6 +297,9 @@ func runAskServe(cfg *config.Config) error {
 				FilterValue: wh.FilterValue,
 				Card:        card,
 				Capability:  capability,
+				// From the registry by slug, so a middleware wrapping the live
+				// provider cannot erase it.
+				NonSQLLanguage: gowarehouse.NonSQLLanguageOf(wh.Provider),
 			})
 		}
 

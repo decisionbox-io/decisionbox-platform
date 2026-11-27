@@ -1388,6 +1388,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// anything new, not on a step count — see exploration_stopping.go.
 		StopOnNoNewSignal: reachesCube,
 		NonSQLLanguage:    gowarehouse.NonSQLLanguageOf(soleSlug),
+		QueryGuide:        gowarehouse.QueryGuideOf(soleSlug),
 		CubeSource:        providerIsCube(soleSlug),
 		Dataset:           datasetsStr,
 		SchemaProvider:    schemaProvider,
@@ -1672,10 +1673,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		cfg:   o.validationCfg,
 		caps:  o.validationCaps,
 		wh: verifier.WarehouseInfo{
-			Dialect:     o.warehouse.SQLDialect(),
-			Dataset:     o.warehouse.GetDataset(),
-			FilterField: o.filterField,
-			FilterValue: o.filterValue,
+			Dialect:       o.warehouse.SQLDialect(),
+			QueryLanguage: gowarehouse.NonSQLLanguageOf(o.warehouseProviderSlug),
+			QueryGuide:    gowarehouse.QueryGuideOf(o.warehouseProviderSlug),
+			Dataset:       o.warehouse.GetDataset(),
+			FilterField:   o.filterField,
+			FilterValue:   o.filterValue,
 		},
 		disc: verifier.DiscoveryContext{
 			ProjectID: o.projectID,

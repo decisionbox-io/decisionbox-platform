@@ -4,13 +4,16 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/discovery/blurb"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
@@ -373,5 +376,78 @@ func TestInteg_SchemaIndexer_UnknownDimensions_ProbesAndSizes(t *testing.T) {
 		if h.Blurb.EmbeddingModel != "decisionbox-embed-model" {
 			t.Errorf("embedding_model = %q, want decisionbox-embed-model", h.Blurb.EmbeddingModel)
 		}
+	}
+}
+
+// stubDefinitions is a source that carries its own named measures and
+// dimensions beside its tables.
+type stubDefinitions struct {
+	defs []gowarehouse.BusinessDefinition
+	err  error
+}
+
+func (s *stubDefinitions) BusinessDefinitions(context.Context) ([]gowarehouse.BusinessDefinition, error) {
+	return s.defs, s.err
+}
+
+// Business definitions are indexed beside the tables and come back out of
+// search through the provider's filter, with their kind — not merely stored.
+// A definition named like a table must not overwrite the table's point.
+func TestInteg_SchemaIndexer_DefinitionsAreIndexedAndSearchable(t *testing.T) {
+	ctx := context.Background()
+	retriever := startQdrant(t)
+	schemas := map[string]models.TableSchema{
+		"app1.Orders": {TableName: "app1.Orders", RowCount: 10, Columns: []models.ColumnInfo{{Name: "Amount", Type: "FLOAT64"}}},
+	}
+	gen, err := blurb.New(blurb.Config{LLM: &stubLLM{text: "Orders, one row per order."}, Model: "m", Workers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	si := SchemaIndexer{
+		Discovery: &stubIntegSchemaSource{schemas: schemas},
+		Blurber:   gen,
+		Embedder:  &stubEmbedder{dim: 3, model: "stub"},
+		Retriever: retriever,
+		Definitions: &stubDefinitions{defs: []gowarehouse.BusinessDefinition{
+			{Name: "Revenue", Kind: gowarehouse.DefinitionMeasure, Expression: "Sum(Amount)", Description: "Net of returns"},
+			{Name: "app1.Orders", Kind: gowarehouse.DefinitionDimension, Expression: "OrderID"},
+			{Name: "", Kind: gowarehouse.DefinitionMeasure, Expression: "Sum(x)"}, // unusable: no name
+		}},
+	}
+	stats, err := si.BuildIndex(ctx, IndexOptions{ProjectID: "integ-defs"})
+	if err != nil {
+		t.Fatalf("BuildIndex: %v", err)
+	}
+	if stats.Tables != 1 || stats.Definitions != 2 {
+		t.Fatalf("stats = %+v, want 1 table and 2 definitions", stats)
+	}
+
+	p, err := NewCacheSchemaProvider(CacheSchemaProviderOptions{ProjectID: "integ-defs", Schemas: schemas, Retriever: retriever, Embedder: &stubEmbedder{dim: 3, model: "stub"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hits, err := p.Search(ctx, "revenue", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]string{}
+	for _, h := range hits {
+		kinds[h.Table+"|"+h.Kind] = h.Blurb
+	}
+	if _, ok := kinds["app1.Orders|"]; !ok {
+		t.Errorf("the table was lost (a definition with its name overwrote it?): %v", kinds)
+	}
+	if b, ok := kinds["Revenue|"+gowarehouse.DefinitionMeasure]; !ok || !strings.Contains(b, "Sum(Amount)") {
+		t.Errorf("the measure definition was not returned by search: %v", kinds)
+	}
+	if _, ok := kinds["app1.Orders|"+gowarehouse.DefinitionDimension]; !ok {
+		t.Errorf("the dimension definition was not returned by search: %v", kinds)
+	}
+
+	// A definition read that fails leaves the tables indexed.
+	si.Definitions = &stubDefinitions{err: errors.New("source down")}
+	stats, err = si.BuildIndex(ctx, IndexOptions{ProjectID: "integ-defs"})
+	if err != nil || stats.Tables != 1 || stats.Definitions != 0 {
+		t.Fatalf("a failed definitions read must not fail the index: stats=%+v err=%v", stats, err)
 	}
 }

@@ -244,6 +244,8 @@ func groundingNudge(shapes sourceShapes) string {
 		discover = "If you don't know what a datasource offers, discover it with search_tables — it lists the metrics and dimensions each one has. "
 	case shapes.anyCube:
 		discover = "If you don't know what a datasource offers, use search_tables; a query against INFORMATION_SCHEMA (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) and lookup_schema apply only to a SQL datasource. "
+	case shapes.nonSQL():
+		discover = "If you don't know the tables or columns, use search_tables / lookup_schema. "
 	}
 	return "Do NOT answer yet — you have run no query, so you have no data to ground an answer in. " +
 		"Run a query_data action first to gather evidence; never state a table, count, total, or value you have not seen in a query result this turn. " +

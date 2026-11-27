@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 )
 
@@ -179,5 +180,24 @@ func TestSearch_CatalogRefsAreScopedToTheirDatasource(t *testing.T) {
 	}
 	if hits[0].Datasource != "ga" {
 		t.Errorf("hits[0].Datasource = %q, want ga; a removed datasource was vouched for by a shared ref name", hits[0].Datasource)
+	}
+}
+
+// TestSearch_KeepsDefinitionHitsOfIndexedDatasets: a business definition is
+// indexed beside its dataset's tables and has no catalog entry, so the
+// catalog filter must not drop it — it is admitted while its dataset still
+// has tables in the schemas map, and dropped once it has none.
+func TestSearch_KeepsDefinitionHitsOfIndexedDatasets(t *testing.T) {
+	searcher := &fakeVectorSearcher{hits: []schema_retrieve.Hit{
+		{Blurb: schema_retrieve.TableBlurb{Table: "Revenue", Kind: gowarehouse.DefinitionMeasure, Dataset: "events", Blurb: "defined measure \"Revenue\""}, Score: 0.9},
+		{Blurb: schema_retrieve.TableBlurb{Table: "Stale", Kind: gowarehouse.DefinitionMeasure, Dataset: "removed_app", Blurb: "from a dataset no longer indexed"}, Score: 0.8},
+	}}
+	p := providerWithSearcher(t, searcher, &fakeEmbedder{dim: 4})
+	hits, err := p.Search(context.Background(), "revenue", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].Table != "Revenue" || hits[0].Kind != gowarehouse.DefinitionMeasure {
+		t.Fatalf("hits = %+v, want only the definition whose dataset has tables", hits)
 	}
 }

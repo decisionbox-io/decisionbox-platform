@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/decisionbox-io/decisionbox/libs/go-common/agentplugin"
@@ -59,6 +60,12 @@ type SchemaIndexer struct {
 	// would fail the run), and no blurb generation (the source supplies its
 	// own descriptions, so the LLM pass is both unnecessary and a cost).
 	Catalog CatalogSource
+
+	// Definitions is optional. When non-nil, the source's business
+	// definitions (named measures and dimensions with their formulas) are
+	// indexed beside its tables, so search returns them with their kind.
+	// Only on the table path; a catalog source describes itself fully.
+	Definitions gowarehouse.DefinitionSource
 
 	// Cache is optional. When non-nil and a hit is present for the
 	// current (ProjectID, WarehouseHash), BuildIndex skips the catalog
@@ -121,6 +128,9 @@ type IndexOptions struct {
 // Stats is what BuildIndex returns on success.
 type Stats struct {
 	Tables int
+	// Definitions is the number of business definitions indexed beside the
+	// tables (SchemaIndexer.Definitions); 0 when the source has none.
+	Definitions int
 	// Blurbs is the number of usable blurbs generated (those that were
 	// embedded + upserted). Equal to Tables in today's pipeline — every
 	// upserted point carries a blurb — but reported separately so the
@@ -442,9 +452,11 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		si.recordErr(ctx, opts.ProjectID, "qdrant upsert: "+err.Error())
 		return partialStats(), fmt.Errorf("schema_indexer: qdrant upsert: %w", err)
 	}
+	definitions := si.indexDefinitions(ctx, opts, refs[kept[0].i].dataset)
 	embeddingDur := time.Since(embedStart)
 	applog.WithFields(applog.Fields{
 		"tables":           len(items),
+		"definitions":      definitions,
 		"total_elapsed":    time.Since(start).String(),
 		"blurb_tokens_in":  blurbIn,
 		"blurb_tokens_out": blurbOut,
@@ -452,6 +464,7 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 
 	return &Stats{
 		Tables:         len(items),
+		Definitions:    definitions,
 		Blurbs:         len(kept),
 		Dropped:        len(schemas) - len(items),
 		BlurbTokensIn:  blurbIn,
@@ -463,6 +476,72 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 			models.SchemaIndexPhaseEmbedding:        embeddingDur,
 		},
 	}, nil
+}
+
+// indexDefinitions embeds and upserts the source's business definitions beside
+// its tables, attached to dataset so search admits them exactly when it admits
+// that dataset's tables. Returns how many were indexed.
+//
+// Best-effort. The tables are the index and the definitions enrich it: a
+// failure to read or store them is logged and the build carries on, because
+// failing it would leave the datasource "not ready" over context it can do
+// without.
+func (si *SchemaIndexer) indexDefinitions(ctx context.Context, opts IndexOptions, dataset string) int {
+	if si.Definitions == nil {
+		return 0
+	}
+	log := applog.WithField("warehouse_id", si.WarehouseID)
+	defs, err := si.Definitions.BusinessDefinitions(ctx)
+	if err != nil {
+		log.WithError(err).Warn("schema_indexer: business definitions unavailable; indexing tables only")
+		return 0
+	}
+	var kept []gowarehouse.BusinessDefinition
+	var texts []string
+	for _, d := range defs {
+		if strings.TrimSpace(d.Name) == "" || !gowarehouse.IsDefinitionKind(d.Kind) {
+			continue
+		}
+		kept = append(kept, d)
+		texts = append(texts, definitionBlurb(d))
+	}
+	if len(kept) == 0 {
+		return 0
+	}
+	vectors, err := si.Embedder.Embed(ctx, texts)
+	if err != nil || len(vectors) != len(texts) {
+		log.WithError(err).Warn("schema_indexer: embedding business definitions failed; indexing tables only")
+		return 0
+	}
+	items := make([]schema_retrieve.UpsertItem, len(kept))
+	for i, d := range kept {
+		items[i] = schema_retrieve.UpsertItem{
+			Blurb: schema_retrieve.TableBlurb{
+				Table:          d.Name,
+				Dataset:        dataset,
+				Kind:           d.Kind,
+				Blurb:          texts[i],
+				Keywords:       opts.Keywords,
+				EmbeddingModel: si.Embedder.ModelName(),
+			},
+			Vector: vectors[i],
+		}
+	}
+	if err := si.Retriever.Upsert(ctx, opts.ProjectID, si.WarehouseID, items); err != nil {
+		log.WithError(err).Warn("schema_indexer: storing business definitions failed; indexing tables only")
+		return 0
+	}
+	return len(items)
+}
+
+// definitionBlurb is the searchable text of a business definition: what it is
+// called, what kind it is, the source's own formula and description.
+func definitionBlurb(d gowarehouse.BusinessDefinition) string {
+	text := fmt.Sprintf("%s %q, defined by the source as: %s", d.Kind, d.Name, d.Expression)
+	if desc := strings.TrimSpace(d.Description); desc != "" {
+		text += ". " + desc
+	}
+	return text
 }
 
 // retractCatalog withdraws whatever a previous run indexed for this

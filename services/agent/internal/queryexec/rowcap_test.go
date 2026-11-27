@@ -111,3 +111,30 @@ func TestAppendRowCapCaveatDoesNotMutateInput(t *testing.T) {
 		t.Error("returned slice shares a backing array with the provider's")
 	}
 }
+
+// cappingProvider is a non-SQL provider that recognises its own row cap.
+type cappingProvider struct {
+	gowarehouse.Provider
+	limitRunner
+}
+
+// governingRunner is a middleware that re-exposes the QueryRunner seam — as
+// the governance wrapper does — but not the provider's optional inspectors,
+// and is honest about what it wraps.
+type governingRunner struct {
+	blindRunner
+	inner gowarehouse.Provider
+}
+
+func (g governingRunner) Unwrap() gowarehouse.Provider { return g.inner }
+
+// A wrapper that re-exposes QueryRunner used to hide the inspector of the
+// provider it wraps, so a capped result from a non-SQL source behind it came
+// back looking complete.
+func TestAppendRowCapCaveat_SeesThroughARunnerWrapper(t *testing.T) {
+	runner := governingRunner{inner: cappingProvider{}}
+	got := appendRowCapCaveat(nil, runner, "SELECT a FROM t LIMIT 5", 5)
+	if len(got) != 1 || got[0].Kind != gowarehouse.QualityTruncated {
+		t.Fatalf("caveats = %+v, want the row-cap caveat from the wrapped provider", got)
+	}
+}
