@@ -56,12 +56,18 @@ func TestIsDefinitionKind(t *testing.T) {
 	}
 }
 
-func TestQueryGuideOf(t *testing.T) {
-	const slug = "test-guided-source"
-	RegisterWithMeta(slug, func(ProviderConfig) (Provider, error) { return nil, nil }, ProviderMeta{
+const guidedSourceSlug = "test-guided-source"
+
+// Registered once per process: the registry refuses a second registration, so
+// a test that registered it would fail under -count=2.
+func init() {
+	RegisterWithMeta(guidedSourceSlug, func(ProviderConfig) (Provider, error) { return nil, nil }, ProviderMeta{
 		Capability: Capability{QueryLanguage: "Request (JSON)", QueryGuide: "Write one JSON object."},
 	})
-	if got := QueryGuideOf(slug); got != "Write one JSON object." {
+}
+
+func TestQueryGuideOf(t *testing.T) {
+	if got := QueryGuideOf(guidedSourceSlug); got != "Write one JSON object." {
 		t.Errorf("QueryGuideOf = %q", got)
 	}
 	if got := QueryGuideOf("not-registered"); got != "" {
