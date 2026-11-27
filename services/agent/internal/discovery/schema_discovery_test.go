@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -278,6 +279,38 @@ func TestDiscoverSchemas_OneFailedDatasetDoesNotLoseTheOthers(t *testing.T) {
 			t.Errorf("table %q came from the dataset that failed", name)
 		}
 	}
+}
+
+// TestDiscoverSchemas_TheDiagnosticIsBoundedBothWays. The error is carried
+// back as a single stderr line that the subprocess runner reads with a 512 KiB
+// cap, and a scanner that stops mid-line leaves the agent blocked on the write
+// while the indexing worker waits for it. Neither a long list of datasets nor
+// one provider error carrying a whole response body may get near it.
+func TestDiscoverSchemas_TheDiagnosticIsBoundedBothWays(t *testing.T) {
+	t.Run("by count", func(t *testing.T) {
+		var many []string
+		for i := 0; i < 50; i++ {
+			many = append(many, fmt.Sprintf("ds%d: refused", i))
+		}
+		got := boundedFailures(many)
+		if strings.Count(got, "refused") > maxReportedDatasetFailures {
+			t.Errorf("carried more than %d messages: %q", maxReportedDatasetFailures, got)
+		}
+		if !strings.Contains(got, "47 more") {
+			t.Errorf("did not say what it left out: %q", got)
+		}
+	})
+
+	t.Run("by bytes", func(t *testing.T) {
+		huge := []string{"public: " + strings.Repeat("a response body ", 5000)}
+		got := boundedFailures(huge)
+		if len(got) > maxFailureDiagnosticBytes+64 {
+			t.Errorf("diagnostic is %d bytes, past the %d-byte bound", len(got), maxFailureDiagnosticBytes)
+		}
+		if !strings.Contains(got, "truncated") {
+			t.Errorf("truncated silently: %q", got[len(got)-40:])
+		}
+	})
 }
 
 // TestDiscoverSchemas_AMixedFailureSaysHowManyFailed. One dataset cannot be

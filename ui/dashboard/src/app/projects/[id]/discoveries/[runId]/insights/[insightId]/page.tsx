@@ -262,24 +262,18 @@ export default function InsightDetailPage() {
             numbers right after the description. */}
         <Card withBorder p="lg">
           <Title order={4} mb="sm">Assessment</Title>
-          {/* A grid, not a wrapping row. As a `Group` these five items were
+          {/* A grid, not a wrapping row. As a `Group` these items were
               content-sized inside a card that stays 679px wide at every
-              viewport, so the confidence REASON -- a sentence whose length
-              varies per finding -- decided where the row broke: the same
-              panel rendered in two ragged rows for one insight and three for
-              the next. Four fixed columns put each axis in the same place
-              every time, and the segment, which is prose, gets its own row
-              underneath rather than competing for one. Business risk is LAST
-              for the same reason: it is the one axis a document can lack, and
-              anywhere earlier its absence slides the axes after it into each
-              other's places -- so two findings side by side would carry
-              confidence and priority in different corners.
+              viewport, so the longest of them decided where the row broke and
+              the same panel rendered in two ragged rows for one insight and
+              three for the next. A grid puts each axis in the same place every
+              time, and the segment, which is prose, gets its own row
+              underneath rather than competing for one.
 
-              TWO columns, not four: this card is 679px, and the confidence
-              cell carries its badge AND the reason sentence inline -- about
-              390px between them. Four columns give it 136px, which puts the
-              badge over its own cell and the reason into the next one. Two
-              give each axis ~320px, and the axes land in a stable 2x2. */}
+              Business risk is LAST because it is the one axis a document can
+              lack: anywhere earlier, its absence slides the axes after it into
+              each other's places, so two findings side by side would carry
+              confidence and priority in different corners. */}
           <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="xl" verticalSpacing="md">
             <div>
               <Text size="xs" c="dimmed">Severity</Text>

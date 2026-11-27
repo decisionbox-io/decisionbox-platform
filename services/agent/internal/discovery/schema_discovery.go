@@ -190,24 +190,44 @@ func (s *SchemaDiscovery) DiscoverSchemas(ctx context.Context) (map[string]model
 		// stops reading mid-line leaves the agent blocked on the write while
 		// the worker waits for it. The count is the part an operator acts on;
 		// every message is in the dataset warnings above regardless.
-		shown := datasetFailures
-		suffix := ""
-		if len(shown) > maxReportedDatasetFailures {
-			shown = shown[:maxReportedDatasetFailures]
-			suffix = fmt.Sprintf("; and %d more (see the agent log)", len(datasetFailures)-maxReportedDatasetFailures)
-		}
-		return nil, fmt.Errorf("no tables discovered; %d of %d dataset(s) failed to list: %s%s",
-			len(datasetFailures), len(s.datasets), strings.Join(shown, "; "), suffix)
+		return nil, fmt.Errorf("no tables discovered; %d of %d dataset(s) failed to list: %s",
+			len(datasetFailures), len(s.datasets), boundedFailures(datasetFailures))
 	}
 
 	return allSchemas, nil
 }
 
-// maxReportedDatasetFailures caps how many provider messages travel in the
-// returned error. Three is enough to show the shape of the failure -- the same
-// refusal on every dataset, or three different ones -- and the full set is in
-// the per-dataset warnings either way.
-const maxReportedDatasetFailures = 3
+// The returned error crosses a runner boundary that reads it as ONE line with
+// a 512 KiB cap (`scanner.Buffer` in services/api/internal/runner/subprocess.go),
+// and a scanner that stops mid-line leaves the agent blocked on the write while
+// the worker waits for it. So the diagnostic is bounded twice over: by how many
+// messages it carries, and by how many bytes they come to -- a provider error
+// can embed a whole response body, so three of them is not a size.
+//
+// Three is enough to show the SHAPE of the failure: the same refusal on every
+// dataset, or three different ones. 8 KiB leaves room for the log escaping
+// applied downstream and is still two orders of magnitude under the cap. The
+// full set is in the per-dataset warnings either way.
+const (
+	maxReportedDatasetFailures = 3
+	maxFailureDiagnosticBytes  = 8 * 1024
+)
+
+// boundedFailures renders at most maxReportedDatasetFailures messages, clipped
+// to maxFailureDiagnosticBytes, saying what it left out in both directions.
+func boundedFailures(failures []string) string {
+	shown := failures
+	suffix := ""
+	if len(shown) > maxReportedDatasetFailures {
+		shown = shown[:maxReportedDatasetFailures]
+		suffix = fmt.Sprintf("; and %d more (see the agent log)", len(failures)-maxReportedDatasetFailures)
+	}
+	joined := strings.Join(shown, "; ")
+	if len(joined) > maxFailureDiagnosticBytes {
+		joined = joined[:maxFailureDiagnosticBytes] + "… (truncated)"
+	}
+	return joined + suffix
+}
 
 // perTableTimeout bounds how long a single table's schema + sample can
 // take. A rogue MSSQL catalog view or a pathological linked-server table
