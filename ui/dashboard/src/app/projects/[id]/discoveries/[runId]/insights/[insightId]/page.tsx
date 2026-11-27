@@ -302,7 +302,6 @@ export default function InsightDetailPage() {
                 scoring={insight.evidence_scoring}
                 confidence={insight.confidence}
                 size="md"
-                showReason
               />
             </div>
             <div>

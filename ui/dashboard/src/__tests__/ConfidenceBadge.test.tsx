@@ -96,18 +96,19 @@ describe('the confidence band', () => {
     ['low', 'Low confidence'],
     ['not_confirmed', 'Not confirmed'],
     ['unverifiable', 'Unverifiable'],
-  ])('renders %s as %s with its reason', (band, label) => {
+  ])('renders %s as %s', (band, label) => {
     wrap(
       <ConfidenceCell
         scoring={scored({ confidence_band: band as Scoring['confidence_band'], confidence_reason: 'REASON-FROM-THE-ENGINE' })}
         confidence={0.65}
-        showReason
       />,
     );
     expect(screen.getByTestId('confidence-band')).toHaveTextContent(label);
-    // The reason is rendered verbatim off the document — the dashboard holds
-    // no second wording for it.
-    expect(screen.getByTestId('confidence-reason')).toHaveTextContent('REASON-FROM-THE-ENGINE');
+    // The badge states the band and nothing else. The reason belongs to the
+    // breakdown, which the badge opens and the detail page renders in full:
+    // printed beside the badge as well it was the same sentence twice on one
+    // screen, three times counting the hover.
+    expect(screen.queryByTestId('confidence-reason')).not.toBeInTheDocument();
   });
 
   it('renders unverifiable as its own state rather than as low confidence', () => {
@@ -167,6 +168,14 @@ describe('a legacy document', () => {
 });
 
 describe('the "How this was scored" breakdown', () => {
+  // The reason is rendered verbatim off the document — the dashboard holds no
+  // second wording for it. Asserted here because this is where it now lives.
+  it('states the reason verbatim, with no second wording', async () => {
+    wrap(<ConfidenceCell scoring={scored({ confidence_band: 'high', confidence_reason: 'REASON-FROM-THE-ENGINE' })} confidence={0.95} />);
+    await userEvent.hover(screen.getByTestId('confidence-band'));
+    expect(await screen.findByText('REASON-FROM-THE-ENGINE')).toBeInTheDocument();
+  });
+
   it('shows base, every dock with its amount, the final, the cutoff crossed and the engine version', async () => {
     wrap(<ScoringBreakdown scoring={scored({})} />);
 

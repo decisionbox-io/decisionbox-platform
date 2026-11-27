@@ -23,14 +23,10 @@ import { ScoringBreakdown } from './ScoringBreakdown';
 export function ConfidenceBadge({
   scoring,
   size = 'sm',
-  showReason = false,
   labelForm = 'full',
 }: {
   scoring: Scoring;
   size?: 'xs' | 'sm' | 'md';
-  // Dense surfaces (a table row) show the pill alone and keep the reason in
-  // the breakdown; a detail card shows it beside the pill.
-  showReason?: boolean;
   /** `short` drops the axis word for a surface that already names it. */
   labelForm?: 'full' | 'short';
 }) {
@@ -39,13 +35,7 @@ export function ConfidenceBadge({
   return (
     <HoverCard width="auto" shadow="md" withinPortal position="bottom-start" openDelay={120}>
       <HoverCard.Target>
-        {/* The reason sits UNDER the band, for the same reason the severity
-            figure does — and here it is a sentence, so beside the badge it is
-            the widest thing in its column. Measured at 768px on the detail
-            page: the badge took 131px of a 213px cell and left the
-            explanation 76px, which wrapped it to twelve lines. Stacked, it
-            gets the cell. */}
-        <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2, cursor: 'help' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', cursor: 'help' }}>
           <Badge
             size={size}
             variant="light"
@@ -56,11 +46,6 @@ export function ConfidenceBadge({
           >
             {labelForm === 'short' ? meta.short : meta.label}
           </Badge>
-          {showReason && scoring.confidence_reason && (
-            <Text size="xs" c="dimmed" data-testid="confidence-reason">
-              {scoring.confidence_reason}
-            </Text>
-          )}
         </span>
       </HoverCard.Target>
       <HoverCard.Dropdown>
