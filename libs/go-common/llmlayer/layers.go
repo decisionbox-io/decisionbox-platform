@@ -65,6 +65,9 @@ const (
 	LayerExecSummary = "exec_summary"
 	// LayerReportStyle — interpreting a report's requested style.
 	LayerReportStyle = "report_style"
+	// LayerUserProfile — writing the short profile of a person from the
+	// answers they gave and the findings they said were relevant to them.
+	LayerUserProfile = "user_profile"
 )
 
 // Layer groups. The dashboard renders main layers expanded and small
@@ -222,6 +225,12 @@ var layers = []Descriptor{
 		Key:         LayerReportStyle,
 		Label:       "Report style",
 		Description: "Interpreting the style a requested report should be written in.",
+		Group:       GroupSmall,
+	},
+	{
+		Key:         LayerUserProfile,
+		Label:       "User profile",
+		Description: "Writing a person's profile from what they told us about their work and which findings they said mattered to them.",
 		Group:       GroupSmall,
 	},
 }
