@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A `user_profile` LLM layer.** Writing a short profile of a person — from what they said about their work and which of a project's findings they said mattered to them — is a new place the product calls a model, and every such place is configurable per project. Without its own key it would have borrowed one: `analysis`, where a cheap model would be a waste of the good one, or `ask_suggestions`, where a project that tuned starter questions would have silently had that choice applied to something else.
+
+  It is a `small` layer, so a project that has only set the default pair needs no change at all: `EffectiveLayerModel` falls back to the default row for a layer nobody has overridden, which is the whole point of having a default. `ConfigVersion` therefore stays at `1` — adding a layer never re-gates a configured project, and the test that pins the version says so.
+
 ## [0.42.1] - 2026-11-26
 
 ### Added

@@ -7,8 +7,8 @@ import (
 
 func TestLayersCoverTheWholeProductAndNothingElse(t *testing.T) {
 	ls := Layers()
-	if len(ls) != 18 {
-		t.Fatalf("Layers() returned %d descriptors, want 18 — a layer was added or removed without updating the test (and check whether ConfigVersion should bump: adding one must not)", len(ls))
+	if len(ls) != 19 {
+		t.Fatalf("Layers() returned %d descriptors, want 19 — a layer was added or removed without updating the test (and check whether ConfigVersion should bump: adding one must not)", len(ls))
 	}
 
 	want := map[string]string{
@@ -30,6 +30,7 @@ func TestLayersCoverTheWholeProductAndNothingElse(t *testing.T) {
 		LayerFileIngestion:      GroupSmall,
 		LayerExecSummary:        GroupSmall,
 		LayerReportStyle:        GroupSmall,
+		LayerUserProfile:        GroupSmall,
 	}
 
 	seen := map[string]bool{}

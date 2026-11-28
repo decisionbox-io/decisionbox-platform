@@ -432,12 +432,12 @@ A project holds a set of named **provider entries** — connections, each with i
 
 ### The layers
 
-`GET /api/v1/llm/layers` is the authoritative list; the dashboard reads it rather than holding a copy. There are seventeen, grouped by whether the model choice changes what people see.
+`GET /api/v1/llm/layers` is the authoritative list; the dashboard reads it rather than holding a copy. There are nineteen, grouped by whether the model choice changes what people see.
 
 | Group | Layers |
 |---|---|
 | Main | `exploration`, `analysis`, `validation_verifier`, `validation_refuter`, `recommendations`, `ask` |
-| Small | `questions`, `reflection`, `sql_repair`, `ask_router`, `ask_suggestions`, `table_descriptions`, `source_summary`, `pack_gen`, `file_ingestion`, `exec_summary`, `report_style` |
+| Small | `questions`, `reflection`, `consolidation`, `sql_repair`, `ask_router`, `ask_suggestions`, `table_descriptions`, `source_summary`, `pack_gen`, `file_ingestion`, `exec_summary`, `report_style`, `user_profile` |
 
 Where a layer matches a discovery phase it is spelled the same, so the `LLM call usage` log's `phase` field and the layer key are the same string. Validation is the exception: one phase now spends two models, so the log keeps `phase=validation` while `validation_verifier` and `validation_refuter` are configured separately. That pair is where the model matters most — verdicts depend heavily on it, and swapping it changes what users see as verified.
 
