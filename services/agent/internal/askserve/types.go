@@ -126,6 +126,12 @@ type DatasourceInfo struct {
 	// Zero-valued for a datasource whose provider declares nothing, which
 	// resolves to the pre-descriptor behaviour: SQL, entity-shaped, anchoring.
 	gowarehouse.Capability
+
+	// NonSQLLanguage names the language this datasource's queries are written
+	// in when it is NOT SQL (warehouse.NonSQLLanguageOf), and is empty for a
+	// SQL datasource. Capability.QueryLanguage cannot answer this on its own:
+	// it is resolved for every source, SQL dialects included.
+	NonSQLLanguage string
 }
 
 // DatasourceCard mirrors models.WarehouseCard — the structured routing signal

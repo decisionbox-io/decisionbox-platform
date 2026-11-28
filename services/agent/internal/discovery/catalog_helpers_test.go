@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
@@ -100,5 +101,31 @@ func TestSearchAuthority_EitherHalfMayBeEmpty(t *testing.T) {
 	neither := SearchAuthority(nil, nil)
 	if len(neither) != 0 {
 		t.Errorf("empty authority = %v, want nothing authorised", neither)
+	}
+}
+
+// TestSearchAdmits_Definitions: a business definition is admitted while its
+// datasource has tables indexed and every table its formula reads is admitted
+// — so it disappears with them, and a table scoped out of the project does
+// not come back through a formula over it.
+func TestSearchAdmits_Definitions(t *testing.T) {
+	authority := SearchAuthority(map[string]models.TableSchema{"app1.Orders": {}}, []string{"sessions"})
+	for _, tc := range []struct {
+		kind, ref string
+		dependsOn []string
+		hasTables bool
+		want      bool
+	}{
+		{gowarehouse.ItemKindTable, "app1.Orders", nil, true, true},
+		{gowarehouse.ItemKindTable, "app1.Gone", nil, true, false},
+		{gowarehouse.ItemKindMetric, "sessions", nil, false, true},
+		{gowarehouse.DefinitionMeasure, "Revenue", []string{"app1.Orders"}, true, true},
+		{gowarehouse.DefinitionDimension, "Customer", nil, true, true},                               // reads no table
+		{gowarehouse.DefinitionMeasure, "Revenue", []string{"app1.Orders"}, false, false},            // the datasource has no tables (any more)
+		{gowarehouse.DefinitionMeasure, "Payroll", []string{"app1.Orders", "app1.Pay"}, true, false}, // reads a table out of scope
+	} {
+		if got := SearchAdmits(authority, tc.hasTables, tc.kind, tc.ref, tc.dependsOn); got != tc.want {
+			t.Errorf("SearchAdmits(%q, %q, %v, tables=%v) = %v, want %v", tc.kind, tc.ref, tc.dependsOn, tc.hasTables, got, tc.want)
+		}
 	}
 }

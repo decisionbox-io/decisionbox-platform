@@ -28,6 +28,7 @@ import (
 	pb "github.com/qdrant/go-client/qdrant"
 
 	qdrantstore "github.com/decisionbox-io/decisionbox/libs/go-common/vectorstore/qdrant"
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 )
 
 // CollectionPrefix is the stable prefix for schema-index collections.
@@ -226,6 +227,10 @@ type TableBlurb struct {
 	ColumnCount    int
 	BlurbModel     string // provider/model used — for audit + future staleness checks
 	EmbeddingModel string // e.g. openai/text-embedding-3-large
+	// DependsOn is, for a business definition, the qualified refs of the
+	// tables its formula reads: search admits it only while all of them are
+	// admitted. Empty for a table or a catalog item.
+	DependsOn []string
 }
 
 // UpsertItem is a (blurb, vector) pair — caller embeds the blurb using
@@ -274,7 +279,7 @@ func (r *Retriever) Upsert(ctx context.Context, projectID, warehouseID string, i
 			// includes the warehouse id so two warehouses that expose the
 			// SAME dataset.table (e.g. both public.customers) get distinct
 			// points instead of colliding (last-write-wins).
-			Id:      pb.NewID(pointID(projectID, warehouseID, it.Blurb.Table)),
+			Id:      pb.NewID(pointID(projectID, warehouseID, pointKey(it.Blurb))),
 			Vectors: pb.NewVectorsDense(float64sToFloat32s(it.Vector)),
 			Payload: payload,
 		})
@@ -374,8 +379,9 @@ func (r *Retriever) Search(ctx context.Context, projectID string, vector []float
 		}
 		// Dedup key includes the warehouse id so an unfiltered
 		// cross-warehouse search does not collapse two warehouses' identical
-		// dataset.table into one hit.
-		dedupKey := blurb.WarehouseID + "\x00" + blurb.Table
+		// dataset.table into one hit, and the kind so a business definition
+		// named like a table never hides it.
+		dedupKey := blurb.WarehouseID + "\x00" + blurb.Kind + "\x00" + blurb.Table
 		if _, dup := seen[dedupKey]; dup {
 			continue
 		}
@@ -409,6 +415,16 @@ func (r *Retriever) Close() error { return r.client.Close() }
 // The first 16 bytes of the SHA-256 digest are formatted as
 // xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx. Version/variant bits are left
 // alone — Qdrant accepts any 16-byte value in UUID notation.
+// pointKey is what identifies a point within its warehouse: the table ref,
+// or for a business definition its kind and name, so a definition named like
+// a table can never overwrite the table's point.
+func pointKey(b TableBlurb) string {
+	if gowarehouse.IsDefinitionKind(b.Kind) {
+		return b.Kind + "::" + b.Table
+	}
+	return b.Table
+}
+
 func pointID(projectID, warehouseID, table string) string {
 	sum := sha256.Sum256([]byte(projectID + "::" + warehouseID + "::" + table))
 	b := sum[:16]
@@ -442,6 +458,10 @@ func payloadFromBlurb(b TableBlurb, projectID, warehouseID string) map[string]in
 	for i, k := range b.Keywords {
 		kws[i] = k
 	}
+	deps := make([]interface{}, len(b.DependsOn))
+	for i, d := range b.DependsOn {
+		deps[i] = d
+	}
 	// b.Table is the qualified form "dataset.table" (contract enforced by
 	// TableBlurb's doc comment). The payload splits it into the bare
 	// table name + the dataset so operators inspecting a point don't see
@@ -464,6 +484,7 @@ func payloadFromBlurb(b TableBlurb, projectID, warehouseID string) map[string]in
 		"column_count":    int64(b.ColumnCount),
 		"blurb_model":     b.BlurbModel,
 		"embedding_model": b.EmbeddingModel,
+		"depends_on":      deps,
 	}
 }
 
@@ -509,6 +530,7 @@ func blurbFromPayload(payload map[string]*pb.Value) TableBlurb {
 		ColumnCount:    int(intVal(payload, "column_count")),
 		BlurbModel:     strVal(payload, "blurb_model"),
 		EmbeddingModel: strVal(payload, "embedding_model"),
+		DependsOn:      strListVal(payload, "depends_on"),
 	}
 }
 

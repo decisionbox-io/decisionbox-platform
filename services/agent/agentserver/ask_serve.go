@@ -142,6 +142,7 @@ func runAskServe(cfg *config.Config) error {
 		lookups := make(map[string]ai.SchemaProvider, len(warehouses))
 		labels := make(map[string]string, len(warehouses))
 		whTables := make(map[string]map[string]bool, len(warehouses))
+		whHasTables := make(map[string]bool, len(warehouses))
 		for _, wh := range warehouses {
 			whID := warehouseID(wh)
 			labels[whID] = wh.Label
@@ -194,6 +195,7 @@ func runAskServe(cfg *config.Config) error {
 			// silently drops every catalog hit from the cross-datasource view,
 			// which is the one the router reads.
 			whTables[whID] = discovery.SearchAuthority(schemas, catalogRefs)
+			whHasTables[whID] = len(schemas) > 0
 		}
 
 		// Cross-datasource span searcher: one unfiltered Qdrant search over the
@@ -235,7 +237,7 @@ func runAskServe(cfg *config.Config) error {
 						wid = models.DefaultWarehouseID
 					}
 					tset, known := whTables[wid]
-					if !known || !tset[h.Blurb.Table] {
+					if !known || !discovery.SearchAdmits(tset, whHasTables[wid], h.Blurb.Kind, h.Blurb.Table, h.Blurb.DependsOn) {
 						// Stale index for a removed/unindexed datasource, or a
 						// table no longer in the cached schema — treat the cache
 						// as the authority so search and lookup stay consistent.
@@ -297,6 +299,9 @@ func runAskServe(cfg *config.Config) error {
 				FilterValue: wh.FilterValue,
 				Card:        card,
 				Capability:  capability,
+				// From the registry by slug, so a middleware wrapping the live
+				// provider cannot erase it.
+				NonSQLLanguage: gowarehouse.NonSQLLanguageOf(wh.Provider),
 			})
 		}
 

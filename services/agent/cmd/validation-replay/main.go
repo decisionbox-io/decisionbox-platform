@@ -266,10 +266,11 @@ func run() error {
 	}
 
 	wh := verifier.WarehouseInfo{
-		Dialect:     whProvider.SQLDialect(),
-		Dataset:     project.Warehouse.Datasets[0],
-		FilterField: project.Warehouse.FilterField,
-		FilterValue: project.Warehouse.FilterValue,
+		Dialect:       whProvider.SQLDialect(),
+		QueryLanguage: gowarehouse.NonSQLLanguage(whProvider),
+		Dataset:       project.Warehouse.Datasets[0],
+		FilterField:   project.Warehouse.FilterField,
+		FilterValue:   project.Warehouse.FilterValue,
 	}
 	disc := verifier.DiscoveryContext{
 		ProjectID: fl.projectID,

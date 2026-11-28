@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	gowarehouse "github.com/decisionbox-io/decisionbox/libs/go-common/warehouse"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/ai/schema_retrieve"
 )
 
@@ -179,5 +180,59 @@ func TestSearch_CatalogRefsAreScopedToTheirDatasource(t *testing.T) {
 	}
 	if hits[0].Datasource != "ga" {
 		t.Errorf("hits[0].Datasource = %q, want ga; a removed datasource was vouched for by a shared ref name", hits[0].Datasource)
+	}
+}
+
+// TestSearch_KeepsDefinitionHitsOfIndexedDatasources: a business definition is
+// indexed with its datasource's tables and has no catalog entry, so the
+// catalog filter must not drop it — it is admitted while its datasource has
+// tables in the schemas map, and dropped when that datasource has none (a
+// removed datasource whose points linger in the shared collection).
+func TestSearch_KeepsDefinitionHitsOfIndexedDatasources(t *testing.T) {
+	searcher := &fakeVectorSearcher{hits: []schema_retrieve.Hit{
+		{Blurb: schema_retrieve.TableBlurb{Table: "Revenue", Kind: gowarehouse.DefinitionMeasure, WarehouseID: "app", Blurb: "defined measure \"Revenue\""}, Score: 0.9},
+		{Blurb: schema_retrieve.TableBlurb{Table: "Stale", Kind: gowarehouse.DefinitionMeasure, WarehouseID: "removed", Blurb: "from a datasource no longer indexed"}, Score: 0.8},
+		{Blurb: schema_retrieve.TableBlurb{Table: "Scoped Out", Kind: gowarehouse.DefinitionMeasure, WarehouseID: "app", DependsOn: []string{"events.users", "events.payroll"}}, Score: 0.7},
+	}}
+	p, err := NewCacheSchemaProvider(CacheSchemaProviderOptions{
+		Schemas:        sampleSchemas(),
+		TableWarehouse: map[string]string{"events.users": "app"},
+		Embedder:       &fakeEmbedder{dim: 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.searcher = searcher
+	hits, err := p.Search(context.Background(), "revenue", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].Table != "Revenue" || hits[0].Kind != gowarehouse.DefinitionMeasure {
+		t.Fatalf("hits = %+v, want only the definition whose datasource has tables and whose tables are all in scope", hits)
+	}
+}
+
+// A datasource whose tables all share names with another's keeps no entry in
+// the deduplicated TableWarehouse map; its definitions are still admitted,
+// each checked against that datasource's own tables — another datasource's
+// table of the same name does not stand in for one it lacks.
+func TestSearch_DefinitionsOfADatasourceWhoseTablesCollide(t *testing.T) {
+	searcher := &fakeVectorSearcher{hits: []schema_retrieve.Hit{
+		{Blurb: schema_retrieve.TableBlurb{Table: "Revenue", Kind: gowarehouse.DefinitionMeasure, WarehouseID: "second", DependsOn: []string{"events.users"}}, Score: 0.9},
+		{Blurb: schema_retrieve.TableBlurb{Table: "Borrowed", Kind: gowarehouse.DefinitionMeasure, WarehouseID: "second", DependsOn: []string{"events.sessions"}}, Score: 0.8},
+	}}
+	p, err := NewCacheSchemaProvider(CacheSchemaProviderOptions{
+		Schemas:          sampleSchemas(),
+		TableWarehouse:   map[string]string{"events.users": "first", "events.sessions": "first"},
+		DatasourceTables: map[string][]string{"first": {"events.users", "events.sessions"}, "second": {"events.users"}},
+		Embedder:         &fakeEmbedder{dim: 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.searcher = searcher
+	hits, err := p.Search(context.Background(), "revenue", 10)
+	if err != nil || len(hits) != 1 || hits[0].Table != "Revenue" {
+		t.Fatalf("hits = %+v, err = %v; want only the definition whose tables its own datasource has", hits, err)
 	}
 }

@@ -284,6 +284,9 @@ func (h *ProjectsHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if !rejectAnchoringPromotion(w, p.EffectiveWarehouses()) {
 		return
 	}
+	if !rejectUnenforceableTenantFilter(w, p.EffectiveWarehouses()) {
+		return
+	}
 	// No project id: the refusal happens before the insert that assigns one,
 	// so there is nothing yet to attribute this to but the providers. Passing
 	// p.ID here would look like attribution and be empty in practice.
@@ -597,6 +600,9 @@ func (h *ProjectsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// the legacy field anyway.
 	if incoming.Warehouse.Provider != "" && len(existing.Warehouses) == 0 {
 		if !rejectAnchoringPromotion(w, []models.WarehouseConfig{incoming.Warehouse}) {
+			return
+		}
+		if !rejectUnenforceableTenantFilter(w, []models.WarehouseConfig{incoming.Warehouse}) {
 			return
 		}
 		// A single-warehouse project's only datasource IS the project's
@@ -964,6 +970,26 @@ func anchoringProviders(whs []models.WarehouseConfig) []string {
 // ceiling and would ignore the stored value, so the setting would read back as
 // applied while changing nothing — and the user would believe their
 // enrichment-only source had been made able to carry the project.
+// rejectUnenforceableTenantFilter refuses a tenant filter on a datasource whose
+// queries are not SQL. The executor enforces a filter by checking the query
+// text for its predicate, which it cannot do in a language it does not parse,
+// so it refuses every query on such a source while one is set. Saying so here
+// is the difference between a clear refusal and a project that never runs.
+func rejectUnenforceableTenantFilter(w http.ResponseWriter, whs []models.WarehouseConfig) bool {
+	for _, wh := range whs {
+		if strings.TrimSpace(wh.FilterField) == "" {
+			continue
+		}
+		if lang := gowarehouse.NonSQLLanguageOf(wh.Provider); lang != "" {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf(
+				"data source %q uses provider %q, which cannot enforce a tenant filter (filter_field): its queries are written in %s, not SQL. Scope this data source through its credential instead.",
+				wh.ID, wh.Provider, lang))
+			return false
+		}
+	}
+	return true
+}
+
 func rejectAnchoringPromotion(w http.ResponseWriter, whs []models.WarehouseConfig) bool {
 	for _, wh := range whs {
 		if wh.Anchoring == nil || wh.Provider == "" {

@@ -139,3 +139,30 @@ func TestActionMenu_SoleNonSQLSourceIsNotTaughtSQL(t *testing.T) {
 		t.Errorf("a SQL source keeps the SQL example:\n%s", msg)
 	}
 }
+
+// The engine states the query contract and the source's own format in the
+// system prompt, after the domain pack, because the pack may carry a SQL
+// dialect line and SQL examples and the contract must carry the same weight.
+// A SQL run's system prompt is the pack, unchanged.
+func TestSystemPrompt_NonSQLContract(t *testing.T) {
+	ctx := ExplorationContext{InitialPrompt: "PACK"}
+	src := NewExplorationEngine(ExplorationEngineOptions{MaxSteps: 7, NonSQLLanguage: "Hypercube request", QueryGuide: "Write one JSON object."})
+	prompt := src.systemPrompt(ctx)
+	for _, want := range []string{"PACK\n", "QUERY LANGUAGE: this datasource's queries are written in Hypercube request, not SQL", "How to write a query in Hypercube request:\nWrite one JSON object."} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("system prompt lacks %q:\n%s", want, prompt)
+		}
+	}
+	if msg := src.buildInitialMessage(ctx); strings.Contains(msg, "QUERY LANGUAGE") {
+		t.Errorf("the contract belongs in the system prompt, not the opening message:\n%s", msg)
+	}
+	sql := NewExplorationEngine(ExplorationEngineOptions{MaxSteps: 7, QueryGuide: "ignored for SQL"})
+	if got := sql.systemPrompt(ctx); got != "PACK" {
+		t.Errorf("a SQL run's system prompt changed: %q", got)
+	}
+	multi := NewExplorationEngine(ExplorationEngineOptions{MaxSteps: 7, NonSQLLanguage: "Hypercube request"})
+	multi.datasourceIDs = []string{"a", "b"}
+	if got := multi.systemPrompt(ctx); got != "PACK" {
+		t.Errorf("a multi-datasource run must not be told one language for all: %q", got)
+	}
+}

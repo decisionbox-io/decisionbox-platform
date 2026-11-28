@@ -1303,20 +1303,28 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// index payload, and query_data routes per datasource_id.
 	schemaSearchWarehouseID := o.warehouseID
 	var tableWarehouse map[string]string
+	var datasourceTables map[string][]string
 	if dc != nil {
 		schemaSearchWarehouseID = ""
 		tableWarehouse = dc.tableWarehouse
+		datasourceTables = make(map[string][]string, len(dc.schemasByDS))
+		for id, schemas := range dc.schemasByDS {
+			for table := range schemas {
+				datasourceTables[id] = append(datasourceTables[id], table)
+			}
+		}
 	}
 	o.runCatalogRefs = o.catalogRefsByDatasource(dc)
 	schemaProvider, spErr := NewCacheSchemaProvider(CacheSchemaProviderOptions{
-		ProjectID:      o.projectID,
-		WarehouseID:    schemaSearchWarehouseID,
-		Datasets:       o.datasets,
-		Schemas:        schemas,
-		CatalogRefs:    o.runCatalogRefs,
-		TableWarehouse: tableWarehouse,
-		Retriever:      o.schemaRetriever,
-		Embedder:       o.embedder,
+		ProjectID:        o.projectID,
+		WarehouseID:      schemaSearchWarehouseID,
+		Datasets:         o.datasets,
+		Schemas:          schemas,
+		CatalogRefs:      o.runCatalogRefs,
+		TableWarehouse:   tableWarehouse,
+		DatasourceTables: datasourceTables,
+		Retriever:        o.schemaRetriever,
+		Embedder:         o.embedder,
 	})
 	if spErr != nil {
 		// This is a wiring bug — the schema cache lookup above already
@@ -1388,6 +1396,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		// anything new, not on a step count — see exploration_stopping.go.
 		StopOnNoNewSignal: reachesCube,
 		NonSQLLanguage:    gowarehouse.NonSQLLanguageOf(soleSlug),
+		QueryGuide:        gowarehouse.QueryGuideOf(soleSlug),
 		CubeSource:        providerIsCube(soleSlug),
 		Dataset:           datasetsStr,
 		SchemaProvider:    schemaProvider,
@@ -1672,10 +1681,12 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		cfg:   o.validationCfg,
 		caps:  o.validationCaps,
 		wh: verifier.WarehouseInfo{
-			Dialect:     o.warehouse.SQLDialect(),
-			Dataset:     o.warehouse.GetDataset(),
-			FilterField: o.filterField,
-			FilterValue: o.filterValue,
+			Dialect:       o.warehouse.SQLDialect(),
+			QueryLanguage: gowarehouse.NonSQLLanguageOf(o.warehouseProviderSlug),
+			QueryGuide:    gowarehouse.QueryGuideOf(o.warehouseProviderSlug),
+			Dataset:       o.warehouse.GetDataset(),
+			FilterField:   o.filterField,
+			FilterValue:   o.filterValue,
 		},
 		disc: verifier.DiscoveryContext{
 			ProjectID: o.projectID,

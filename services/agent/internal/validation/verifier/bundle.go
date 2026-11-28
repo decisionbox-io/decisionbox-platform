@@ -100,7 +100,14 @@ type ColumnInfo struct {
 // is the rendered SQL predicate the agent must include in every
 // query_warehouse call when non-empty.
 type WarehouseInfo struct {
-	Dialect     string `json:"dialect"`
+	Dialect string `json:"dialect"`
+	// QueryLanguage names the language this source's queries are written in
+	// when it is NOT SQL (warehouse.NonSQLLanguage); empty for every SQL
+	// warehouse. It selects the query contract the system frame states.
+	QueryLanguage string `json:"query_language,omitempty"`
+	// QueryGuide is that language's format reference (warehouse.QueryGuideOf),
+	// or empty.
+	QueryGuide  string `json:"query_guide,omitempty"`
 	Dataset     string `json:"dataset"`
 	Filter      string `json:"filter,omitempty"`
 	FilterField string `json:"filter_field,omitempty"`

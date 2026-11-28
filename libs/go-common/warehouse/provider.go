@@ -134,6 +134,14 @@ type SampleQueryBuilder interface {
 	SampleQuery(dataset, table, filterClause string, limit int) string
 }
 
+// SampleQueryBuilderOf returns the SampleQueryBuilder p implements, looking
+// through middleware (FindCapability). Building a sample query produces a
+// string and runs nothing, so reaching it behind a wrapper bypasses nothing;
+// the query it builds still executes through the wrapper.
+func SampleQueryBuilderOf(p Provider) (SampleQueryBuilder, bool) {
+	return FindCapability[SampleQueryBuilder](p)
+}
+
 // RefQualifier is an optional interface for providers whose fully-qualified
 // table reference includes a component the discovery agent cannot derive
 // from the dataset + table alone. BigQuery cross-project reads are the

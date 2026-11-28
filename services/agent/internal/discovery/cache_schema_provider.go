@@ -77,6 +77,11 @@ type CacheSchemaProvider struct {
 	// than trusted blindly.
 	catalogRefs map[string]map[string]bool
 
+	// tablesOf is, per datasource, the tables it has in this run: the
+	// authority for its business-definition hits, which are indexed with
+	// those tables and admitted only while every table they read is one.
+	tablesOf map[string]map[string]bool
+
 	// tableWarehouse maps a canonical "dataset.table" key to the
 	// datasource (warehouse) id that owns it. Set only on a multi-
 	// warehouse run so Lookup can tell the model which datasource_id to
@@ -132,10 +137,16 @@ type CacheSchemaProviderOptions struct {
 	// Set on a multi-warehouse run so Lookup can attribute each table to
 	// its datasource; nil on single-warehouse.
 	TableWarehouse map[string]string
-	Retriever      *schema_retrieve.Retriever
-	Embedder       Embedder
-	SampleLimit    int
-	ColumnLimit    int
+	// DatasourceTables is, per datasource, the tables it has, on a
+	// multi-warehouse run. TableWarehouse keeps one owner per table name, so
+	// it cannot say which datasource has a table two of them share; a
+	// business definition is checked against its own datasource's tables.
+	// Nil on single-warehouse.
+	DatasourceTables map[string][]string
+	Retriever        *schema_retrieve.Retriever
+	Embedder         Embedder
+	SampleLimit      int
+	ColumnLimit      int
 }
 
 const (
@@ -186,6 +197,26 @@ func NewCacheSchemaProvider(opts CacheSchemaProviderOptions) (*CacheSchemaProvid
 		p.columnLimit = defaultLookupColumnLimit
 	}
 	p.refIndex = buildRefIndex(opts.Schemas)
+	p.tablesOf = make(map[string]map[string]bool)
+	addTable := func(datasource, table string) {
+		id := normDatasourceID(datasource)
+		if p.tablesOf[id] == nil {
+			p.tablesOf[id] = map[string]bool{}
+		}
+		p.tablesOf[id][table] = true
+	}
+	for table := range opts.Schemas {
+		owner := opts.WarehouseID
+		if wh, ok := opts.TableWarehouse[table]; ok {
+			owner = wh
+		}
+		addTable(owner, table)
+	}
+	for id, tables := range opts.DatasourceTables {
+		for _, table := range tables {
+			addTable(id, table)
+		}
+	}
 	return p, nil
 }
 
@@ -297,11 +328,20 @@ func (p *CacheSchemaProvider) Search(ctx context.Context, query string, k int) (
 		// return items from a datasource that has since been removed, because
 		// the shared vector collection keeps points until something overwrites
 		// them.
-		if h.Blurb.Kind == gowarehouse.ItemKindTable {
+		switch {
+		case h.Blurb.Kind == gowarehouse.ItemKindTable:
 			if _, ok := p.schemas[h.Blurb.Table]; !ok {
 				continue
 			}
-		} else if !p.catalogOffers(h.Blurb.WarehouseID, h.Blurb.Table) {
+		case gowarehouse.IsDefinitionKind(h.Blurb.Kind):
+			// Indexed with its datasource's tables; admitted while that
+			// datasource has tables here and every table it reads is one
+			// (see SearchAdmits).
+			tables := p.tablesOf[normDatasourceID(h.Blurb.WarehouseID)]
+			if !SearchAdmits(tables, len(tables) > 0, h.Blurb.Kind, h.Blurb.Table, h.Blurb.DependsOn) {
+				continue
+			}
+		case !p.catalogOffers(h.Blurb.WarehouseID, h.Blurb.Table):
 			continue
 		}
 		out = append(out, ai.SearchHit{

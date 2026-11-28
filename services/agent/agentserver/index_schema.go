@@ -253,6 +253,10 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) (retErr error) 
 		if catalog, ok := gowarehouse.AsCatalogSource(provider); ok {
 			indexer.Catalog = catalog
 			applog.WithField("warehouse_id", whID).Info("index_schema: source is catalog-shaped; indexing its catalog instead of tables")
+		} else if defs, ok := gowarehouse.AsDefinitionSource(provider); ok {
+			// The source's own named measures and dimensions, indexed beside
+			// its tables so search returns them with their kind.
+			indexer.Definitions = defs
 		}
 
 		stats, err = indexer.BuildIndex(ctx, discovery.IndexOptions{
@@ -267,6 +271,7 @@ func runIndexSchema(cfg *config.Config, projectID, runID string) (retErr error) 
 		applog.WithFields(applog.Fields{
 			"warehouse_id":     whID,
 			"tables":           stats.Tables,
+			"definitions":      stats.Definitions,
 			"dropped":          stats.Dropped,
 			"blurb_tokens_in":  stats.BlurbTokensIn,
 			"blurb_tokens_out": stats.BlurbTokensOut,

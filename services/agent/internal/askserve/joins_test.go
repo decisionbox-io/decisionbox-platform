@@ -365,11 +365,11 @@ func TestQuerySummary_ScopedIsAbsentUnlessItWasDecided(t *testing.T) {
 // --- tool definition ---------------------------------------------------
 
 func TestToolQueryData_JoinsOnAppearsOnlyForAMultiDatasourceTurn(t *testing.T) {
-	single := toolQueryData(false, false)
+	single := toolQueryData(false, sourceShapes{})
 	if _, ok := single.InputSchema["properties"].(map[string]interface{})["joins_on"]; ok {
 		t.Fatal("a single-datasource turn has nothing to join across; its tool definition must be unchanged")
 	}
-	multi := toolQueryData(true, false)
+	multi := toolQueryData(true, sourceShapes{})
 	spec, ok := multi.InputSchema["properties"].(map[string]interface{})["joins_on"].(map[string]interface{})
 	if !ok {
 		t.Fatal("a multi-datasource turn must offer joins_on")

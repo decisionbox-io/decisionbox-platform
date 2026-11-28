@@ -282,3 +282,38 @@ func TestProjectRoutes_RefuseLeavingAProjectWithNothingToCarryIt(t *testing.T) {
 		}
 	})
 }
+
+// A tenant filter cannot be enforced on a datasource whose queries are not
+// SQL — the executor refuses every query on it — so it is refused at save.
+func TestRejectUnenforceableTenantFilter(t *testing.T) {
+	slug := fmt.Sprintf("probe_api_nonsql_%d", probeSeq.Add(1))
+	gowarehouse.RegisterWithMeta(slug, func(gowarehouse.ProviderConfig) (gowarehouse.Provider, error) {
+		return nil, fmt.Errorf("probe provider is not constructible")
+	}, gowarehouse.ProviderMeta{
+		Name:           slug,
+		Dialect:        "Probe Request (JSON)",
+		DefaultPricing: &gowarehouse.WarehousePricing{CostModel: "per_query"},
+		Capability:     gowarehouse.Capability{QueryLanguage: "Probe Request (JSON)", Shape: gowarehouse.ShapeEntities},
+	})
+	sql := anchoringProbe(t, "probe_api_sql", true)
+
+	for _, tc := range []struct {
+		name string
+		wh   models.WarehouseConfig
+		want bool
+	}{
+		{"a filter on a SQL source is fine", models.WarehouseConfig{Provider: sql, FilterField: "tenant_id"}, true},
+		{"no filter on a non-SQL source is fine", models.WarehouseConfig{Provider: slug}, true},
+		{"a filter on a non-SQL source is refused", models.WarehouseConfig{Provider: slug, FilterField: "tenant_id"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			if got := rejectUnenforceableTenantFilter(rr, []models.WarehouseConfig{tc.wh}); got != tc.want {
+				t.Fatalf("ok = %v, want %v (body %s)", got, tc.want, rr.Body.String())
+			}
+			if !tc.want && (rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "cannot enforce a tenant filter")) {
+				t.Errorf("status %d, body %s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}

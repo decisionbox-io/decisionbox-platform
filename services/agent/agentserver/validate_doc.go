@@ -264,10 +264,12 @@ func runValidateDocInner(ctx context.Context, cfg *config.Config, db *database.D
 		Cfg:            vCfg,
 		Caps:           vCaps,
 		WH: verifier.WarehouseInfo{
-			Dialect:     warehouseProvider.SQLDialect(),
-			Dataset:     warehouseProvider.GetDataset(),
-			FilterField: docWH.FilterField,
-			FilterValue: docWH.FilterValue,
+			Dialect:       warehouseProvider.SQLDialect(),
+			QueryLanguage: gowarehouse.NonSQLLanguageOf(docWH.Provider),
+			QueryGuide:    gowarehouse.QueryGuideOf(docWH.Provider),
+			Dataset:       warehouseProvider.GetDataset(),
+			FilterField:   docWH.FilterField,
+			FilterValue:   docWH.FilterValue,
 		},
 		Disc: verifier.DiscoveryContext{
 			ProjectID: project.ID,
