@@ -1,101 +1,154 @@
 package discovery
 
 import (
-	"context"
 	"sort"
 
 	valmodels "github.com/decisionbox-io/decisionbox/libs/go-common/models/validation"
-	applog "github.com/decisionbox-io/decisionbox/services/agent/internal/log"
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
-// starvedBudgetState is the validation state a finding carries when the
-// per-run budget ran out before its turn. The shared constant, not a literal:
-// it is the only state that says "this area's findings were never judged",
-// which is what this file acts on — a finding the consolidation pass folded
-// (skipped_duplicate) was not starved, it was answered.
-const starvedBudgetState = valmodels.StatusSkippedBudgetCap
+// runTypeFailed is what a run whose every analysis area failed records on the
+// result it still saves. See validationStaleness.
+const runTypeFailed = "failed"
 
-// previousRunStarvedAreas returns the analysis areas whose findings the
-// project's previous discovery left unvalidated because the validation budget
-// ran out.
+// judgedAreasOf returns the areas that got at least one finding judged in this
+// discovery.
 //
-// Why the PREVIOUS run decides this run's order: the budget is a fixed number
-// of checks per run, the areas are prompted independently, and which of them
-// reaches the budget first was until now the order a Go map happened to yield.
-// #560 made that order stable (by id), which made two runs comparable — and
-// made the starvation stable too: the same tail areas lose their checks every
-// time. Reading the previous run's outcome is the cheapest signal available
-// that says which areas those were, and it needs no new configuration and no
-// judgement about which areas matter more.
-//
-// See lastCompleteDiscovery for why this run's own result is skipped.
-func (o *Orchestrator) previousRunStarvedAreas(ctx context.Context) map[string]bool {
-	if o.discoveryRepo == nil {
-		return nil
-	}
-	recent, err := o.discoveryRepo.ListRecent(ctx, o.projectID, 3)
-	if err != nil {
-		applog.WithError(err).Warn("Could not read the previous discovery; areas run in id order")
-		return nil
-	}
-	return starvedAreasOf(lastCompleteDiscovery(recent, o.runID))
-}
-
-// lastCompleteDiscovery picks the most recent discovery that is not this run's
-// own, from a list the repository already sorted newest first.
-//
-// Its own result is skipped for the reason loadPreviousDiscoveryContext skips
-// it: on a resumed run the attempt that crashed is the most recent discovery,
-// and a partial result's starvation describes how far that attempt got rather
-// than what the project's last complete run managed. Historical documents
-// carry no run id, so they are never matched.
-func lastCompleteDiscovery(recent []*models.DiscoveryResult, runID string) *models.DiscoveryResult {
-	for _, disc := range recent {
-		if disc == nil || (runID != "" && disc.RunID == runID) {
-			continue
-		}
-		return disc
-	}
-	return nil
-}
-
-// starvedAreasOf is the per-discovery half, kept pure so the rule is testable
-// without a repository.
-func starvedAreasOf(disc *models.DiscoveryResult) map[string]bool {
+// Judged, not validated: a finding the consolidation pass folded
+// (skipped_duplicate) was answered without a check, and an area whose findings
+// were all folded does not need the budget moved towards it. The one state
+// that says "this area's findings were never looked at" is
+// skipped_budget_cap — the budget ran out before their turn — and a finding
+// with no validation block at all never reached the phase.
+func judgedAreasOf(disc *models.DiscoveryResult) map[string]bool {
 	if disc == nil {
 		return nil
 	}
 	out := make(map[string]bool)
 	for i := range disc.Insights {
 		ins := &disc.Insights[i]
-		if ins.AnalysisArea == "" {
+		if ins.AnalysisArea == "" || ins.Validation == nil {
 			continue
 		}
-		if ins.Validation != nil && ins.Validation.Combined == starvedBudgetState {
-			out[ins.AnalysisArea] = true
+		switch ins.Validation.Combined {
+		case "", valmodels.StatusSkippedBudgetCap:
+			continue
 		}
+		out[ins.AnalysisArea] = true
 	}
 	return out
 }
 
-// orderAreasStarvedFirst puts the areas the previous discovery starved at the
-// front, each group keeping the order it arrived in.
+// validationStaleness reports, per analysis area, how many discoveries back it
+// last had a finding judged: 0 in the most recent usable discovery, 1 in the
+// one before it, and the window's length for an area nothing in the window
+// judged at all.
 //
-// A stable partition rather than a sort key, so the id order #560 fixed still
-// decides everything within a group: this expresses one preference — an area
-// whose findings went unjudged last time gets its turn at the budget before an
-// area that was already judged — and no preference at all between areas on the
-// same side of that line. Nothing here reads the pack's priority field; which
-// areas matter more is a product decision nobody has made.
-func orderAreasStarvedFirst(areas []AnalysisArea, starved map[string]bool) []AnalysisArea {
-	if len(starved) == 0 || len(areas) < 2 {
+// Why the history decides this run's order: validation charges a fixed number
+// of checks per run inside the analysis-area loop, so the areas that run first
+// spend the budget and the rest are stamped skipped_budget_cap — and a capped
+// finding is dropped from recommendation generation too, because that status is
+// not in the recommender's eligible set. #560 fixed the area order by id, which
+// made two runs of a project comparable and made that starvation stable with
+// it: the same tail areas lost their checks every run.
+//
+// Why STALENESS rather than "starved last time", which is what this started
+// as: with several areas starved at once, "starved first, then by id" re-sorts
+// that group by id every run, so the lowest id always goes first and a high-id
+// area can starve forever. A simulation of three areas and a budget of one
+// walks a, b, a, b — and never c. Ranking by how long an area has gone without
+// a check rotates by construction, because an area that gets its checks ranks
+// freshest and goes to the back of the queue. It needs no cursor carried
+// between runs and no new state.
+//
+// It reads the history loadPreviousDiscoveryContext has already fetched, so it
+// costs no query of its own and the two look at the same window.
+//
+// KNOWN LIMITATION, recorded rather than fixed. The order is a pure function of
+// this list, so two attempts of one run agree on it — unless another run of the
+// same project COMPLETES while this one is paused, which changes the list under
+// a resumed attempt. The order then differs from the one the first attempt
+// used, and a fresh area can be consolidated before a restored area it would
+// otherwise have been compared against: the cost is one validation check spent
+// on a restatement that the end-of-run duplicate check then marks anyway.
+// Holding the order steady across attempts means persisting it in the run's
+// checkpoint, which is a schema decision this change does not need to make.
+func validationStaleness(recent []*models.DiscoveryResult, runID string) map[string]int {
+	usable := make([]*models.DiscoveryResult, 0, len(recent))
+	for _, disc := range recent {
+		switch {
+		case disc == nil:
+			continue
+		// This run's own result. On a resumed run the attempt that crashed is
+		// the most recent discovery, and a partial result's record describes
+		// how far that attempt got rather than what the project's completed
+		// runs managed. Historical documents carry no run id, so they are
+		// never matched.
+		case runID != "" && disc.RunID == runID:
+			continue
+		// A run whose every area failed saved a result with no findings in
+		// it. Counting it as a discovery in which nothing was judged would
+		// age every area by one for a run that never ran.
+		case disc.RunType == runTypeFailed:
+			continue
+		}
+		usable = append(usable, disc)
+	}
+	if len(usable) == 0 {
+		return nil
+	}
+	// The repository hands the list back newest first, so the index IS the
+	// age. First write wins: an area judged in several discoveries takes the
+	// freshest.
+	out := make(map[string]int)
+	for age, disc := range usable {
+		for area := range judgedAreasOf(disc) {
+			if _, seen := out[area]; !seen {
+				out[area] = age
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	out[unjudgedArea] = len(usable)
+	return out
+}
+
+// unjudgedArea is the key validationStaleness stores the window length under,
+// so the order can rank an area the window never judged without the caller
+// having to know how long the window was. Not a legal area id: ids come from
+// the pack's own keys.
+const unjudgedArea = ""
+
+// orderAreasStalestFirst puts the areas that have gone longest without a check
+// at the front, so the validation budget reaches a different part of the pack
+// than it did last time.
+//
+// Ties keep the order they arrived in, which is the id order #560 fixed — so
+// this expresses exactly one preference, how long an area has waited, and no
+// preference at all between areas that have waited equally. Nothing here reads
+// the pack's priority field: which areas matter more is a product decision
+// nobody has made.
+//
+// An area the window never judged ranks as stale as the window is long, which
+// puts a newly added area ahead of areas already being checked. It costs
+// nothing when that area reports nothing.
+func orderAreasStalestFirst(areas []AnalysisArea, staleness map[string]int) []AnalysisArea {
+	if len(staleness) == 0 || len(areas) < 2 {
 		return areas
+	}
+	never := staleness[unjudgedArea]
+	age := func(id string) int {
+		if a, ok := staleness[id]; ok {
+			return a
+		}
+		return never
 	}
 	out := make([]AnalysisArea, len(areas))
 	copy(out, areas)
 	sort.SliceStable(out, func(i, j int) bool {
-		return starved[out[i].ID] && !starved[out[j].ID]
+		return age(out[i].ID) > age(out[j].ID)
 	})
 	return out
 }

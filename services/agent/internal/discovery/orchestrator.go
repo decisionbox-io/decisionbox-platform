@@ -1069,7 +1069,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	}
 
 	// Load previous discoveries and feedback for context awareness
-	prevInsights, prevRecs, feedbackSummaries := o.loadPreviousDiscoveryContext(ctx)
+	prevInsights, prevRecs, feedbackSummaries, areaStaleness := o.loadPreviousDiscoveryContext(ctx)
 	applog.WithFields(applog.Fields{
 		"prev_insights":  len(prevInsights),
 		"prev_recs":      len(prevRecs),
@@ -1618,33 +1618,26 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		}).Info("Selective discovery — running subset of areas")
 	}
 
-	// The areas the project's previous discovery could not validate go
-	// first. The budget is a fixed number of checks per run and the order is
-	// now stable, so without this the same tail areas lose their checks every
+	// The areas that have gone longest without a validation check go first.
+	// The budget is a fixed number of checks per run, charged inside this
+	// loop, so with a stable order the same tail areas lose their checks every
 	// run — their findings reach Phase 5 unvalidated and the recommender,
 	// which admits only supported and confirmed findings, drops them. See
-	// previousRunStarvedAreas.
+	// validationStaleness.
 	//
 	// After the selective filter, so a partial run orders the subset it was
 	// asked for, and before the restore bookkeeping, which matches areas by
 	// id and does not care about order.
-	if starved := o.previousRunStarvedAreas(ctx); len(starved) > 0 {
-		ordered := orderAreasStarvedFirst(runAreas, starved)
-		first := 0
-		for _, a := range ordered {
-			if !starved[a.ID] {
-				break
-			}
-			first++
-		}
-		if first > 0 {
-			runAreas = ordered
+	if len(areaStaleness) > 0 {
+		ordered := orderAreasStalestFirst(runAreas, areaStaleness)
+		if ordered[0].ID != runAreas[0].ID {
 			applog.WithFields(applog.Fields{
-				"starved_last_run": first,
-				"areas":            len(runAreas),
-				"first_area":       runAreas[0].ID,
-			}).Info("Phase 4: areas the previous run could not validate go first")
+				"first_area": ordered[0].ID,
+				"was":        runAreas[0].ID,
+				"areas":      len(ordered),
+			}).Info("Phase 4: the areas longest without a validation check go first")
 		}
+		runAreas = ordered
 	}
 
 	applog.Info("Phase 4: Running analysis by area")
@@ -4099,12 +4092,13 @@ func (o *Orchestrator) saveProjectContext(ctx context.Context, pctx *models.Proj
 // loadPreviousDiscoveryContext fetches recent discoveries + feedback and builds compact summaries.
 func (o *Orchestrator) loadPreviousDiscoveryContext(ctx context.Context) (
 	[]models.InsightSummary, []models.RecommendationSummary, []models.FeedbackSummary,
+	map[string]int,
 ) {
 	// Load last 5 discoveries
 	recentDiscoveries, err := o.discoveryRepo.ListRecent(ctx, o.projectID, 5)
 	if err != nil {
 		applog.WithError(err).Warn("Failed to load recent discoveries for context")
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	// Drop this run's OWN results. The list feeds the exploration and
@@ -4134,7 +4128,7 @@ func (o *Orchestrator) loadPreviousDiscoveryContext(ctx context.Context) (
 	}
 
 	if len(recentDiscoveries) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	// Build insight summaries (deduped by name)
@@ -4198,7 +4192,10 @@ func (o *Orchestrator) loadPreviousDiscoveryContext(ctx context.Context) (
 		recSummaries = recSummaries[:15]
 	}
 
-	return insightSummaries, recSummaries, feedbackSummaries
+	// And how long each area has gone without a check, from the same
+	// documents: the order Phase 4 works through the areas reads it. See
+	// validationStaleness.
+	return insightSummaries, recSummaries, feedbackSummaries, validationStaleness(recentDiscoveries, o.runID)
 }
 
 // buildFeedbackSummaries resolves each feedback entry to the name of the

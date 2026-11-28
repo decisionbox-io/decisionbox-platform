@@ -12,19 +12,19 @@ import (
 	"github.com/decisionbox-io/decisionbox/services/agent/internal/models"
 )
 
-// The starved-area order rests on one claim about the repository: that
-// ListRecent's projection carries each insight's VALIDATION state, not only its
-// name and area. That is a projection detail no unit test can prove, so it is
-// proven here against a real Mongo and the real repository — seeding two
-// discoveries, reading them back through the same call the run makes, and
-// asserting both the starved set and that this run's own result is skipped.
-func TestInteg_AreaOrder_StarvedAreasComeFromThePreviousDiscovery(t *testing.T) {
+// The area order rests on one claim about the repository: that ListRecent's
+// projection carries each insight's VALIDATION state, not only its name and
+// area. That is a projection detail no unit test can prove, so it is proven
+// here against a real Mongo and the real repository — seeding two discoveries,
+// reading them back through the same call the run makes, and asserting both
+// the ages and that this run's own result is skipped.
+func TestInteg_AreaOrder_StalenessComesFromTheStoredHistory(t *testing.T) {
 	db, cleanup := analysisResumeMongo(t)
 	defer cleanup()
 	ctx := context.Background()
 
 	repo := database.NewDiscoveryRepository(db)
-	starved := func(area string, state valmodels.Status) models.Insight {
+	finding := func(area string, state valmodels.Status) models.Insight {
 		return models.Insight{
 			ID:           area + "-" + string(state),
 			AnalysisArea: area,
@@ -40,10 +40,10 @@ func TestInteg_AreaOrder_StarvedAreasComeFromThePreviousDiscovery(t *testing.T) 
 		RunID:         "run-previous",
 		DiscoveryDate: time.Now().Add(-2 * time.Hour),
 		Insights: []models.Insight{
-			starved("stock", valmodels.StatusSkippedBudgetCap),
-			starved("margin", valmodels.StatusSkippedBudgetCap),
-			starved("traffic", valmodels.StatusSkippedDuplicate),
-			starved("vendors", valmodels.StatusSupported),
+			finding("stock", valmodels.StatusSkippedBudgetCap),
+			finding("margin", valmodels.StatusSkippedBudgetCap),
+			finding("traffic", valmodels.StatusSkippedDuplicate),
+			finding("vendors", valmodels.StatusSupported),
 		},
 	}
 	// And this run's own partial result, newer, which must not be read: its
@@ -53,7 +53,7 @@ func TestInteg_AreaOrder_StarvedAreasComeFromThePreviousDiscovery(t *testing.T) 
 		RunID:         "run-mine",
 		DiscoveryDate: time.Now(),
 		Insights: []models.Insight{
-			starved("vendors", valmodels.StatusSkippedBudgetCap),
+			finding("vendors", valmodels.StatusSkippedBudgetCap),
 		},
 	}
 	for _, d := range []*models.DiscoveryResult{previous, mine} {
@@ -62,26 +62,33 @@ func TestInteg_AreaOrder_StarvedAreasComeFromThePreviousDiscovery(t *testing.T) 
 		}
 	}
 
-	o := &Orchestrator{discoveryRepo: repo, projectID: "proj", runID: "run-mine"}
-	got := o.previousRunStarvedAreas(ctx)
+	// Through the same repository call the run makes, then the same selection
+	// the run applies to its result.
+	recent, err := repo.ListRecent(ctx, "proj", 3)
+	if err != nil {
+		t.Fatalf("list recent: %v", err)
+	}
+	got := validationStaleness(recent, "run-mine")
 
-	if len(got) != 2 || !got["stock"] || !got["margin"] {
-		t.Fatalf("starved = %v, want stock and margin from the previous run only", got)
+	// One usable discovery, so an area it judged is age 0 and an area it
+	// capped is as stale as the window is long.
+	if got["traffic"] != 0 || got["vendors"] != 0 {
+		t.Errorf("traffic=%d vendors=%d, want 0 — both were answered in the previous run", got["traffic"], got["vendors"])
 	}
-	if got["vendors"] {
-		t.Error("read this run's own partial result: vendors was starved only there")
+	if _, ranked := got["stock"]; ranked {
+		t.Errorf("stock is ranked %d; a capped area was never judged and must fall to the window length", got["stock"])
 	}
-	if got["traffic"] {
-		t.Error("a folded restatement was counted as starved")
+	if got[unjudgedArea] != 1 {
+		t.Errorf("window = %d, want 1 usable discovery — this run's own partial result does not count", got[unjudgedArea])
 	}
 
-	// And the order the run works through: the starved areas first, the rest
-	// in the id order resolvePrompts hands back.
+	// And the order the run works through: the two areas the previous run
+	// could not check first, the rest in the id order resolvePrompts hands back.
 	areas := []AnalysisArea{{ID: "margin"}, {ID: "stock"}, {ID: "traffic"}, {ID: "vendors"}}
-	ordered := areaIDs(orderAreasStarvedFirst(areas, got))
+	ordered := areaIDs(orderAreasStalestFirst(areas, got))
 	for i, want := range []string{"margin", "stock", "traffic", "vendors"} {
 		if ordered[i] != want {
-			t.Fatalf("order = %v, want the two starved areas first, each group in id order", ordered)
+			t.Fatalf("order = %v, want the two unchecked areas first, each group in id order", ordered)
 		}
 	}
 }
