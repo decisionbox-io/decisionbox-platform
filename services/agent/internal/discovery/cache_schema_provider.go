@@ -77,9 +77,10 @@ type CacheSchemaProvider struct {
 	// than trusted blindly.
 	catalogRefs map[string]map[string]bool
 
-	// tablesFrom is every datasource with a table in schemas: the authority
-	// for business-definition hits, which are indexed with those tables.
-	tablesFrom map[string]bool
+	// tablesOf is, per datasource, the tables it has in this run: the
+	// authority for its business-definition hits, which are indexed with
+	// those tables and admitted only while every table they read is one.
+	tablesOf map[string]map[string]bool
 
 	// tableWarehouse maps a canonical "dataset.table" key to the
 	// datasource (warehouse) id that owns it. Set only on a multi-
@@ -136,12 +137,12 @@ type CacheSchemaProviderOptions struct {
 	// Set on a multi-warehouse run so Lookup can attribute each table to
 	// its datasource; nil on single-warehouse.
 	TableWarehouse map[string]string
-	// TableDatasources names every datasource that has tables indexed, on a
+	// DatasourceTables is, per datasource, the tables it has, on a
 	// multi-warehouse run. TableWarehouse keeps one owner per table name, so
-	// a datasource whose tables all share names with another's would vanish
-	// from it — and with it the authority for that datasource's business
-	// definitions. Nil on single-warehouse.
-	TableDatasources []string
+	// it cannot say which datasource has a table two of them share; a
+	// business definition is checked against its own datasource's tables.
+	// Nil on single-warehouse.
+	DatasourceTables map[string][]string
 	Retriever        *schema_retrieve.Retriever
 	Embedder         Embedder
 	SampleLimit      int
@@ -196,16 +197,25 @@ func NewCacheSchemaProvider(opts CacheSchemaProviderOptions) (*CacheSchemaProvid
 		p.columnLimit = defaultLookupColumnLimit
 	}
 	p.refIndex = buildRefIndex(opts.Schemas)
-	p.tablesFrom = make(map[string]bool)
+	p.tablesOf = make(map[string]map[string]bool)
+	addTable := func(datasource, table string) {
+		id := normDatasourceID(datasource)
+		if p.tablesOf[id] == nil {
+			p.tablesOf[id] = map[string]bool{}
+		}
+		p.tablesOf[id][table] = true
+	}
 	for table := range opts.Schemas {
 		owner := opts.WarehouseID
 		if wh, ok := opts.TableWarehouse[table]; ok {
 			owner = wh
 		}
-		p.tablesFrom[normDatasourceID(owner)] = true
+		addTable(owner, table)
 	}
-	for _, id := range opts.TableDatasources {
-		p.tablesFrom[normDatasourceID(id)] = true
+	for id, tables := range opts.DatasourceTables {
+		for _, table := range tables {
+			addTable(id, table)
+		}
 	}
 	return p, nil
 }
@@ -327,7 +337,8 @@ func (p *CacheSchemaProvider) Search(ctx context.Context, query string, k int) (
 			// Indexed with its datasource's tables; admitted while that
 			// datasource has tables here and every table it reads is one
 			// (see SearchAdmits).
-			if !p.tablesFrom[normDatasourceID(h.Blurb.WarehouseID)] || !p.hasAll(h.Blurb.DependsOn) {
+			tables := p.tablesOf[normDatasourceID(h.Blurb.WarehouseID)]
+			if !SearchAdmits(tables, len(tables) > 0, h.Blurb.Kind, h.Blurb.Table, h.Blurb.DependsOn) {
 				continue
 			}
 		case !p.catalogOffers(h.Blurb.WarehouseID, h.Blurb.Table):
@@ -564,16 +575,6 @@ func refSet(byDatasource map[string][]string) map[string]map[string]bool {
 // catalogOffers reports whether the cache says this datasource currently
 // offers this ref. An unknown datasource offers nothing, which is what makes
 // a point left behind by a removed one untrusted.
-// hasAll reports whether every table ref is in this run's schemas.
-func (p *CacheSchemaProvider) hasAll(refs []string) bool {
-	for _, ref := range refs {
-		if _, ok := p.schemas[ref]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
 func (p *CacheSchemaProvider) catalogOffers(datasourceID, ref string) bool {
 	return p.catalogRefs[normDatasourceID(datasourceID)][ref]
 }

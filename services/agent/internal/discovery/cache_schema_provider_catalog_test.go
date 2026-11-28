@@ -213,16 +213,18 @@ func TestSearch_KeepsDefinitionHitsOfIndexedDatasources(t *testing.T) {
 }
 
 // A datasource whose tables all share names with another's keeps no entry in
-// the deduplicated TableWarehouse map; its definitions are still admitted
-// because it is named as having tables.
+// the deduplicated TableWarehouse map; its definitions are still admitted,
+// each checked against that datasource's own tables — another datasource's
+// table of the same name does not stand in for one it lacks.
 func TestSearch_DefinitionsOfADatasourceWhoseTablesCollide(t *testing.T) {
 	searcher := &fakeVectorSearcher{hits: []schema_retrieve.Hit{
-		{Blurb: schema_retrieve.TableBlurb{Table: "Revenue", Kind: gowarehouse.DefinitionMeasure, WarehouseID: "second"}, Score: 0.9},
+		{Blurb: schema_retrieve.TableBlurb{Table: "Revenue", Kind: gowarehouse.DefinitionMeasure, WarehouseID: "second", DependsOn: []string{"events.users"}}, Score: 0.9},
+		{Blurb: schema_retrieve.TableBlurb{Table: "Borrowed", Kind: gowarehouse.DefinitionMeasure, WarehouseID: "second", DependsOn: []string{"events.sessions"}}, Score: 0.8},
 	}}
 	p, err := NewCacheSchemaProvider(CacheSchemaProviderOptions{
 		Schemas:          sampleSchemas(),
-		TableWarehouse:   map[string]string{"events.users": "first"},
-		TableDatasources: []string{"first", "second"},
+		TableWarehouse:   map[string]string{"events.users": "first", "events.sessions": "first"},
+		DatasourceTables: map[string][]string{"first": {"events.users", "events.sessions"}, "second": {"events.users"}},
 		Embedder:         &fakeEmbedder{dim: 4},
 	})
 	if err != nil {
@@ -230,7 +232,7 @@ func TestSearch_DefinitionsOfADatasourceWhoseTablesCollide(t *testing.T) {
 	}
 	p.searcher = searcher
 	hits, err := p.Search(context.Background(), "revenue", 10)
-	if err != nil || len(hits) != 1 {
-		t.Fatalf("hits = %+v, err = %v", hits, err)
+	if err != nil || len(hits) != 1 || hits[0].Table != "Revenue" {
+		t.Fatalf("hits = %+v, err = %v; want only the definition whose tables its own datasource has", hits, err)
 	}
 }

@@ -452,11 +452,13 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		si.recordErr(ctx, opts.ProjectID, "qdrant upsert: "+err.Error())
 		return partialStats(), fmt.Errorf("schema_indexer: qdrant upsert: %w", err)
 	}
-	// The tables just indexed, by the name a source gives them, so a
-	// definition is kept only when every table it reads is among them.
-	indexed := make(map[string]string, len(items))
+	// The tables just indexed, by dataset and the name the source gives
+	// them, so a definition is kept only when every table it reads is among
+	// them.
+	indexed := make(map[gowarehouse.TableRef]string, len(items))
 	for _, it := range items {
-		indexed[strings.TrimPrefix(it.Blurb.Table, it.Blurb.Dataset+".")] = it.Blurb.Table
+		ref := gowarehouse.TableRef{Dataset: it.Blurb.Dataset, Table: strings.TrimPrefix(it.Blurb.Table, it.Blurb.Dataset+".")}
+		indexed[ref] = it.Blurb.Table
 	}
 	definitions := si.indexDefinitions(ctx, opts, indexed)
 	embeddingDur := time.Since(embedStart)
@@ -488,14 +490,14 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 // its tables. A definition reading a table that is not indexed — scoped out of
 // the project, or not listed — is left out, and the ones kept carry the refs of
 // the tables they read so search admits them only while those tables are
-// admitted (see SearchAdmits). indexed maps a table's name, as the source
-// gives it, to its indexed ref. Returns how many were indexed.
+// admitted (see SearchAdmits). indexed maps a table, by dataset and the name
+// the source gives it, to its indexed ref. Returns how many were indexed.
 //
 // Best-effort. The tables are the index and the definitions enrich it: a
 // failure to read or store them is logged and the build carries on, because
 // failing it would leave the datasource "not ready" over context it can do
 // without.
-func (si *SchemaIndexer) indexDefinitions(ctx context.Context, opts IndexOptions, indexed map[string]string) int {
+func (si *SchemaIndexer) indexDefinitions(ctx context.Context, opts IndexOptions, indexed map[gowarehouse.TableRef]string) int {
 	if si.Definitions == nil {
 		return 0
 	}
@@ -551,7 +553,7 @@ func (si *SchemaIndexer) indexDefinitions(ctx context.Context, opts IndexOptions
 
 // indexedRefs maps the tables a definition reads to their indexed refs, or
 // reports false when one of them is not indexed.
-func indexedRefs(tables []string, indexed map[string]string) ([]string, bool) {
+func indexedRefs(tables []gowarehouse.TableRef, indexed map[gowarehouse.TableRef]string) ([]string, bool) {
 	refs := make([]string, 0, len(tables))
 	for _, t := range tables {
 		ref, ok := indexed[t]

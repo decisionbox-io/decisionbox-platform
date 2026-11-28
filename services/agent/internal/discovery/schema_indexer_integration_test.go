@@ -409,10 +409,13 @@ func TestInteg_SchemaIndexer_DefinitionsAreIndexedAndSearchable(t *testing.T) {
 		Embedder:  &stubEmbedder{dim: 3, model: "stub"},
 		Retriever: retriever,
 		Definitions: &stubDefinitions{defs: []gowarehouse.BusinessDefinition{
-			{Name: "Revenue", Kind: gowarehouse.DefinitionMeasure, Expression: "Sum(Amount)", Description: "Net of returns", Tables: []string{"Orders"}},
-			{Name: "app1.Orders", Kind: gowarehouse.DefinitionDimension, Expression: "OrderID", Tables: []string{"Orders"}},
-			{Name: "", Kind: gowarehouse.DefinitionMeasure, Expression: "Sum(x)"},                                      // unusable: no name
-			{Name: "Payroll", Kind: gowarehouse.DefinitionMeasure, Expression: "Sum(Salary)", Tables: []string{"Pay"}}, // reads a table not indexed
+			{Name: "Revenue", Kind: gowarehouse.DefinitionMeasure, Expression: "Sum(Amount)", Description: "Net of returns", Tables: []gowarehouse.TableRef{{Dataset: "app1", Table: "Orders"}}},
+			{Name: "app1.Orders", Kind: gowarehouse.DefinitionDimension, Expression: "OrderID", Tables: []gowarehouse.TableRef{{Dataset: "app1", Table: "Orders"}}},
+			{Name: "", Kind: gowarehouse.DefinitionMeasure, Expression: "Sum(x)"}, // unusable: no name
+			// Reads a table that is not indexed, and one of the same name in
+			// another dataset: neither stands in for the table it reads.
+			{Name: "Payroll", Kind: gowarehouse.DefinitionMeasure, Expression: "Sum(Salary)", Tables: []gowarehouse.TableRef{{Dataset: "app1", Table: "Pay"}}},
+			{Name: "Archived", Kind: gowarehouse.DefinitionMeasure, Expression: "Sum(Amount)", Tables: []gowarehouse.TableRef{{Dataset: "archive", Table: "Orders"}}},
 		}},
 	}
 	stats, err := si.BuildIndex(ctx, IndexOptions{ProjectID: "integ-defs"})
@@ -444,8 +447,10 @@ func TestInteg_SchemaIndexer_DefinitionsAreIndexedAndSearchable(t *testing.T) {
 	if _, ok := kinds["app1.Orders|"+gowarehouse.DefinitionDimension]; !ok {
 		t.Errorf("the dimension definition was not returned by search: %v", kinds)
 	}
-	if _, ok := kinds["Payroll|"+gowarehouse.DefinitionMeasure]; ok {
-		t.Errorf("a definition over a table that is not indexed was indexed: %v", kinds)
+	for _, name := range []string{"Payroll", "Archived"} {
+		if _, ok := kinds[name+"|"+gowarehouse.DefinitionMeasure]; ok {
+			t.Errorf("%s reads a table that is not indexed, yet was indexed: %v", name, kinds)
+		}
 	}
 
 	// A definition read that fails leaves the tables indexed.

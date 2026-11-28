@@ -1303,13 +1303,14 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 	// index payload, and query_data routes per datasource_id.
 	schemaSearchWarehouseID := o.warehouseID
 	var tableWarehouse map[string]string
-	var tableDatasources []string
+	var datasourceTables map[string][]string
 	if dc != nil {
 		schemaSearchWarehouseID = ""
 		tableWarehouse = dc.tableWarehouse
+		datasourceTables = make(map[string][]string, len(dc.schemasByDS))
 		for id, schemas := range dc.schemasByDS {
-			if len(schemas) > 0 {
-				tableDatasources = append(tableDatasources, id)
+			for table := range schemas {
+				datasourceTables[id] = append(datasourceTables[id], table)
 			}
 		}
 	}
@@ -1321,7 +1322,7 @@ func (o *Orchestrator) RunDiscovery(ctx context.Context, opts DiscoveryOptions) 
 		Schemas:          schemas,
 		CatalogRefs:      o.runCatalogRefs,
 		TableWarehouse:   tableWarehouse,
-		TableDatasources: tableDatasources,
+		DatasourceTables: datasourceTables,
 		Retriever:        o.schemaRetriever,
 		Embedder:         o.embedder,
 	})
