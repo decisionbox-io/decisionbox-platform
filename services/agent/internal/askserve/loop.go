@@ -243,7 +243,7 @@ func groundingNudge(shapes sourceShapes) string {
 	case shapes.allCube:
 		discover = "If you don't know what a datasource offers, discover it with search_tables — it lists the metrics and dimensions each one has. "
 	case shapes.anyCube:
-		discover = "If you don't know what a datasource offers, use search_tables; a query against INFORMATION_SCHEMA (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) and lookup_schema apply only to a SQL datasource. "
+		discover = "If you don't know what a datasource offers, use search_tables; lookup_schema applies only to a datasource with tables, and a query against INFORMATION_SCHEMA (e.g. `SELECT table_name FROM <dataset>.INFORMATION_SCHEMA.TABLES`) only to a SQL datasource. "
 	case shapes.nonSQL():
 		discover = "If you don't know the tables or columns, use search_tables / lookup_schema. "
 	}

@@ -3,6 +3,7 @@ package warehouse
 import (
 	"context"
 	"fmt"
+	"reflect"
 )
 
 // SourceShape describes how a source organises what can be queried. It is not
@@ -169,29 +170,47 @@ func rowCapInspectorOf(p Provider) (RowCapInspector, bool) {
 // Query, RunQuery or anything else that executes: that would be a way around
 // the middleware, which is why AsQueryRunner deliberately does not unwrap.
 //
-// Bounded, so a wrapper that returns itself cannot spin. A wrapper that
-// neither implements T nor exposes Unwrap still ends the search, as before.
+// A chain that leads back to a wrapper already visited ends the search: no
+// capability lies further down a cycle. Wrappers are told apart by pointer
+// identity, never by comparing values, which panics for a wrapper whose
+// value holds a slice or map. A value-typed wrapper has no identity, so the
+// only loop identity cannot see — one returning a copy of itself — is ended by
+// maxUnwrapChain. A wrapper that neither implements T nor exposes Unwrap ends
+// the search, as before.
 func FindCapability[T any](v any) (T, bool) {
 	var zero T
-	for range 16 {
+	visited := map[uintptr]bool{}
+	for range maxUnwrapChain {
 		if v == nil {
 			return zero, false
 		}
 		if c, ok := v.(T); ok {
 			return c, true
 		}
+		if rv := reflect.ValueOf(v); rv.Kind() == reflect.Pointer {
+			if visited[rv.Pointer()] {
+				return zero, false
+			}
+			visited[rv.Pointer()] = true
+		}
 		u, ok := v.(interface{ Unwrap() Provider })
 		if !ok {
 			return zero, false
 		}
 		next := u.Unwrap()
-		if next == nil || any(next) == v {
+		if next == nil {
 			return zero, false
 		}
 		v = next
 	}
 	return zero, false
 }
+
+// maxUnwrapChain bounds how many wrappers FindCapability looks through. Real
+// chains are one wrapper per registered middleware plus the query-runner
+// adapter, far below it; it exists only to end the loop identity cannot see
+// (see FindCapability).
+const maxUnwrapChain = 16
 
 // Unwrap exposes the adapted Provider so callers that still need the
 // table-shaped surface (schema discovery, identifier quoting) can reach it

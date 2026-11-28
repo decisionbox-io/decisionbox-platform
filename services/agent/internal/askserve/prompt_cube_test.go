@@ -324,8 +324,13 @@ func TestGroundingNudge_CorrectsInTheShapeOfTheSource(t *testing.T) {
 	}
 
 	mixed := groundingNudge(sourceShapes{anyCube: true})
-	if !strings.Contains(mixed, "apply only to a SQL datasource") {
+	if !strings.Contains(mixed, "only to a SQL datasource") {
 		t.Errorf("a mixed turn's nudge does not qualify its SQL discovery advice: %q", mixed)
+	}
+	// lookup_schema needs tables, not SQL: a source with tables whose queries
+	// are not SQL keeps it.
+	if !strings.Contains(mixed, "lookup_schema applies only to a datasource with tables") {
+		t.Errorf("a mixed turn's nudge ties lookup_schema to SQL rather than to tables: %q", mixed)
 	}
 	if !strings.Contains(mixed, "INFORMATION_SCHEMA") {
 		t.Errorf("a mixed turn's nudge dropped SQL discovery, which its SQL datasource still needs: %q", mixed)

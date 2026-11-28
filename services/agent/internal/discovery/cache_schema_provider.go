@@ -325,8 +325,9 @@ func (p *CacheSchemaProvider) Search(ctx context.Context, query string, k int) (
 			}
 		case gowarehouse.IsDefinitionKind(h.Blurb.Kind):
 			// Indexed with its datasource's tables; admitted while that
-			// datasource has tables here (see SearchAdmits).
-			if !p.tablesFrom[normDatasourceID(h.Blurb.WarehouseID)] {
+			// datasource has tables here and every table it reads is one
+			// (see SearchAdmits).
+			if !p.tablesFrom[normDatasourceID(h.Blurb.WarehouseID)] || !p.hasAll(h.Blurb.DependsOn) {
 				continue
 			}
 		case !p.catalogOffers(h.Blurb.WarehouseID, h.Blurb.Table):
@@ -563,6 +564,16 @@ func refSet(byDatasource map[string][]string) map[string]map[string]bool {
 // catalogOffers reports whether the cache says this datasource currently
 // offers this ref. An unknown datasource offers nothing, which is what makes
 // a point left behind by a removed one untrusted.
+// hasAll reports whether every table ref is in this run's schemas.
+func (p *CacheSchemaProvider) hasAll(refs []string) bool {
+	for _, ref := range refs {
+		if _, ok := p.schemas[ref]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func (p *CacheSchemaProvider) catalogOffers(datasourceID, ref string) bool {
 	return p.catalogRefs[normDatasourceID(datasourceID)][ref]
 }

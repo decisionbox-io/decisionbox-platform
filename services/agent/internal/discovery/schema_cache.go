@@ -83,14 +83,22 @@ func SearchAuthority(schemas map[string]models.TableSchema, catalogRefs []string
 // authority set this is may return. hasTables says whether that datasource
 // currently has tables indexed.
 //
-// A table or catalog item must be named in the set. A business definition
-// belongs to its datasource as a whole and is indexed with its tables: it is
-// admitted exactly while the datasource still has tables, so it goes when
-// they go — a removed datasource, or one scoped down to nothing — and is
-// rewritten with them on every index run.
-func SearchAdmits(authority map[string]bool, hasTables bool, kind, ref string) bool {
+// A table or catalog item must be named in the set. A business definition is
+// indexed with its datasource's tables and reads some of them (dependsOn): it
+// is admitted while the datasource has tables and every table it reads is
+// admitted, so it goes when they go — a removed datasource, or a table scoped
+// out of the project.
+func SearchAdmits(authority map[string]bool, hasTables bool, kind, ref string, dependsOn []string) bool {
 	if warehouse.IsDefinitionKind(kind) {
-		return hasTables
+		if !hasTables {
+			return false
+		}
+		for _, table := range dependsOn {
+			if !authority[table] {
+				return false
+			}
+		}
+		return true
 	}
 	return authority[ref]
 }

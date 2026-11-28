@@ -452,7 +452,13 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 		si.recordErr(ctx, opts.ProjectID, "qdrant upsert: "+err.Error())
 		return partialStats(), fmt.Errorf("schema_indexer: qdrant upsert: %w", err)
 	}
-	definitions := si.indexDefinitions(ctx, opts)
+	// The tables just indexed, by the name a source gives them, so a
+	// definition is kept only when every table it reads is among them.
+	indexed := make(map[string]string, len(items))
+	for _, it := range items {
+		indexed[strings.TrimPrefix(it.Blurb.Table, it.Blurb.Dataset+".")] = it.Blurb.Table
+	}
+	definitions := si.indexDefinitions(ctx, opts, indexed)
 	embeddingDur := time.Since(embedStart)
 	applog.WithFields(applog.Fields{
 		"tables":           len(items),
@@ -479,15 +485,17 @@ func (si *SchemaIndexer) BuildIndex(ctx context.Context, opts IndexOptions) (*St
 }
 
 // indexDefinitions embeds and upserts the source's business definitions beside
-// its tables. A definition belongs to the datasource as a whole, not to one of
-// its datasets, so search admits it while the datasource has tables (see
-// SearchAdmits). Returns how many were indexed.
+// its tables. A definition reading a table that is not indexed — scoped out of
+// the project, or not listed — is left out, and the ones kept carry the refs of
+// the tables they read so search admits them only while those tables are
+// admitted (see SearchAdmits). indexed maps a table's name, as the source
+// gives it, to its indexed ref. Returns how many were indexed.
 //
 // Best-effort. The tables are the index and the definitions enrich it: a
 // failure to read or store them is logged and the build carries on, because
 // failing it would leave the datasource "not ready" over context it can do
 // without.
-func (si *SchemaIndexer) indexDefinitions(ctx context.Context, opts IndexOptions) int {
+func (si *SchemaIndexer) indexDefinitions(ctx context.Context, opts IndexOptions, indexed map[string]string) int {
 	if si.Definitions == nil {
 		return 0
 	}
@@ -499,12 +507,18 @@ func (si *SchemaIndexer) indexDefinitions(ctx context.Context, opts IndexOptions
 	}
 	var kept []gowarehouse.BusinessDefinition
 	var texts []string
+	var dependsOn [][]string
 	for _, d := range defs {
 		if strings.TrimSpace(d.Name) == "" || !gowarehouse.IsDefinitionKind(d.Kind) {
 			continue
 		}
+		refs, ok := indexedRefs(d.Tables, indexed)
+		if !ok {
+			continue
+		}
 		kept = append(kept, d)
 		texts = append(texts, definitionBlurb(d))
+		dependsOn = append(dependsOn, refs)
 	}
 	if len(kept) == 0 {
 		return 0
@@ -523,6 +537,7 @@ func (si *SchemaIndexer) indexDefinitions(ctx context.Context, opts IndexOptions
 				Blurb:          texts[i],
 				Keywords:       opts.Keywords,
 				EmbeddingModel: si.Embedder.ModelName(),
+				DependsOn:      dependsOn[i],
 			},
 			Vector: vectors[i],
 		}
@@ -532,6 +547,20 @@ func (si *SchemaIndexer) indexDefinitions(ctx context.Context, opts IndexOptions
 		return 0
 	}
 	return len(items)
+}
+
+// indexedRefs maps the tables a definition reads to their indexed refs, or
+// reports false when one of them is not indexed.
+func indexedRefs(tables []string, indexed map[string]string) ([]string, bool) {
+	refs := make([]string, 0, len(tables))
+	for _, t := range tables {
+		ref, ok := indexed[t]
+		if !ok {
+			return nil, false
+		}
+		refs = append(refs, ref)
+	}
+	return refs, true
 }
 
 // definitionBlurb is the searchable text of a business definition: what it is

@@ -11,9 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Table-shaped sources whose queries are not SQL.** A source can have real tables — listed, looked up, sampled, schema-indexed — and still be queried in its own language. Several consumers decided "SQL or not" from the source's *shape*, so such a source was told to write SQL. Ask, exploration, validation and the pack contract now read the declared language (`warehouse.NonSQLLanguageOf`) separately from the shape; a turn, run or check that reaches only SQL sources renders exactly as before.
-- **`Capability.QueryGuide`.** A non-SQL provider can declare a short reference for its request format. It is shown beside the language name in Ask, the exploration opening message and the verifier/refuter frames, so the first query is written in the source's format instead of being learned one failed query at a time.
-- **`warehouse.DefinitionSource`.** A source's own named measures and dimensions (a BI tool's master items, a semantic layer's metrics), indexed beside its tables and returned by `search_tables` with the kind `defined measure` / `defined dimension`. Search admits them exactly while their dataset's tables are indexed.
-- **`warehouse.FindCapability`.** One bounded walk of a middleware's `Unwrap` chain, for capabilities that run nothing.
+- **`Capability.QueryGuide`.** A non-SQL provider can declare a short reference for its request format. It is shown beside the language name in Ask, the exploration system prompt and the verifier/refuter frames, so the first query is written in the source's format instead of being learned one failed query at a time.
+- **`warehouse.DefinitionSource`.** A source's own named measures and dimensions (a BI tool's master items, a semantic layer's metrics), indexed beside its tables and returned by `search_tables` with the kind `defined measure` / `defined dimension`. Each carries the tables its formula reads; it is indexed and admitted by search only while all of them are, so a table scoped out of a project does not come back through a definition over it.
+- **`warehouse.FindCapability`.** One walk of a middleware's `Unwrap` chain, for capabilities that run nothing. It ends at a cycle and never compares wrappers by value.
 
 - **A tenant filter on a non-SQL datasource is refused at project create and edit.** The executor checks a filter by reading its predicate in the query text, which it cannot do in another language, so such a datasource refused every query. It is now refused when saved, with the reason.
 

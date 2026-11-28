@@ -237,7 +237,7 @@ func runAskServe(cfg *config.Config) error {
 						wid = models.DefaultWarehouseID
 					}
 					tset, known := whTables[wid]
-					if !known || !discovery.SearchAdmits(tset, whHasTables[wid], h.Blurb.Kind, h.Blurb.Table) {
+					if !known || !discovery.SearchAdmits(tset, whHasTables[wid], h.Blurb.Kind, h.Blurb.Table, h.Blurb.DependsOn) {
 						// Stale index for a removed/unindexed datasource, or a
 						// table no longer in the cached schema — treat the cache
 						// as the authority so search and lookup stay consistent.

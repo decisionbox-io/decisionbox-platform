@@ -409,9 +409,10 @@ func TestInteg_SchemaIndexer_DefinitionsAreIndexedAndSearchable(t *testing.T) {
 		Embedder:  &stubEmbedder{dim: 3, model: "stub"},
 		Retriever: retriever,
 		Definitions: &stubDefinitions{defs: []gowarehouse.BusinessDefinition{
-			{Name: "Revenue", Kind: gowarehouse.DefinitionMeasure, Expression: "Sum(Amount)", Description: "Net of returns"},
-			{Name: "app1.Orders", Kind: gowarehouse.DefinitionDimension, Expression: "OrderID"},
-			{Name: "", Kind: gowarehouse.DefinitionMeasure, Expression: "Sum(x)"}, // unusable: no name
+			{Name: "Revenue", Kind: gowarehouse.DefinitionMeasure, Expression: "Sum(Amount)", Description: "Net of returns", Tables: []string{"Orders"}},
+			{Name: "app1.Orders", Kind: gowarehouse.DefinitionDimension, Expression: "OrderID", Tables: []string{"Orders"}},
+			{Name: "", Kind: gowarehouse.DefinitionMeasure, Expression: "Sum(x)"},                                      // unusable: no name
+			{Name: "Payroll", Kind: gowarehouse.DefinitionMeasure, Expression: "Sum(Salary)", Tables: []string{"Pay"}}, // reads a table not indexed
 		}},
 	}
 	stats, err := si.BuildIndex(ctx, IndexOptions{ProjectID: "integ-defs"})
@@ -442,6 +443,9 @@ func TestInteg_SchemaIndexer_DefinitionsAreIndexedAndSearchable(t *testing.T) {
 	}
 	if _, ok := kinds["app1.Orders|"+gowarehouse.DefinitionDimension]; !ok {
 		t.Errorf("the dimension definition was not returned by search: %v", kinds)
+	}
+	if _, ok := kinds["Payroll|"+gowarehouse.DefinitionMeasure]; ok {
+		t.Errorf("a definition over a table that is not indexed was indexed: %v", kinds)
 	}
 
 	// A definition read that fails leaves the tables indexed.

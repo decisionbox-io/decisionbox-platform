@@ -227,6 +227,10 @@ type TableBlurb struct {
 	ColumnCount    int
 	BlurbModel     string // provider/model used — for audit + future staleness checks
 	EmbeddingModel string // e.g. openai/text-embedding-3-large
+	// DependsOn is, for a business definition, the qualified refs of the
+	// tables its formula reads: search admits it only while all of them are
+	// admitted. Empty for a table or a catalog item.
+	DependsOn []string
 }
 
 // UpsertItem is a (blurb, vector) pair — caller embeds the blurb using
@@ -454,6 +458,10 @@ func payloadFromBlurb(b TableBlurb, projectID, warehouseID string) map[string]in
 	for i, k := range b.Keywords {
 		kws[i] = k
 	}
+	deps := make([]interface{}, len(b.DependsOn))
+	for i, d := range b.DependsOn {
+		deps[i] = d
+	}
 	// b.Table is the qualified form "dataset.table" (contract enforced by
 	// TableBlurb's doc comment). The payload splits it into the bare
 	// table name + the dataset so operators inspecting a point don't see
@@ -476,6 +484,7 @@ func payloadFromBlurb(b TableBlurb, projectID, warehouseID string) map[string]in
 		"column_count":    int64(b.ColumnCount),
 		"blurb_model":     b.BlurbModel,
 		"embedding_model": b.EmbeddingModel,
+		"depends_on":      deps,
 	}
 }
 
@@ -521,6 +530,7 @@ func blurbFromPayload(payload map[string]*pb.Value) TableBlurb {
 		ColumnCount:    int(intVal(payload, "column_count")),
 		BlurbModel:     strVal(payload, "blurb_model"),
 		EmbeddingModel: strVal(payload, "embedding_model"),
+		DependsOn:      strListVal(payload, "depends_on"),
 	}
 }
 

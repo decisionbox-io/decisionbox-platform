@@ -27,6 +27,12 @@ type BusinessDefinition struct {
 	Expression string
 	// Description is the source's own description, or "".
 	Description string
+	// Tables are the source's tables the formula reads, named as ListTables
+	// names them: every table holding a field it uses. A definition is
+	// offered only while all of them are, so a table left out of a project's
+	// scope does not come back through a formula over it. Empty when the
+	// formula reads no table.
+	Tables []string
 }
 
 // DefinitionSource is an optional provider interface for a source that carries

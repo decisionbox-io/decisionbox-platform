@@ -45,6 +45,36 @@ func TestCapabilitiesAreFoundThroughMiddleware(t *testing.T) {
 	}
 }
 
+// sliceWrapper is a value-typed wrapper whose value holds a slice: comparing
+// two of them panics, so the search must never compare wrappers by value.
+type sliceWrapper struct {
+	Provider
+	inner Provider
+	tags  []string
+}
+
+func (w sliceWrapper) Unwrap() Provider { return w.inner }
+
+// loopWrapper is a pointer wrapper; two of them can be wired into a cycle.
+type loopWrapper struct {
+	Provider
+	next Provider
+}
+
+func (w *loopWrapper) Unwrap() Provider { return w.next }
+
+func TestFindCapability_SafeOnAnyWrapper(t *testing.T) {
+	chain := sliceWrapper{inner: sliceWrapper{inner: defsProvider{}, tags: []string{"b"}}, tags: []string{"a"}}
+	if _, ok := AsDefinitionSource(chain); !ok {
+		t.Error("definitions not found through value wrappers holding slices")
+	}
+	a, b := &loopWrapper{}, &loopWrapper{}
+	a.next, b.next = b, a
+	if _, ok := AsDefinitionSource(a); ok {
+		t.Error("a cycle of wrappers must end the search with nothing found")
+	}
+}
+
 func TestIsDefinitionKind(t *testing.T) {
 	for kind, want := range map[string]bool{
 		DefinitionMeasure: true, DefinitionDimension: true,

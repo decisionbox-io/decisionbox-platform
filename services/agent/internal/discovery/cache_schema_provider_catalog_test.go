@@ -192,6 +192,7 @@ func TestSearch_KeepsDefinitionHitsOfIndexedDatasources(t *testing.T) {
 	searcher := &fakeVectorSearcher{hits: []schema_retrieve.Hit{
 		{Blurb: schema_retrieve.TableBlurb{Table: "Revenue", Kind: gowarehouse.DefinitionMeasure, WarehouseID: "app", Blurb: "defined measure \"Revenue\""}, Score: 0.9},
 		{Blurb: schema_retrieve.TableBlurb{Table: "Stale", Kind: gowarehouse.DefinitionMeasure, WarehouseID: "removed", Blurb: "from a datasource no longer indexed"}, Score: 0.8},
+		{Blurb: schema_retrieve.TableBlurb{Table: "Scoped Out", Kind: gowarehouse.DefinitionMeasure, WarehouseID: "app", DependsOn: []string{"events.users", "events.payroll"}}, Score: 0.7},
 	}}
 	p, err := NewCacheSchemaProvider(CacheSchemaProviderOptions{
 		Schemas:        sampleSchemas(),
@@ -207,7 +208,7 @@ func TestSearch_KeepsDefinitionHitsOfIndexedDatasources(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(hits) != 1 || hits[0].Table != "Revenue" || hits[0].Kind != gowarehouse.DefinitionMeasure {
-		t.Fatalf("hits = %+v, want only the definition whose datasource has tables", hits)
+		t.Fatalf("hits = %+v, want only the definition whose datasource has tables and whose tables are all in scope", hits)
 	}
 }
 

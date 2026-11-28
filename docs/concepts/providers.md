@@ -208,7 +208,7 @@ A non-SQL source may declare `Capability.QueryGuide`, a short reference for its 
 | `SampleQueryBuilder` | Build a "sample N rows" query in the source's language; found through middleware with `SampleQueryBuilderOf`. |
 | `RowCapInspector` / `RowOffsetInspector` | Read the row cap / offset a query carries, so a capped or paged result is reported as such. |
 | `CatalogSource` | Describe a source with no tables by its catalog of metrics and dimensions; indexed instead of tables. |
-| `DefinitionSource` | The source's own named measures and dimensions with their formulas; indexed beside its tables and returned by `search_tables` with their kind. |
+| `DefinitionSource` | The source's own named measures and dimensions with their formulas, each with the tables it reads; indexed beside its tables and returned by `search_tables` with their kind while every table it reads is in scope. |
 
 See [Adding Warehouse Providers](../guides/adding-warehouse-providers.md) to implement your own.
 
