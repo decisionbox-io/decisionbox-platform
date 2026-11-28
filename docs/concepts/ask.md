@@ -19,6 +19,19 @@ A conversation that belongs to someone else is reported as **not found** rather 
 With authentication off there is one caller, `anonymous`, so every session belongs to it and the behaviour is exactly as it was.
 On a deployment that has since turned authentication on, sessions written earlier carry that same `anonymous` subject and no real owner; they stay readable by everyone rather than disappearing, and nothing can be added to that set once real identities are in play.
 
+## Which surface a conversation is on
+
+A session carries a **surface**: `ask` for an Ask Insights conversation, or another value for a conversation that is held on the same session model but is about something else entirely.
+The surface decides which tools the model is given, which system prompt it runs under, and which history list the session appears in.
+
+- `ask` is the default and what every session written before the field existed is. The field is absent on those rows and absent means `ask`, so Ask's own history is unchanged.
+- `playbook` is a conversation that maintains the project's [Playbook](../guides/customizing-prompts.md) — proposing analysis areas rather than answering questions about data. The surface is part of the session model here; what a given deployment can actually do on it depends on which plugins it runs.
+
+`GET /api/v1/projects/{id}/ask/sessions` takes an optional `?surface=`; omitted, it lists the Ask surface, which is every session the endpoint has ever returned.
+An unrecognised value is rejected with a `400` rather than answered with the wrong list.
+
+A conversation's surface is fixed at creation and derived from the **session**, never from the request that arrived — so a request cannot borrow another surface's tools by claiming to be on it.
+
 ## Why budgeting matters
 
 Every chat request carries:

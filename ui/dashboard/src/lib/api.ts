@@ -2481,9 +2481,12 @@ export const api = {
   // Ask sessions (conversations). seed scopes the list to prior conversations
   // launched from one insight / recommendation ("previous conversations about
   // this item").
-  listAskSessions: (projectId: string, limit = 20, seed?: { type: string; id: string }) => {
+  // surface scopes the list to one conversation surface; omitted means Ask,
+  // which is every session this endpoint has ever returned.
+  listAskSessions: (projectId: string, limit = 20, seed?: { type: string; id: string }, surface?: string) => {
     const q = new URLSearchParams({ limit: String(limit) });
     if (seed) { q.set('seed_type', seed.type); q.set('seed_id', seed.id); }
+    if (surface) q.set('surface', surface);
     return request<AskSession[]>(`/api/v1/projects/${projectId}/ask/sessions?${q.toString()}`);
   },
   getAskSession: (projectId: string, sessionId: string) =>

@@ -958,6 +958,10 @@ func (m *mockDomainPackRepo) Create(_ context.Context, pack *models.DomainPack) 
 	pack.ID = fmt.Sprintf("dp-%d", m.nextID)
 	pack.CreatedAt = time.Now()
 	pack.UpdatedAt = time.Now()
+	// Mirrors the repository: a new pack is revision 1 with no log, and
+	// whatever history the caller carried in belongs to another pack.
+	pack.Revision = 1
+	pack.Revisions = nil
 	stored := *pack
 	m.packs[pack.Slug] = &stored
 	return nil
@@ -1009,17 +1013,42 @@ func (m *mockDomainPackRepo) List(_ context.Context, publishedOnly bool) ([]*mod
 	return result, nil
 }
 
-func (m *mockDomainPackRepo) Update(_ context.Context, slug string, pack *models.DomainPack) error {
+// Update mirrors DomainPackRepository.Update, including the parts the handler
+// depends on being true: the body's revision fields are ignored, the write is
+// pinned on the revision the caller read, and the bump and the log append
+// happen together.
+func (m *mockDomainPackRepo) Update(_ context.Context, slug string, pack *models.DomainPack, atRevision int, rev *models.PackRevision) error {
 	if m.updateErr != nil {
 		return m.updateErr
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.packs[slug]; !ok {
+	current, ok := m.packs[slug]
+	if !ok {
 		return fmt.Errorf("domain pack not found: %s", slug)
 	}
 	pack.UpdatedAt = time.Now()
 	stored := *pack
+	stored.Revision = current.Revision
+	stored.Revisions = current.Revisions
+	if rev != nil {
+		if rev.Origin == "" {
+			return fmt.Errorf("update domain pack %s: a revision must say where it came from", slug)
+		}
+		if current.Revision != atRevision {
+			return database.ErrPackRevisionConflict
+		}
+		entry := *rev
+		entry.Revision = atRevision + 1
+		if entry.CreatedAt.IsZero() {
+			entry.CreatedAt = time.Now()
+		}
+		stored.Revision = atRevision + 1
+		stored.Revisions = append(append([]models.PackRevision{}, current.Revisions...), entry)
+		if max := database.PackRevisionHistoryMax(); len(stored.Revisions) > max {
+			stored.Revisions = stored.Revisions[len(stored.Revisions)-max:]
+		}
+	}
 	m.packs[slug] = &stored
 	return nil
 }

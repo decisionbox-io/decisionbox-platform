@@ -267,6 +267,7 @@ Same variables as the agent — see the [Agent Telemetry](#telemetry) section ab
 | `SERVICE_NAME` | `decisionbox-api` | Service name in logs. |
 | `ENV` | `dev` | Environment (`dev` or `prod`). |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error`. |
+| `PLAYBOOK_REVISION_HISTORY_MAX` | `50` | How many entries a Playbook's [revision log](../concepts/domain-packs.md#revision-history) keeps. The log is trimmed oldest-first inside the same write that appends to it, so this bounds the pack document rather than scheduling a cleanup. Values `<= 0` fall back to the default. |
 
 ---
 

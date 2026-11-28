@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/decisionbox-io/decisionbox/services/api/database"
 	apilog "github.com/decisionbox-io/decisionbox/services/api/internal/log"
@@ -109,7 +112,34 @@ func (h *DomainPacksHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.repo.Update(r.Context(), slug, &pack); err != nil {
+	// Record the edit in the pack's own revision log, so a Playbook carries
+	// its history wherever it is read. A save that changes nothing records
+	// nothing: a history where half the entries say "no change" is one nobody
+	// reads. The repository strips whatever revision fields the body carried
+	// and applies the bump itself — see DomainPackRepository.Update.
+	var rev *models.PackRevision
+	if !models.PackContentEqual(existing, &pack) {
+		sub, _ := userID(r)
+		areas := models.ChangedAreaIDs(existing, &pack)
+		rev = &models.PackRevision{
+			// AddPackRevision is the authority on these two; they are set here
+			// so the response can show the revision this request produced
+			// without a second read.
+			Revision:  existing.Revision + 1,
+			CreatedAt: time.Now(),
+			Origin:    models.PackRevisionOriginUser,
+			ActorSub:  sub,
+			Summary:   packEditSummary(areas),
+			AreaIDs:   areas,
+			Before:    models.PackAreasByID(existing, areas),
+		}
+	}
+
+	if err := h.repo.Update(r.Context(), slug, &pack, existing.Revision, rev); err != nil {
+		if errors.Is(err, database.ErrPackRevisionConflict) {
+			writeError(w, http.StatusConflict, "this Playbook was changed by someone else while you were editing it — reload and re-apply your change")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "failed to update domain pack: "+err.Error())
 		return
 	}
@@ -117,9 +147,36 @@ func (h *DomainPacksHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// Return the complete pack with preserved fields
 	pack.ID = existing.ID
 	pack.CreatedAt = existing.CreatedAt
+	pack.Revision = existing.Revision
+	pack.Revisions = existing.Revisions
+	if rev != nil {
+		pack.Revision = rev.Revision
+		pack.Revisions = append(pack.Revisions, *rev)
+		if max := database.PackRevisionHistoryMax(); len(pack.Revisions) > max {
+			pack.Revisions = pack.Revisions[len(pack.Revisions)-max:]
+		}
+	}
 
 	apilog.WithFields(apilog.Fields{"slug": slug}).Info("Domain pack updated")
 	writeJSON(w, http.StatusOK, pack)
+}
+
+// packEditSummary is the one-line description a hand edit gets in the pack's
+// revision log. The area ids are the useful part — "someone edited the pack"
+// is what the timestamp already says — and the list is bounded so one PUT that
+// rewrites everything does not write a paragraph.
+func packEditSummary(areaIDs []string) string {
+	if len(areaIDs) == 0 {
+		return "edited the Playbook"
+	}
+	const maxNamed = 5
+	named := areaIDs
+	suffix := ""
+	if len(named) > maxNamed {
+		named = named[:maxNamed]
+		suffix = fmt.Sprintf(" and %d more", len(areaIDs)-maxNamed)
+	}
+	return "edited analysis areas: " + strings.Join(named, ", ") + suffix
 }
 
 // Delete deletes a domain pack by slug.
@@ -157,6 +214,12 @@ func (h *DomainPacksHandler) Import(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pack := &portable.Pack
+	// A revision log names people and conversations in the deployment it came
+	// from, which mean nothing here — and Export does not emit one, so a body
+	// carrying one did not come from us. An imported pack starts its own
+	// history at revision 1, which Create sets.
+	pack.Revision = 0
+	pack.Revisions = nil
 	if err := models.ValidateDomainPack(pack); err != nil {
 		writeError(w, http.StatusBadRequest, "validation error: "+err.Error())
 		return
@@ -193,6 +256,12 @@ func (h *DomainPacksHandler) Export(w http.ResponseWriter, r *http.Request) {
 	// Strip MongoDB-specific fields for portable format
 	exportPack := *pack
 	exportPack.ID = ""
+	// The revision log is deployment-local: it names actor subjects, ask
+	// sessions and proposals that exist in one install and nowhere else. It is
+	// not part of what makes a pack portable, so it is not exported — and
+	// Import drops it for the same reason.
+	exportPack.Revision = 0
+	exportPack.Revisions = nil
 
 	portable := struct {
 		Format        string            `json:"format"`

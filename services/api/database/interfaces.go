@@ -194,7 +194,7 @@ type AskSessionRepo interface {
 	Create(ctx context.Context, session *commonmodels.AskSession) error
 	AppendMessage(ctx context.Context, projectID, userID, sessionID string, msg commonmodels.AskSessionMessage) error
 	GetByID(ctx context.Context, projectID, userID, sessionID string) (*commonmodels.AskSession, error)
-	ListByProject(ctx context.Context, projectID, userID string, limit int, seedType, seedID string) ([]*commonmodels.AskSession, error)
+	ListByProject(ctx context.Context, projectID, userID string, limit int, seedType, seedID, surface string) ([]*commonmodels.AskSession, error)
 	UpdateTitle(ctx context.Context, projectID, userID, sessionID, title string) error
 	Delete(ctx context.Context, projectID, userID, sessionID string) error
 }
@@ -262,7 +262,7 @@ type DomainPackRepo interface {
 	GetBySlug(ctx context.Context, slug string) (*models.DomainPack, error)
 	GetByID(ctx context.Context, id string) (*models.DomainPack, error)
 	List(ctx context.Context, publishedOnly bool) ([]*models.DomainPack, error)
-	Update(ctx context.Context, slug string, pack *models.DomainPack) error
+	Update(ctx context.Context, slug string, pack *models.DomainPack, atRevision int, rev *models.PackRevision) error
 	Delete(ctx context.Context, slug string) error
 }
 

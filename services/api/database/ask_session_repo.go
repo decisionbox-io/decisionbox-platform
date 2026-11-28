@@ -63,6 +63,21 @@ func sessionFilter(projectID, userID, sessionID string) bson.M {
 	return f
 }
 
+// askSurfacePredicate builds the surface clause for a list query.
+//
+// The Ask surface is spelled three ways on disk — the field absent (every row
+// written before the surface existed), present but empty, and "ask" — so
+// asking for Ask has to match all three. nil is what matches a missing field;
+// plain equality on "ask" would hide the entire existing corpus. Any other
+// surface is matched exactly, so a new surface's history starts empty rather
+// than inheriting every legacy conversation.
+func askSurfacePredicate(surface string) bson.M {
+	if surface == "" || surface == commonmodels.AskSurfaceAsk {
+		return bson.M{"$in": []any{nil, "", commonmodels.AskSurfaceAsk}}
+	}
+	return bson.M{"$eq": surface}
+}
+
 func NewAskSessionRepository(db *DB) *AskSessionRepository {
 	return &AskSessionRepository{db: db}
 }
@@ -201,13 +216,19 @@ func (r *AskSessionRepository) GetByID(ctx context.Context, projectID, userID, s
 	return &session, nil
 }
 
-// ListByProject lists the caller's Ask sessions in a project, newest-first.
-// userID == "" lists every session in the project — see sessionFilter. When
-// seedType and seedID are both non-empty, the list is scoped to sessions seeded
-// from that exact insight / recommendation ("previous conversations about this
-// item"). The seed reference (type/id/label) is projected so the caller can label
-// the list; the bulky hydrated seed text is deliberately excluded.
-func (r *AskSessionRepository) ListByProject(ctx context.Context, projectID, userID string, limit int, seedType, seedID string) ([]*commonmodels.AskSession, error) {
+// ListByProject lists the caller's sessions on one surface of a project,
+// newest-first. userID == "" lists every session in the project — see
+// sessionFilter. When seedType and seedID are both non-empty, the list is
+// scoped to sessions seeded from that exact insight / recommendation
+// ("previous conversations about this item"). The seed reference
+// (type/id/label) is projected so the caller can label the list; the bulky
+// hydrated seed text is deliberately excluded.
+//
+// surface is required rather than optional so that every caller has to say
+// which conversations it wants: a surface's history must never show another
+// surface's conversations, and a default would make forgetting that silent.
+// "" and commonmodels.AskSurfaceAsk both mean the Ask surface.
+func (r *AskSessionRepository) ListByProject(ctx context.Context, projectID, userID string, limit int, seedType, seedID, surface string) ([]*commonmodels.AskSession, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -225,6 +246,7 @@ func (r *AskSessionRepository) ListByProject(ctx context.Context, projectID, use
 			"seed_context.type":  1,
 			"seed_context.id":    1,
 			"seed_context.label": 1,
+			"surface":            1,
 		})
 
 	filter := sessionFilter(projectID, userID, "")
@@ -232,6 +254,7 @@ func (r *AskSessionRepository) ListByProject(ctx context.Context, projectID, use
 		filter["seed_context.type"] = seedType
 		filter["seed_context.id"] = seedID
 	}
+	filter["surface"] = askSurfacePredicate(surface)
 
 	cursor, err := r.db.Collection("ask_sessions").Find(ctx, filter, opts)
 	if err != nil {

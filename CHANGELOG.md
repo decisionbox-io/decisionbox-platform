@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A Playbook now carries its own revision history.** `domain_packs` documents gain `revision` — monotonic, bumped by every write that changes the pack's content — and `revisions[]`, a bounded log of who changed what, when, and how the change arrived (`origin: "user"` for a direct edit, `"ask_session"` for an approved proposal from a conversation, which also records the session and proposal). Each entry snapshots the areas it touched as they stood, so the history can say what changed rather than only that something did. [Details](docs/concepts/domain-packs.md#revision-history).
+
+  `revision` is also the optimistic-concurrency token: `PUT /api/v1/domain-packs/{slug}` is pinned to the revision it read, so two people editing different parts of the same pack no longer silently overwrite one another — the second gets a `409` that says so. The previous behaviour was last-write-wins over the whole document.
+
+  Both fields are server-owned. The Playbook editor round-trips a whole pack through a form and sends it back, so a `PUT` whose body omits them — which is every body an older client sends — would otherwise wipe the log; the repository strips them from the body and applies the bump itself, the same defence that already protected `_id`. A save that changes nothing records nothing, because a history where half the entries say "no change" is one nobody reads. The log is also deliberately **not** portable: `export` omits it and `import` drops it, since it names people, conversations and proposals that exist in one deployment and nowhere else.
+
+  Bounded by `PLAYBOOK_REVISION_HISTORY_MAX` (default 50), trimmed oldest-first in the same write that appends — a pack document cannot grow without limit as it is edited, and `before` snapshots only the touched areas, never the pack.
+
+- **An Ask session records which surface it belongs to.** `ask_sessions` gains an optional `surface` (`ask` by default, absent on every existing row, which `EffectiveSurface()` reads as `ask`). A surface decides which tools a turn is given, which system prompt it runs under, and which history list the session appears in, so two conversations in the same project can be about entirely different things without mixing. `GET /api/v1/projects/{id}/ask/sessions` accepts `?surface=` and lists `ask` when it is omitted — unchanged for every existing client. An unrecognised value is a `400` rather than the wrong list. [Details](docs/concepts/ask.md#which-surface-a-conversation-is-on).
+
+  `AskSessionRepo.ListByProject` takes the surface as a required argument rather than an option: one surface's history must never show another's, and a default would make forgetting that silent instead of a compile error.
+
 ## [0.42.1] - 2026-11-26
 
 ### Added
