@@ -4,6 +4,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	gomongo "github.com/decisionbox-io/decisionbox/libs/go-common/mongodb"
@@ -266,7 +267,9 @@ func TestDomainPackRepo_Update(t *testing.T) {
 	updated := testPack("gaming")
 	updated.Name = "Updated Gaming"
 	updated.Description = "New description"
-	err := repo.Update(ctx, "gaming", updated)
+	err := repo.Update(ctx, "gaming", updated, original.Revision, &models.PackRevision{
+		Origin: models.PackRevisionOriginUser, Summary: "renamed",
+	})
 	if err != nil {
 		t.Fatalf("Update error: %v", err)
 	}
@@ -281,9 +284,14 @@ func TestDomainPackRepo_Update(t *testing.T) {
 	}
 
 	// Update nonexistent
-	err = repo.Update(ctx, "nonexistent", testPack("nonexistent"))
+	err = repo.Update(ctx, "nonexistent", testPack("nonexistent"), 0, &models.PackRevision{
+		Origin: models.PackRevisionOriginUser,
+	})
 	if err == nil {
 		t.Error("should fail for nonexistent slug")
+	}
+	if errors.Is(err, ErrPackRevisionConflict) {
+		t.Errorf("a missing pack must not report as a revision conflict: %v", err)
 	}
 }
 

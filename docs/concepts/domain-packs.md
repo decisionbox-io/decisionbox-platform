@@ -131,6 +131,28 @@ There is no Go code per pack and no filesystem dependency.
 
 The `domain-packs/` directory in the repository still contains the raw prompt and profile data files used to build the embedded seed JSON, but these files are not read at runtime.
 
+## Revision History
+
+A pack stored in MongoDB carries its own change log, so reading a Playbook reads how it got that way:
+
+| Field | Meaning |
+|---|---|
+| `revision` | Monotonic, bumped by every write that changes the pack's content. Also the concurrency token: a write is pinned to the revision its author read, so two people changing different parts of a pack cannot silently overwrite each other — the second gets a `409` and re-applies. |
+| `revisions[]` | The log, oldest first, bounded to the most recent `PLAYBOOK_REVISION_HISTORY_MAX` entries (default 50). Each entry records `revision`, `origin`, who (`actor_sub`), a one-line `summary`, the `area_ids` the change touched, those areas as they stood (`before`), and `created_at`. |
+
+`origin` says how the change arrived:
+
+- **`user`** — somebody edited the pack directly (`PUT /api/v1/domain-packs/{slug}`).
+- **`ask_session`** — somebody approved a change that was proposed in a conversation. Those entries also carry the `session_id` and `proposal_id`, which together with the proposal row are the audit trail of who asked, who approved, and exactly what changed.
+
+Three things follow from where the log lives:
+
+- **Creating a pack is not a change to one.** A new pack — generated, imported, or posted — starts at `revision: 1` with an empty log. There is no "before" to record.
+- **The fields are server-owned.** `PUT` ignores `revision` and `revisions` in the request body and applies the bump itself. The dashboard round-trips a whole pack through a form; trusting the body would let a stale copy wipe the history. A save that changes nothing records nothing, so the log does not fill up with entries that say "no change".
+- **The log is not portable.** `GET .../export` omits it and `import` drops it: it names people, conversations and proposals that exist in one deployment and nowhere else. An imported pack starts its own history at revision 1.
+
+Packs loaded from the filesystem have no revision at all, which reads as `0` — an unknown history rather than a claimed-empty one. The first write to such a pack makes it revision 1.
+
 ## Areas Definition (areas.json)
 
 Each `areas.json` defines which analysis areas are available and maps them to prompt files.

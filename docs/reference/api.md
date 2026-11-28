@@ -1282,6 +1282,8 @@ A conversation with the Ask agent. A session belongs to the person who started i
 
 Sessions written before per-user scoping existed (owner: the anonymous subject) stay readable by everyone, so a deployment that has since turned authentication on does not hide rows people were already reading.
 
+A session also carries a **surface** (`ask` by default). `GET /api/v1/projects/{id}/ask/sessions` accepts `?surface=` to list one surface's conversations; omitted, it lists `ask`, which is every session this endpoint has ever returned, including rows written before the field existed. An unrecognised surface is a `400`. See [Ask sessions](../concepts/ask.md#which-surface-a-conversation-is-on).
+
 ### PATCH /api/v1/projects/{id}/ask/sessions/{sessionId}
 
 Rename a conversation. Requires `viewer`: a user who can hold a conversation can name it, and the ownership key stops a viewer touching anyone else's.

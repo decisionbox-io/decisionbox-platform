@@ -1056,7 +1056,19 @@ func (h *SearchHandler) ListAskSessions(w http.ResponseWriter, r *http.Request) 
 		seedType, seedID = "", ""
 	}
 
-	sessions, err := h.sessionRepo.ListByProject(r.Context(), projectID, uid, limit, seedType, seedID)
+	// Optional filter: the conversation surface. Absent means the Ask surface,
+	// which is every session this route has ever returned, so no client
+	// changes behaviour by not sending it. A session on another surface is
+	// listed only when asked for by name — that is what keeps one surface's
+	// history out of another's. An unrecognised value is a client bug and is
+	// rejected rather than silently answered with the wrong list.
+	surface := r.URL.Query().Get("surface")
+	if !commonmodels.KnownAskSurface(surface) {
+		writeError(w, http.StatusBadRequest, "invalid surface parameter")
+		return
+	}
+
+	sessions, err := h.sessionRepo.ListByProject(r.Context(), projectID, uid, limit, seedType, seedID, surface)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list sessions")
 		return

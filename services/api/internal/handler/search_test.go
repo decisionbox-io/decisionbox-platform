@@ -191,10 +191,15 @@ func (m *mockAskSessionRepo) GetByID(_ context.Context, projectID, userID, id st
 	}
 	return nil, database.ErrAskSessionNotFound
 }
-func (m *mockAskSessionRepo) ListByProject(_ context.Context, projectID, userID string, _ int, _, _ string) ([]*commonmodels.AskSession, error) {
+func (m *mockAskSessionRepo) ListByProject(_ context.Context, projectID, userID string, _ int, _, _, surface string) ([]*commonmodels.AskSession, error) {
+	// Mirrors the repository's surface scoping, including that "" asks for
+	// the Ask surface and that a session with no surface is on it.
+	if surface == "" {
+		surface = commonmodels.AskSurfaceAsk
+	}
 	var out []*commonmodels.AskSession
 	for _, s := range m.all() {
-		if s.ProjectID == projectID && matchesOwner(s.UserID, userID) {
+		if s.ProjectID == projectID && matchesOwner(s.UserID, userID) && s.EffectiveSurface() == surface {
 			out = append(out, s)
 		}
 	}
@@ -1120,6 +1125,89 @@ func TestListAskSessions_ReturnsOnlyCallerSessions(t *testing.T) {
 		if id := it.(map[string]interface{})["id"]; id == "b1" {
 			t.Errorf("bob's session leaked into alice's list")
 		}
+	}
+}
+
+// surfacedSessions is alice's p1 history spread across two surfaces: one
+// legacy row with no surface field at all, one written with an explicit "ask",
+// and two Playbook-editing conversations.
+func surfacedSessions() *mockAskSessionRepo {
+	return &mockAskSessionRepo{sessions: []*commonmodels.AskSession{
+		{ID: "legacy-ask", ProjectID: "p1", UserID: "alice", Title: "before surfaces existed"},
+		{ID: "explicit-ask", ProjectID: "p1", UserID: "alice", Title: "an Ask question", Surface: commonmodels.AskSurfaceAsk},
+		{ID: "pb1", ProjectID: "p1", UserID: "alice", Title: "add a stock-cover area", Surface: commonmodels.AskSurfacePlaybook},
+		{ID: "pb2", ProjectID: "p1", UserID: "alice", Title: "de-overlap the areas", Surface: commonmodels.AskSurfacePlaybook},
+	}}
+}
+
+func listedSessionIDs(t *testing.T, w *httptest.ResponseRecorder) []string {
+	t.Helper()
+	var resp APIResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	items, _ := resp.Data.([]interface{})
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		id, _ := it.(map[string]interface{})["id"].(string)
+		out = append(out, id)
+	}
+	return out
+}
+
+func listSessions(t *testing.T, repo *mockAskSessionRepo, query string) *httptest.ResponseRecorder {
+	t.Helper()
+	h := NewSearchHandler(nil, nil, nil, nil, repo, nil, nil)
+	req := asCaller(httptest.NewRequest("GET", "/api/v1/projects/p1/ask/sessions"+query, nil), "alice")
+	req.SetPathValue("id", "p1")
+	w := httptest.NewRecorder()
+	h.ListAskSessions(w, req)
+	return w
+}
+
+// No surface parameter is the behaviour every existing client has: the Ask
+// history, including rows written before the field existed — and never a
+// Playbook-editing conversation.
+func TestListAskSessions_DefaultSurfaceExcludesOtherSurfaces(t *testing.T) {
+	w := listSessions(t, surfacedSessions(), "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	got := listedSessionIDs(t, w)
+	if len(got) != 2 {
+		t.Fatalf("ids = %v, want the two Ask sessions", got)
+	}
+	for _, id := range got {
+		if id == "pb1" || id == "pb2" {
+			t.Errorf("a playbook session leaked into Ask history: %v", got)
+		}
+	}
+}
+
+func TestListAskSessions_SurfaceFilter(t *testing.T) {
+	for _, tc := range []struct {
+		query string
+		want  int
+	}{
+		{"?surface=ask", 2},
+		{"?surface=playbook", 2},
+	} {
+		w := listSessions(t, surfacedSessions(), tc.query)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d: %s", tc.query, w.Code, w.Body.String())
+		}
+		if got := listedSessionIDs(t, w); len(got) != tc.want {
+			t.Errorf("%s: ids = %v, want %d", tc.query, got, tc.want)
+		}
+	}
+}
+
+// An unrecognised surface is a client bug. Answering it with the Ask list
+// would be a wrong answer dressed as a right one.
+func TestListAskSessions_UnknownSurface_400(t *testing.T) {
+	w := listSessions(t, surfacedSessions(), "?surface=playbooks")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
 	}
 }
 

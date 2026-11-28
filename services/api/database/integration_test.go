@@ -429,7 +429,7 @@ func TestInteg_AskSessionRepo_CRUD(t *testing.T) {
 	}
 
 	// List by project
-	sessions, err := repo.ListByProject(ctx, "proj-integ-1", "user-1", 10, "", "")
+	sessions, err := repo.ListByProject(ctx, "proj-integ-1", "user-1", 10, "", "", commonmodels.AskSurfaceAsk)
 	if err != nil {
 		t.Fatalf("ListByProject: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestInteg_AskSessionRepo_CRUD(t *testing.T) {
 	if err := repo.Create(ctx, seededB); err != nil {
 		t.Fatalf("create seededB: %v", err)
 	}
-	filtered, err := repo.ListByProject(ctx, "proj-integ-1", "user-1", 10, "insight", "ins-A")
+	filtered, err := repo.ListByProject(ctx, "proj-integ-1", "user-1", 10, "insight", "ins-A", commonmodels.AskSurfaceAsk)
 	if err != nil {
 		t.Fatalf("ListByProject seed filter: %v", err)
 	}
@@ -472,7 +472,7 @@ func TestInteg_AskSessionRepo_CRUD(t *testing.T) {
 		t.Errorf("bulky seed text should be excluded from the list projection, got %q", filtered[0].SeedContext.Text)
 	}
 	// A non-matching seed id returns nothing.
-	if none, _ := repo.ListByProject(ctx, "proj-integ-1", "user-1", 10, "insight", "ins-ZZZ"); len(none) != 0 {
+	if none, _ := repo.ListByProject(ctx, "proj-integ-1", "user-1", 10, "insight", "ins-ZZZ", commonmodels.AskSurfaceAsk); len(none) != 0 {
 		t.Errorf("seed filter for unknown id should be empty, got %d", len(none))
 	}
 
@@ -662,7 +662,7 @@ func TestInteg_AskSessionRepo_OwnerScoping(t *testing.T) {
 	}
 
 	// List
-	got, err := repo.ListByProject(ctx, project, "alice", 10, "", "")
+	got, err := repo.ListByProject(ctx, project, "alice", 10, "", "", commonmodels.AskSurfaceAsk)
 	if err != nil {
 		t.Fatalf("ListByProject: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestInteg_AskSessionRepo_OwnerScoping(t *testing.T) {
 		t.Errorf("alice's list = %d sessions, want 2 (not bob's, not her other project): %+v", len(got), got)
 	}
 	// The internal-caller contract: an empty owner sees the whole project.
-	if all, _ := repo.ListByProject(ctx, project, "", 10, "", ""); len(all) != 3 {
+	if all, _ := repo.ListByProject(ctx, project, "", 10, "", "", commonmodels.AskSurfaceAsk); len(all) != 3 {
 		t.Errorf("unscoped list = %d, want 3", len(all))
 	}
 
@@ -736,7 +736,7 @@ func TestInteg_AskSessionRepo_LegacyAnonymousIsShared(t *testing.T) {
 	}
 
 	// bob sees the shared one and nothing of alice's.
-	got, err := repo.ListByProject(ctx, project, "bob", 10, "", "")
+	got, err := repo.ListByProject(ctx, project, "bob", 10, "", "", commonmodels.AskSurfaceAsk)
 	if err != nil {
 		t.Fatalf("ListByProject: %v", err)
 	}
@@ -747,7 +747,7 @@ func TestInteg_AskSessionRepo_LegacyAnonymousIsShared(t *testing.T) {
 	// With authentication off the caller IS the shared subject, so the list is
 	// the whole project's anonymous history exactly as it was — and still not
 	// the row we cannot explain.
-	got, _ = repo.ListByProject(ctx, project, goauth.AnonymousSubject, 10, "", "")
+	got, _ = repo.ListByProject(ctx, project, goauth.AnonymousSubject, 10, "", "", commonmodels.AskSurfaceAsk)
 	if len(got) != 1 || got[0].ID != "leg-shared" {
 		t.Fatalf("anonymous caller's list = %+v, want only leg-shared", got)
 	}

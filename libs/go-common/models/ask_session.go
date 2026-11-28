@@ -21,8 +21,57 @@ type AskSession struct {
 	// every turn (first and follow-ups) so the conversation stays on-topic.
 	// nil for a generic, unseeded chat. omitempty keeps legacy rows clean.
 	SeedContext *AskSessionSeed `bson:"seed_context,omitempty" json:"seed_context,omitempty"`
-	CreatedAt   time.Time       `bson:"created_at" json:"created_at"`
-	UpdatedAt   time.Time       `bson:"updated_at" json:"updated_at"`
+	// Surface is the conversation surface this session belongs to:
+	// AskSurfaceAsk (absent on every row written before the field existed)
+	// or one of the other surfaces built on the same conversation model.
+	//
+	// It is persisted once at creation and never changes, so the tools a turn
+	// is given and the system prompt it runs under are derived from the
+	// session rather than from the request that arrived. Read it through
+	// EffectiveSurface, never directly — absent means Ask.
+	Surface   string    `bson:"surface,omitempty" json:"surface,omitempty"`
+	CreatedAt time.Time `bson:"created_at" json:"created_at"`
+	UpdatedAt time.Time `bson:"updated_at" json:"updated_at"`
+}
+
+// Ask conversation surfaces. A surface decides which tools the model is
+// given, which system prompt it runs under, and which history list the
+// session appears in, so two conversations in the same project can be about
+// entirely different things without ever mixing.
+const (
+	// AskSurfaceAsk is the Ask Insights conversation — the only surface
+	// that existed before the field did, which is why it is also what an
+	// absent value means.
+	AskSurfaceAsk = "ask"
+	// AskSurfacePlaybook is a conversation that maintains the project's
+	// Playbook rather than answering questions about its data.
+	AskSurfacePlaybook = "playbook"
+)
+
+// KnownAskSurface reports whether s names a surface this build understands.
+// The empty string is known: it is how a legacy row, and a client that does
+// not care, both spell AskSurfaceAsk.
+func KnownAskSurface(s string) bool {
+	switch s {
+	case "", AskSurfaceAsk, AskSurfacePlaybook:
+		return true
+	default:
+		return false
+	}
+}
+
+// EffectiveSurface returns the surface this conversation belongs to,
+// defaulting to AskSurfaceAsk when the session declares none.
+//
+// Read this rather than the field: every session persisted before the surface
+// existed carries no value, and treating that as "no surface" rather than "the
+// surface everything used to be" would hide the entire existing corpus from
+// Ask's own history list.
+func (s *AskSession) EffectiveSurface() string {
+	if s == nil || s.Surface == "" {
+		return AskSurfaceAsk
+	}
+	return s.Surface
 }
 
 // AskSessionSeed is the insight / recommendation a seeded Ask conversation is
